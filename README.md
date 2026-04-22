@@ -1,10 +1,13 @@
-# template_repo
-The purpose of this repo is to simply give a template for future repos
+# Heating System
+This repo is for implementing various heating system models.
+Install via:
+    pip install git+https://github.com/petermads123/heatingsystem.git@main
+or in dependecies in pyproject.toml:
+    "heatingsystem @ git+https://github.com/petermads123/heatingsystem.git@main"
 
-## Setup
-Add dependencies in pyproject.toml
-Also change project name in here
-Change the folder name (template_repo) to the same name
+## PIController
+A basic PI-controlled heating system
+
 
 ## Development
 1. Have git installed on your machine.

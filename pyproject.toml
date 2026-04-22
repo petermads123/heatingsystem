@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "template_repo"
+name = "heatingsystem"
 version = "0.1.0"
-description = "template_repo"
+description = "Heating system models."
 authors = [
   { name = "Peter Mads Pedersen", email = "petermads123@hotmail.com" }
 ]
@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
 
 # --- Ruff Configuration ---
 [tool.ruff]
