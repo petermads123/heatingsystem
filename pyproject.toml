@@ -10,7 +10,7 @@ authors = [
   { name = "Peter Mads Pedersen", email = "petermads123@hotmail.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 
 # Runtime dependencies
 dependencies = []
@@ -55,7 +55,7 @@ addopts = "-v"
 
 # --- Mypy configuration ---
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.12"
 ignore_missing_imports = true
 follow_untyped_imports = true
 # Strictness: enforce fully-typed code (the "100% mypy compliant" rule).
