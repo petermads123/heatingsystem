@@ -29,12 +29,24 @@ where = ["."]
 # --- Ruff Configuration ---
 [tool.ruff]
 line-length = 88
-select = ["E", "W", "I", "F", "B", "ANN", "D", "UP", "TID", "N", "SIM", "ARG", "ERA", "DTZ"]
-ignore = ["E501", "ANN101", "N806", "N803", "F401"]
 target-version = "py313"
 
-[tool.ruff.pydocstyle]
+[tool.ruff.lint]
+# Rule groups: pycodestyle (E/W), isort (I), pyflakes (F), bugbear (B),
+# annotations (ANN), pydocstyle (D), pyupgrade (UP), tidy-imports (TID),
+# pep8-naming (N), flake8-simplify (SIM), unused-arguments (ARG),
+# eradicate (ERA), flake8-datetimez (DTZ).
+select = ["E", "W", "I", "F", "B", "ANN", "D", "UP", "TID", "N", "SIM", "ARG", "ERA", "DTZ"]
+# E501 (line length) handled by formatter; N806/N803 allow math-style names
+# (Kp, Ki, dt); F401 keeps re-exports in __init__ files.
+ignore = ["E501", "N806", "N803", "F401"]
+
+[tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may skip docstrings and annotations on every helper.
+"tests/*" = ["D", "ANN"]
 
 # --- Pytest Configuration ---
 [tool.pytest.ini_options]
@@ -43,5 +55,15 @@ addopts = "-v"
 
 # --- Mypy configuration ---
 [tool.mypy]
+python_version = "3.13"
 ignore_missing_imports = true
 follow_untyped_imports = true
+# Strictness: enforce fully-typed code (the "100% mypy compliant" rule).
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+no_implicit_optional = true

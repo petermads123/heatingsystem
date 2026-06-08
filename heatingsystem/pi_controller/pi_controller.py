@@ -4,7 +4,7 @@
 class PIController:
     """A simple PI controller for heating systems."""
 
-    def __init__(self, kp: float = 0.3, ki: float = 0.015):
+    def __init__(self, kp: float = 0.3, ki: float = 0.015) -> None:
         """Initialize the PI controller with given gains."""
         self.kp = kp
         self.ki = ki

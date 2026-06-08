@@ -3,7 +3,7 @@
 import heatingsystem as hs
 
 
-def main():
+def main() -> None:
     """Main function to run the test."""
     system = hs.PIController()
     print("PI Controller initialized with Kp =", system.kp, "and Ki =", system.ki)
