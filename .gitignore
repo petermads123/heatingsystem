@@ -1,6 +1,9 @@
 # Specific files
 app_secrets.py
 
+# Generated simulation figure (produced by test.py)
+simulation.png
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
