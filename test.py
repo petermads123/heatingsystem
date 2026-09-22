@@ -183,9 +183,7 @@ def main() -> None:
     floor = run_simulation(hs.HeatingMode.FLOOR_HEATING)
 
     # Two stacked subplots sharing the timestep axis.
-    fig, (ax_top, ax_bottom) = plt.subplots(
-        2, 1, figsize=(11, 8), sharex=True
-    )
+    fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
 
     plot_mode(ax_top, "Radiator (continuous output)", *radiator)
     plot_mode(

@@ -11,7 +11,7 @@ import heatingsystem as hs
 # ---------------------------------------------------------------------------
 
 
-def test_construction_defaults():
+def test_construction_defaults() -> None:
     ctrl = hs.PIController()
     # Verify the shipped defaults match the contract.
     assert ctrl.kp == pytest.approx(0.3)
@@ -22,63 +22,63 @@ def test_construction_defaults():
     assert not ctrl.is_history_full
 
 
-def test_construction_explicit_gains():
+def test_construction_explicit_gains() -> None:
     ctrl = hs.PIController(kp=0.5, ki=0.02, setpoint=22.0)
     assert ctrl.kp == pytest.approx(0.5)
     assert ctrl.ki == pytest.approx(0.02)
 
 
-def test_mode_accepts_enum_radiator():
+def test_mode_accepts_enum_radiator() -> None:
     ctrl = hs.PIController(mode=hs.HeatingMode.RADIATOR)
     # Should not raise; just a smoke test.
     out = ctrl.update(20.0)
     assert 0.0 <= out <= 1.0
 
 
-def test_mode_accepts_string_radiator():
+def test_mode_accepts_string_radiator() -> None:
     ctrl = hs.PIController(mode="radiator")
     out = ctrl.update(20.0)
     assert 0.0 <= out <= 1.0
 
 
-def test_mode_accepts_enum_floor_heating():
+def test_mode_accepts_enum_floor_heating() -> None:
     ctrl = hs.PIController(mode=hs.HeatingMode.FLOOR_HEATING)
     out = ctrl.update(20.0)
     assert out in {0.0, 1.0}
 
 
-def test_mode_accepts_string_floor_heating():
+def test_mode_accepts_string_floor_heating() -> None:
     ctrl = hs.PIController(mode="floor_heating")
     out = ctrl.update(20.0)
     assert out in {0.0, 1.0}
 
 
-def test_invalid_mode_string_raises():
+def test_invalid_mode_string_raises() -> None:
     with pytest.raises(ValueError, match="mode"):
         hs.PIController(mode="steam_radiator")
 
 
-def test_history_length_zero_raises():
+def test_history_length_zero_raises() -> None:
     with pytest.raises(ValueError):
         hs.PIController(history_length=0)
 
 
-def test_history_length_negative_raises():
+def test_history_length_negative_raises() -> None:
     with pytest.raises(ValueError):
         hs.PIController(history_length=-5)
 
 
-def test_non_finite_kp_raises():
+def test_non_finite_kp_raises() -> None:
     with pytest.raises(ValueError):
         hs.PIController(kp=math.nan)
 
 
-def test_non_finite_ki_raises():
+def test_non_finite_ki_raises() -> None:
     with pytest.raises(ValueError):
         hs.PIController(ki=math.inf)
 
 
-def test_non_finite_setpoint_raises():
+def test_non_finite_setpoint_raises() -> None:
     with pytest.raises(ValueError):
         hs.PIController(setpoint=math.nan)
 
@@ -88,19 +88,19 @@ def test_non_finite_setpoint_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_update_non_finite_measured_raises():
+def test_update_non_finite_measured_raises() -> None:
     ctrl = hs.PIController()
     with pytest.raises(ValueError):
         ctrl.update(math.nan)
 
 
-def test_update_inf_measured_raises():
+def test_update_inf_measured_raises() -> None:
     ctrl = hs.PIController()
     with pytest.raises(ValueError):
         ctrl.update(math.inf)
 
 
-def test_update_setpoint_override_non_finite_raises():
+def test_update_setpoint_override_non_finite_raises() -> None:
     ctrl = hs.PIController()
     with pytest.raises(ValueError):
         ctrl.update(20.0, setpoint=math.inf)
@@ -111,35 +111,35 @@ def test_update_setpoint_override_non_finite_raises():
 # ---------------------------------------------------------------------------
 
 
-def test_radiator_positive_error_output_positive():
+def test_radiator_positive_error_output_positive() -> None:
     # Room is cold (18 < 21): output must be > 0.
     ctrl = hs.PIController(kp=0.5, ki=0.02, setpoint=21.0)
     out = ctrl.update(18.0)
     assert out > 0.0
 
 
-def test_radiator_zero_error_output_zero():
+def test_radiator_zero_error_output_zero() -> None:
     # Room exactly at setpoint: first call should give 0 (no integral buildup yet).
     ctrl = hs.PIController(kp=0.5, ki=0.02, setpoint=21.0)
     out = ctrl.update(21.0)
     assert out == pytest.approx(0.0)
 
 
-def test_radiator_very_large_error_clamped_to_one():
+def test_radiator_very_large_error_clamped_to_one() -> None:
     # Room 0 C, setpoint 21: raw output >> 1; must clamp to 1.0.
     ctrl = hs.PIController(kp=0.5, ki=0.02, setpoint=21.0)
     out = ctrl.update(0.0)
     assert out == pytest.approx(1.0)
 
 
-def test_radiator_negative_error_clamped_to_zero():
+def test_radiator_negative_error_clamped_to_zero() -> None:
     # Room too hot (30 > 21): controller should return 0.0.
     ctrl = hs.PIController(kp=0.5, ki=0.02, setpoint=21.0)
     out = ctrl.update(30.0)
     assert out == pytest.approx(0.0)
 
 
-def test_radiator_output_always_in_range():
+def test_radiator_output_always_in_range() -> None:
     # Stress: varied temperatures must all yield outputs in [0, 1].
     ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
     temps = [-50.0, 0.0, 10.0, 20.0, 21.0, 22.0, 30.0, 100.0]
@@ -149,7 +149,7 @@ def test_radiator_output_always_in_range():
         assert 0.0 <= out <= 1.0, f"out-of-range for measured={t}: {out}"
 
 
-def test_radiator_hand_computed_single_step():
+def test_radiator_hand_computed_single_step() -> None:
     # kp=0.5, ki=0.02, setpoint=21.0, measured=19.0
     # The error is 2.0, integral becomes 2.0,
     # raw = 0.5*2 + 0.02*2 = 1.04, which clamps to 1.0.
@@ -158,7 +158,7 @@ def test_radiator_hand_computed_single_step():
     assert out == pytest.approx(1.0)
 
 
-def test_radiator_hand_computed_small_error():
+def test_radiator_hand_computed_small_error() -> None:
     # kp=0.3, ki=0.015, setpoint=21.0, measured=20.5
     # The error is 0.5, integral becomes 0.5,
     # raw = 0.3*0.5 + 0.015*0.5 = 0.15 + 0.0075 = 0.1575
@@ -167,7 +167,7 @@ def test_radiator_hand_computed_small_error():
     assert out == pytest.approx(0.1575)
 
 
-def test_radiator_setpoint_override_per_call():
+def test_radiator_setpoint_override_per_call() -> None:
     # Passing setpoint kwarg to update() should override the stored setpoint.
     # Override with 22.0; measured=21.0, so error=1.0,
     # integral=1.0, raw=0.3*1+0.015*1=0.315.
@@ -181,7 +181,7 @@ def test_radiator_setpoint_override_per_call():
 # ---------------------------------------------------------------------------
 
 
-def test_antiwindup_integral_does_not_grow_when_saturated():
+def test_antiwindup_integral_does_not_grow_when_saturated() -> None:
     # Drive the controller into deep saturation (very cold room, setpoint high).
     # After output has been clamped to 1.0 for enough steps, the integral must
     # stop growing — verify it stays constant across several saturated steps.
@@ -199,7 +199,7 @@ def test_antiwindup_integral_does_not_grow_when_saturated():
     )
 
 
-def test_antiwindup_integral_does_not_grow_negative_saturation():
+def test_antiwindup_integral_does_not_grow_negative_saturation() -> None:
     # Drive controller to bottom saturation (room too hot).
     ctrl = hs.PIController(kp=0.5, ki=0.02, setpoint=5.0)
     for _ in range(50):
@@ -218,7 +218,7 @@ def test_antiwindup_integral_does_not_grow_negative_saturation():
 # ---------------------------------------------------------------------------
 
 
-def test_floor_heating_output_binary():
+def test_floor_heating_output_binary() -> None:
     # Every returned value must be exactly 0.0 or 1.0.
     ctrl = hs.PIController(mode=hs.HeatingMode.FLOOR_HEATING, setpoint=21.0)
     for measured in [15.0, 19.0, 20.5, 21.0, 22.0, 25.0]:
@@ -227,7 +227,7 @@ def test_floor_heating_output_binary():
         assert out in {0.0, 1.0}, f"Non-binary output {out} for measured={measured}"
 
 
-def test_floor_heating_full_demand_gives_one():
+def test_floor_heating_full_demand_gives_one() -> None:
     # Very cold room: continuous output would be 1.0, so floor-heating must also be 1.0.
     ctrl = hs.PIController(mode=hs.HeatingMode.FLOOR_HEATING, setpoint=21.0)
     out = 0.0
@@ -236,7 +236,7 @@ def test_floor_heating_full_demand_gives_one():
     assert out == pytest.approx(1.0)
 
 
-def test_floor_heating_no_demand_gives_zero():
+def test_floor_heating_no_demand_gives_zero() -> None:
     # Very hot room: continuous output is 0.0 -> floor-heating must stay 0.0.
     ctrl = hs.PIController(mode=hs.HeatingMode.FLOOR_HEATING, setpoint=21.0)
     out = 0.0
@@ -245,7 +245,7 @@ def test_floor_heating_no_demand_gives_zero():
     assert out == pytest.approx(0.0)
 
 
-def test_floor_heating_duty_cycle_converges():
+def test_floor_heating_duty_cycle_converges() -> None:
     # Over a long run at a moderate constant demand the window duty_cycle must
     # approximate the equivalent continuous (radiator) output within ~1/24.
     #
@@ -282,19 +282,19 @@ def test_floor_heating_duty_cycle_converges():
 # ---------------------------------------------------------------------------
 
 
-def test_history_empty_on_fresh_controller():
+def test_history_empty_on_fresh_controller() -> None:
     ctrl = hs.PIController()
     assert ctrl.history == ()
 
 
-def test_history_length_after_n_updates():
+def test_history_length_after_n_updates() -> None:
     ctrl = hs.PIController(history_length=24)
     for _ in range(10):
         ctrl.update(20.0)
     assert len(ctrl.history) == 10
 
 
-def test_history_caps_at_history_length():
+def test_history_caps_at_history_length() -> None:
     ctrl = hs.PIController(history_length=24)
     for _ in range(30):
         ctrl.update(20.0)
@@ -302,7 +302,7 @@ def test_history_caps_at_history_length():
     assert len(ctrl.history) == 24
 
 
-def test_history_ordered_oldest_to_newest():
+def test_history_ordered_oldest_to_newest() -> None:
     # Use kp=1.0, ki=0 so output changes predictably with temperature.
     # Each call with a different measured value gives a distinct output.
     ctrl = hs.PIController(kp=1.0, ki=0.0, setpoint=21.0, history_length=5)
@@ -315,13 +315,13 @@ def test_history_ordered_oldest_to_newest():
     assert snap == tuple(outputs)
 
 
-def test_history_is_tuple():
+def test_history_is_tuple() -> None:
     ctrl = hs.PIController()
     ctrl.update(20.0)
     assert isinstance(ctrl.history, tuple)
 
 
-def test_history_snapshot_immutable():
+def test_history_snapshot_immutable() -> None:
     # Obtaining the tuple and mutating a copy must not affect the controller.
     ctrl = hs.PIController(history_length=5)
     for _ in range(5):
@@ -333,7 +333,7 @@ def test_history_snapshot_immutable():
     assert ctrl.history == snap  # controller unaffected
 
 
-def test_history_oldest_dropped_after_overflow():
+def test_history_oldest_dropped_after_overflow() -> None:
     # When more than history_length items are added, the oldest must be dropped.
     ctrl = hs.PIController(kp=1.0, ki=0.0, setpoint=21.0, history_length=3)
     # Fill the window.
@@ -351,19 +351,19 @@ def test_history_oldest_dropped_after_overflow():
 # ---------------------------------------------------------------------------
 
 
-def test_duty_cycle_zero_on_fresh_controller():
+def test_duty_cycle_zero_on_fresh_controller() -> None:
     ctrl = hs.PIController()
     assert ctrl.duty_cycle == pytest.approx(0.0)
 
 
-def test_duty_cycle_correct_mean():
+def test_duty_cycle_correct_mean() -> None:
     # Radiator mode, kp=1.0, ki=0: output equals clamp(error, 0, 1).
     # setpoint=1.0: measured=0.0 -> output=1.0; measured=1.0 -> output=0.0;
     # measured=0.5 -> output=0.5.  Mean of [1.0, 0.0, 0.5] = 0.5.
     ctrl = hs.PIController(kp=1.0, ki=0.0, setpoint=1.0, history_length=10)
-    ctrl.update(0.0)   # output = clamp(1.0, 0, 1) = 1.0
-    ctrl.update(1.0)   # output = clamp(0.0, 0, 1) = 0.0
-    ctrl.update(0.5)   # output = clamp(0.5, 0, 1) = 0.5
+    ctrl.update(0.0)  # output = clamp(1.0, 0, 1) = 1.0
+    ctrl.update(1.0)  # output = clamp(0.0, 0, 1) = 0.0
+    ctrl.update(0.5)  # output = clamp(0.5, 0, 1) = 0.5
     assert ctrl.duty_cycle == pytest.approx((1.0 + 0.0 + 0.5) / 3)
 
 
@@ -372,21 +372,21 @@ def test_duty_cycle_correct_mean():
 # ---------------------------------------------------------------------------
 
 
-def test_is_history_full_false_before_window_fills():
+def test_is_history_full_false_before_window_fills() -> None:
     ctrl = hs.PIController(history_length=5)
     for step in range(4):
         ctrl.update(20.0)
         assert not ctrl.is_history_full, f"should not be full after {step + 1} updates"
 
 
-def test_is_history_full_true_at_history_length():
+def test_is_history_full_true_at_history_length() -> None:
     ctrl = hs.PIController(history_length=5)
     for _ in range(5):
         ctrl.update(20.0)
     assert ctrl.is_history_full
 
 
-def test_is_history_full_remains_true_after_overflow():
+def test_is_history_full_remains_true_after_overflow() -> None:
     ctrl = hs.PIController(history_length=5)
     for _ in range(10):
         ctrl.update(20.0)
@@ -398,7 +398,7 @@ def test_is_history_full_remains_true_after_overflow():
 # ---------------------------------------------------------------------------
 
 
-def test_reset_zeroes_integral():
+def test_reset_zeroes_integral() -> None:
     # Use a small error (measured=20.5, setpoint=21.0 -> error=0.5) so the
     # first update stays in the linear region and the integral is committed.
     # raw = kp*0.5 + ki*0.5 = 0.5*0.5 + 0.02*0.5 = 0.26, which is < 1.0.
@@ -409,7 +409,7 @@ def test_reset_zeroes_integral():
     assert ctrl.integral == pytest.approx(0.0)
 
 
-def test_reset_clears_history():
+def test_reset_clears_history() -> None:
     ctrl = hs.PIController(history_length=5)
     for _ in range(5):
         ctrl.update(20.0)
@@ -418,14 +418,14 @@ def test_reset_clears_history():
     assert ctrl.history == ()
 
 
-def test_reset_duty_cycle_becomes_zero():
+def test_reset_duty_cycle_becomes_zero() -> None:
     ctrl = hs.PIController()
     ctrl.update(18.0)
     ctrl.reset()
     assert ctrl.duty_cycle == pytest.approx(0.0)
 
 
-def test_reset_is_history_full_becomes_false():
+def test_reset_is_history_full_becomes_false() -> None:
     ctrl = hs.PIController(history_length=3)
     for _ in range(3):
         ctrl.update(20.0)
@@ -439,7 +439,7 @@ def test_reset_is_history_full_becomes_false():
 # ---------------------------------------------------------------------------
 
 
-def test_heating_mode_accessible_on_hs():
+def test_heating_mode_accessible_on_hs() -> None:
     assert hs.HeatingMode.RADIATOR == "radiator"
     assert hs.HeatingMode.FLOOR_HEATING == "floor_heating"
 
@@ -449,7 +449,7 @@ def test_heating_mode_accessible_on_hs():
 # ---------------------------------------------------------------------------
 
 
-def test_no_appdaemon_dependency_required():
+def test_no_appdaemon_dependency_required() -> None:
     # The class must work with plain Python floats — no HA/AppDaemon machinery.
     ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
     for measured in [18.0, 19.5, 20.0, 21.0, 22.0]:
@@ -458,7 +458,7 @@ def test_no_appdaemon_dependency_required():
         assert 0.0 <= out <= 1.0
 
 
-def test_floor_heating_no_appdaemon_required():
+def test_floor_heating_no_appdaemon_required() -> None:
     ctrl = hs.PIController(mode=hs.HeatingMode.FLOOR_HEATING, setpoint=21.0)
     out = ctrl.update(19.0)
     assert isinstance(out, float)
@@ -470,7 +470,7 @@ def test_floor_heating_no_appdaemon_required():
 # ---------------------------------------------------------------------------
 
 
-def test_floor_duty_cycle_converges_to_fractional_demand():
+def test_floor_duty_cycle_converges_to_fractional_demand() -> None:
     # With ki=0 the internal PI output u is constant for a constant measurement:
     # u = clamp(kp * error). kp=0.3, error=1.0 (setpoint 21, measured 20) -> u=0.3.
     # Over a full 24-sample window the realised ON-fraction must converge to that
@@ -484,7 +484,7 @@ def test_floor_duty_cycle_converges_to_fractional_demand():
     assert abs(ctrl.duty_cycle - 0.3) <= 1.0 / 24.0 + 1e-9
 
 
-def test_floor_duty_cycle_converges_to_half_demand():
+def test_floor_duty_cycle_converges_to_half_demand() -> None:
     # kp=0.5, error=1.0 -> u=0.5. The realised ON-fraction over a 24-sample
     # window is quantised to multiples of 1/24, so it settles at the nearest
     # achievable value (11/24) rather than exactly 0.5. Allow one slot of
@@ -497,7 +497,7 @@ def test_floor_duty_cycle_converges_to_half_demand():
     assert abs(ctrl.duty_cycle - 0.5) <= 1.0 / 24.0 + 1e-9
 
 
-def test_floor_sustained_max_demand_is_all_on_no_saturation_bias():
+def test_floor_sustained_max_demand_is_all_on_no_saturation_bias() -> None:
     # A permanently freezing room must yield ON (1.0) on EVERY step, not just the
     # last one. This guards against a duty-cycle scheme that erroneously throttles
     # at full demand.
@@ -507,7 +507,7 @@ def test_floor_sustained_max_demand_is_all_on_no_saturation_bias():
     assert ctrl.duty_cycle == pytest.approx(1.0)
 
 
-def test_floor_sustained_too_hot_is_all_off():
+def test_floor_sustained_too_hot_is_all_off() -> None:
     # A permanently overheated room must yield OFF (0.0) on EVERY step.
     ctrl = hs.PIController(mode=hs.HeatingMode.FLOOR_HEATING, setpoint=21.0)
     outs = [ctrl.update(50.0) for _ in range(60)]
@@ -515,7 +515,7 @@ def test_floor_sustained_too_hot_is_all_off():
     assert ctrl.duty_cycle == pytest.approx(0.0)
 
 
-def test_floor_first_command_is_on_due_to_read_before_append():
+def test_floor_first_command_is_on_due_to_read_before_append() -> None:
     # duty_cycle is read BEFORE the new command is appended. On a fresh controller
     # the window is empty so duty_cycle == 0.0. For any 0 < u < 1 the rule
     # "ON when duty_cycle < u" must therefore fire ON (1.0) on the very first step.
@@ -529,7 +529,7 @@ def test_floor_first_command_is_on_due_to_read_before_append():
     assert out == pytest.approx(1.0)
 
 
-def test_floor_command_not_in_own_duty_cycle():
+def test_floor_command_not_in_own_duty_cycle() -> None:
     # Read-before-append also means a single update never sees its own command:
     # after exactly one ON step the duty_cycle reflects that one stored sample
     # (1.0), but the decision for that step used the empty-window value (0.0).
@@ -546,7 +546,7 @@ def test_floor_command_not_in_own_duty_cycle():
 # ---------------------------------------------------------------------------
 
 
-def test_antiwindup_built_up_integral_is_bounded():
+def test_antiwindup_built_up_integral_is_bounded() -> None:
     # Pure-integral controller (kp=0) so the output is driven solely by the
     # accumulated integral: raw = ki * integral. With a small persistent positive
     # error the integral grows until raw reaches OUTPUT_MAX, after which
@@ -563,7 +563,7 @@ def test_antiwindup_built_up_integral_is_bounded():
     assert ctrl.integral > 0.0
 
 
-def test_antiwindup_recovers_after_error_reverses():
+def test_antiwindup_recovers_after_error_reverses() -> None:
     # Wind the integral up to its ceiling, then reverse the error sign (room
     # suddenly very hot). The output must drop out of saturation within a small,
     # bounded number of steps — proving the integral was not left wound up.
@@ -583,7 +583,7 @@ def test_antiwindup_recovers_after_error_reverses():
     assert recovery_steps <= 5, f"recovery took {recovery_steps} steps"
 
 
-def test_antiwindup_negative_built_up_integral_bounded_and_recovers():
+def test_antiwindup_negative_built_up_integral_bounded_and_recovers() -> None:
     # Mirror image: a persistent negative error drives the integral toward its
     # lower windup ceiling (-1/ki), and a reversed (positive) error must lift the
     # output off zero within a few steps.
@@ -610,7 +610,7 @@ def test_antiwindup_negative_built_up_integral_bounded_and_recovers():
 # ---------------------------------------------------------------------------
 
 
-def test_history_maxlen_non_default_length():
+def test_history_maxlen_non_default_length() -> None:
     # A non-default window must cap at exactly history_length and not the
     # hard-coded default of 24.
     ctrl = hs.PIController(history_length=7)
@@ -620,7 +620,7 @@ def test_history_maxlen_non_default_length():
     assert ctrl.is_history_full
 
 
-def test_history_maxlen_one():
+def test_history_maxlen_one() -> None:
     # The minimum legal window keeps only the single most recent command.
     ctrl = hs.PIController(kp=1.0, ki=0.0, setpoint=21.0, history_length=1)
     ctrl.update(18.0)  # error 3 -> clamp 1.0

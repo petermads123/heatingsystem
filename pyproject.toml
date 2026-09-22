@@ -10,52 +10,74 @@ authors = [
   { name = "Peter Mads Pedersen", email = "petermads123@hotmail.com" }
 ]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 
 # Runtime dependencies
 dependencies = []
 
 # Optional groups (e.g. dev dependencies)
 [project.optional-dependencies]
+# Pinned to a minor series rather than left open. A Ruff release added
+# formatting of Python inside Markdown code blocks and turned the gate red on
+# prose nobody had edited; an unpinned linter makes the stop gate fail for
+# reasons unrelated to the change in front of it. Widen deliberately, not by
+# accident.
 dev = [
-  "pytest",
-  "ruff",
-  "pydocstyle",
+  "pytest>=9.1,<10",
+  "ruff>=0.16,<0.17",
+  "mypy>=2.3,<3",
+]
+# The root simulation script (test.py) draws with matplotlib. It is not part of
+# the package, so the dependency is optional and installed on request.
+sim = [
+  "matplotlib",
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
+# src layout: everything installable lives under src/, so nothing else in the
+# repo can be picked up as a package by accident. Renaming the package folder
+# needs no change here.
+where = ["src"]
 
 # --- Ruff Configuration ---
 [tool.ruff]
 line-length = 88
-target-version = "py313"
 
 [tool.ruff.lint]
-# Rule groups: pycodestyle (E/W), isort (I), pyflakes (F), bugbear (B),
-# annotations (ANN), pydocstyle (D), pyupgrade (UP), tidy-imports (TID),
-# pep8-naming (N), flake8-simplify (SIM), unused-arguments (ARG),
-# eradicate (ERA), flake8-datetimez (DTZ).
 select = ["E", "W", "I", "F", "B", "ANN", "D", "UP", "TID", "N", "SIM", "ARG", "ERA", "DTZ"]
-# E501 (line length) handled by formatter; N806/N803 allow math-style names
-# (Kp, Ki, dt); F401 keeps re-exports in __init__ files.
-ignore = ["E501", "N806", "N803", "F401"]
+# E501: line length is the formatter's job.
+# N806/N803: allow non-lowercase names for math-style variables and arguments
+# (Kp, Ki, dt).
+ignore = ["E501", "N806", "N803"]
+
+[tool.ruff.lint.per-file-ignores]
+# F401: __init__.py re-exports are not unused imports.
+"__init__.py" = ["F401"]
+# D100/D103: tests do not need module or function docstrings.
+"tests/**" = ["D100", "D103"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
-
-[tool.ruff.lint.per-file-ignores]
-# Tests may skip docstrings and annotations on every helper.
-"tests/*" = ["D", "ANN"]
 
 # --- Pytest Configuration ---
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+# Import the package from src/, so `pytest` works on a fresh clone before
+# `pip install -e ".[dev]"` has been run. The hooks are added for the same
+# reason they can import each other at runtime: Python puts a script's own
+# directory on sys.path, and the suite needs the same names to resolve.
+pythonpath = ["src", ".claude/hooks"]
 
 # --- Mypy configuration ---
 [tool.mypy]
-python_version = "3.12"
+# Named explicitly because mypy does not respect .gitignore and would otherwise
+# descend into .venv. Directories rather than package names, so renaming the
+# package needs no change here. The hooks are included because they are real
+# annotated modules whose signatures STRUCTURE.md documents, so they should be
+# held to the same standard as the package. test.py is the root simulation
+# script; it is not installable but is held to the same standard.
+files = ["src", "tests", ".claude/hooks", "test.py"]
 ignore_missing_imports = true
 follow_untyped_imports = true
 # Strictness: enforce fully-typed code (the "100% mypy compliant" rule).

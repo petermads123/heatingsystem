@@ -116,9 +116,7 @@ class PIController:
 
         # --- Validate numeric constructor arguments ---
         if history_length < 1:
-            raise ValueError(
-                f"history_length must be >= 1, got {history_length}."
-            )
+            raise ValueError(f"history_length must be >= 1, got {history_length}.")
         if not math.isfinite(kp):
             raise ValueError(f"kp must be a finite number, got {kp!r}.")
         if not math.isfinite(ki):
@@ -165,16 +163,12 @@ class PIController:
         # --- Optional setpoint update ---
         if setpoint is not None:
             if not math.isfinite(setpoint):
-                raise ValueError(
-                    f"setpoint must be a finite number, got {setpoint!r}."
-                )
+                raise ValueError(f"setpoint must be a finite number, got {setpoint!r}.")
             self.setpoint = setpoint
 
         # --- Validate measurement ---
         if not math.isfinite(measured):
-            raise ValueError(
-                f"measured must be a finite number, got {measured!r}."
-            )
+            raise ValueError(f"measured must be a finite number, got {measured!r}.")
 
         # --- Error: positive means too cold, controller ramps output up ---
         error: float = self.setpoint - measured
@@ -362,18 +356,22 @@ def main() -> None:
     # Demonstrate mid-run setpoint change via the update() keyword argument.
     print("\n  -- setpoint raised to 22 deg C mid-run --")
     cmd = ctrl_rad.update(measured=21.3, setpoint=22.0)
-    print(f"  command after setpoint change: {cmd:.4f}  (setpoint now {ctrl_rad.setpoint})")
+    print(
+        f"  command after setpoint change: {cmd:.4f}  (setpoint now {ctrl_rad.setpoint})"
+    )
 
     # Demonstrate reset().
     ctrl_rad.reset()
-    print(f"\n  After reset(): integral={ctrl_rad.integral}, history={ctrl_rad.history}")
+    print(
+        f"\n  After reset(): integral={ctrl_rad.integral}, history={ctrl_rad.history}"
+    )
 
     print("\n=== FLOOR_HEATING mode (24-sample window) ===")
     # Use the default 24-sample window (24 × 5 min = 2 h at HA polling rate).
     ctrl_floor = PIController(
         kp=0.3,
         ki=0.015,
-        mode="floor_heating",   # plain string coercion
+        mode="floor_heating",  # plain string coercion
         setpoint=21.0,
         history_length=24,
     )
