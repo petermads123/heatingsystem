@@ -225,10 +225,15 @@ section 1. `HeatingMode`, `history`, `duty_cycle`, `is_history_full` are unchang
 ### Implementation guide
 
 1. Add a module-level private helper `_finite(name: str, value: object) -> float` above
-   `HeatingMode`: if `isinstance(value, bool)` or not `isinstance(value, (int, float))`,
+   `HeatingMode`: if `isinstance(value, bool)` or not `isinstance(value, numbers.Real)`,
    raise `TypeError(f"{name} must be a real number, got {value!r} ({type(value).__name__}).")`;
-   if `not math.isfinite(value)`, raise `ValueError(f"{name} must be a finite number, got {value!r}.")`;
-   return `float(value)`. Google docstring with `Raises:`.
+   then `try: number = float(value) except OverflowError as exc: raise OverflowError(f"{name} is too large to represent as a float.") from exc`
+   (an `int` such as `10**400` overflows `float()` and `math.isfinite` alike, and its
+   `repr` is itself refused past 4300 digits, so the message names the attribute and not
+   the value); then `if not math.isfinite(number): raise ValueError(f"{name} must be a finite number, got {value!r}.")`;
+   return `number`. `numbers.Real` is section 1's "real number": `int`, `float`, `Fraction`
+   and numpy scalars pass, `Decimal` does not. Google docstring with `Raises:` listing all
+   three. `import numbers` at the top.
 2. Replace the `kp`, `ki`, `setpoint` plain attributes with private fields `_kp`, `_ki`,
    `_setpoint` and property pairs under the *Properties* section (getter returns the field;
    setter stores `_finite("<name>", value)`). Keep the getters' docstrings one line each and
@@ -238,23 +243,27 @@ section 1. `HeatingMode`, `history`, `duty_cycle`, `is_history_full` are unchang
    The existing test matches on the word `mode`, which this keeps.
 4. In the `fixed_output` setter, after the `None` branch, replace the `math.isfinite`
    check with `level = _finite("fixed_output", value)` and range-check `level`, keeping the
-   existing `ValueError` message for the range case; store `level`. Update its docstring:
-   `TypeError` is now raised and named, `bool` rejected.
+   existing `ValueError` message for the range case but formatting it with `{value!r}` (the
+   value the caller passed) and storing `level`. Update its docstring: `TypeError` is now
+   raised and named, `bool` rejected, `OverflowError` named.
 5. Add `self._pi_output: float | None = None` to the constructor's state block and a
    read-only `pi_output` property after `is_history_full`, docstring saying what it is and
    when it is `None`.
-6. Rewrite the constructor body: `if history_length < 1: raise ValueError(...)` as now,
-   then `self.mode = mode`, `self.kp = kp`, `self.ki = ki`, `self.setpoint = setpoint`,
-   the state block (`integral`, `_history`, `_pi_output`, `_fixed_output = None`), then
-   `self.fixed_output = fixed_output`. Delete the old inline checks. mypy needs the
-   private fields declared with types before the first property assignment; declare them
-   at class level as annotations (`_kp: float`, etc.) or assign through the setters after
-   annotating in `__init__`, whichever mypy accepts cleanly, and keep whichever is used
-   consistent across all five.
+6. Rewrite the constructor body in today's order: `self.mode = mode` first, then
+   `if history_length < 1: raise ValueError(...)` as now, then `self.kp = kp`,
+   `self.ki = ki`, `self.setpoint = setpoint`, the state block (`integral`, `_history`,
+   `_pi_output`, `_fixed_output = None`), then `self.fixed_output = fixed_output`. Delete
+   the old inline checks. Declare the backing fields as class-level annotations without
+   values (`_kp: float`, `_ki: float`, `_setpoint: float`, `_mode: HeatingMode`), which
+   the pinned mypy accepts for assignment through a property setter; the `mode` setter's
+   wider parameter type (`HeatingMode | str`) against its getter (`HeatingMode`) is
+   likewise accepted by mypy 2.3+.
 7. In `update`: replace the two validation blocks with `measured = _finite("measured", measured)`
    first, then `if setpoint is not None: self.setpoint = setpoint`. After the clamp line
-   (`u = ...`), add `self._pi_output = u`. Nothing else in `update` changes; the
-   substitution and anti-windup block stay byte-identical.
+   (`u = ...`), add `self._pi_output = u`. `update`'s `Raises:` gains `TypeError` for a
+   non-numeric or `bool` `measured`/`setpoint` and `OverflowError` for a huge `int`.
+   Nothing else in `update` changes; the substitution and anti-windup block stay
+   byte-identical.
 8. In `reset`, add `self._pi_output = None` and mention it in the docstring.
 9. Update the class docstring: `Raises:` gains the `TypeError` line, the `Args:` say
    `bool` is rejected; note that every setting is a validating property.
@@ -263,27 +272,45 @@ section 1. `HeatingMode`, `history`, `duty_cycle`, `is_history_full` are unchang
     after the floor-heating run, add a case in showcase form that reassigns `mode` on the
     radiator controller and prints one command; in the `ValueError` demo block add a
     `TypeError` demo in showcase form (`bad_setpoint = "22"` on its own line, then the
-    assignment inside `try`, printing the message).
-12. `STRUCTURE.md`: replace "Public attributes: `kp`, `ki`, `mode`, `setpoint`, `integral`"
-    with the property rows; add `pi_output`; update `update`, `reset`, `main()` rows; add
-    the constants to both `__init__` sections; extend the test-file paragraph.
+    assignment inside `try`, printing the message). That assignment is a deliberate type
+    error under mypy, so it carries exactly
+    `# type: ignore[assignment]  # deliberate misuse for the demo`, which the Python rules
+    permit; `setattr` with a literal name is not an alternative (ruff B010).
+12. `STRUCTURE.md`: rewrite the constructor row ("gains and setpoint must be finite" and
+    "Public attributes: `kp`, `ki`, `mode`, `setpoint`, `integral`" become "every setting
+    is a validating property, `integral` a plain attribute"); rewrite the `fixed_output`
+    row (it says only `ValueError`); add the four property rows and `pi_output`; update
+    `update`, `reset`, `main()` rows; add the constants to both `__init__` export tables;
+    in the test-file paragraph rewrite "`int` and `bool` levels stored and returned as
+    `float`" and "`TypeError` — deliberately unguarded" (both stop being true) and extend
+    it with this round's coverage.
 13. README: in the fixed-output block add `print(radiator.pi_output)` with a comment that
     it is the PI demand the loop would have issued; change the range comment on
     `fixed_output` to name `hs.OUTPUT_MIN` and `hs.OUTPUT_MAX`.
 14. Run `ruff check .`, `ruff format --check .`, `mypy`,
-    `python -m heatingsystem.pi_controller.pi_controller`; the existing suite will fail on
-    exactly the two round 1 tests section 1 names (`bool` stored as float; bare
-    `TypeError`) until step 5 updates them — that is expected and is not a gate failure
-    for step 4, which runs the static checks only.
+    `python -m heatingsystem.pi_controller.pi_controller`. The existing suite will fail on
+    exactly two parameter cases of one round 1 test,
+    `test_fixed_output_int_and_bool_stored_and_returned_as_float[True-1.0]` and
+    `[False-0.0]`, until step 5 changes it as below. That is expected and is not a gate
+    failure for step 4, which runs the static checks only.
+
+    Step 5 changes round 1's tests exactly like this and nothing more: rename that test to
+    `test_fixed_output_int_stored_and_returned_as_float`, keeping the `(1, 1.0)` and
+    `(0, 0.0)` cases; move `True` and `False` into a new `TypeError` test under T2 that
+    matches `fixed_output` in the message, at construction and via the setter, with the
+    previous value kept; add `match="fixed_output"` to
+    `test_fixed_output_string_raises_type_error_not_value_error` and to the bare
+    `TypeError` assertion in `test_fixed_output_failed_set_leaves_previous_value`. No
+    other existing test changes.
 
 ### Test intents
 
 | # | Must prove | Covers |
 |---|---|---|
 | T1 | For each of `kp`, `ki`, `setpoint`: `nan`, `inf`, `-inf` raise `ValueError` whose message contains the attribute name and `repr(value)`, via the setter and as the constructor keyword, and the setter leaves the previous value. For `fixed_output`: the round 1 range cases still raise with the previous value kept. | B1 |
-| T2 | For each of `kp`, `ki`, `setpoint`, `fixed_output`: a `str`, `None` (except `fixed_output`, where it clears), a `list`, `True` and `False` raise `TypeError` whose message names the attribute, via the setter and at construction, leaving the previous value. `update(True)`, `update("20")`, `update(20.0, setpoint=False)` and `update(20.0, setpoint="22")` raise `TypeError` naming `measured` or `setpoint`. An `int` is still accepted and read back as `float`. | B2 |
+| T2 | For each of `kp`, `ki`, `setpoint`, `fixed_output`: a `str`, `None` (except `fixed_output`, where it clears), a `list`, `True` and `False` raise `TypeError` whose message names the attribute, via the setter and at construction, leaving the previous value. `update(True)`, `update("20")`, `update(20.0, setpoint=False)` and `update(20.0, setpoint="22")` raise `TypeError` naming `measured` or `setpoint`. An `int` and a `Fraction` are accepted and read back as `float`. A huge `int` (`10**400`) raises `OverflowError` naming the attribute, via the setter, at construction and through `update`, leaving the previous value. | B2, B7 |
 | T3 | `mode` accepts each enum member and each string value and reads back the enum; after switching a radiator controller to floor heating, the next command is binary; an unknown string, an `int` and `None` raise `ValueError` naming `mode` and listing the valid values, leaving the previous mode. | B3 |
-| T4 | After `update(nan, setpoint=22.0)`, `update("x", setpoint=22.0)` and `update(20.0, setpoint=nan)` on a controller with prior state (a few good steps, then optionally `fixed_output` set), `setpoint`, `integral`, `history` and `pi_output` all equal their values before the failed call. | B4 |
+| T4 | After each of `update(nan, setpoint=22.0)`, `update("x", setpoint=22.0)`, `update(20.0, setpoint=nan)`, `update(True)`, `update(20.0, setpoint="22")`, `update(20.0, setpoint=True)` and `update(10**400)` on a controller with prior state (a few good steps, then separately with `fixed_output` set), `setpoint`, `integral`, `history` and `pi_output` all equal their values before the failed call. | B2, B4 |
 | T5 | `pi_output` is `None` on a fresh controller; after one hand-computed step in the linear region it equals the clamped PI result; in saturation it is `1.0` or `0.0`; while `fixed_output` is set it equals an unfixed twin's radiator command for the same measurements, not the fixed level, and in floor mode it is the fractional demand rather than the binary command; it is `None` after `reset()`; assigning to it raises `AttributeError`. | B5 |
 | T6 | `hs.OUTPUT_MIN is pi_controller.OUTPUT_MIN` and likewise for `OUTPUT_MAX`, both from the package root and from the subpackage, and both names are in each `__all__`. | B6 |
 | T7 | Every constructor case the existing suite already covers (invalid mode string, `history_length` 0 and negative, `nan`/`inf` gains and setpoint) still raises `ValueError`, and its message now contains the attribute name; the whole pre-existing suite passes with only the two round 1 tests named in section 1 changed. | B7 |
@@ -299,15 +326,43 @@ section 1. `HeatingMode`, `history`, `duty_cycle`, `is_history_full` are unchang
   before the backing field exists is fine at runtime, but mypy wants the field's type
   declared; class-level annotations do that without giving the fields values. If mypy
   still objects, declare and assign the fields directly in `__init__` and then call the
-  setters; do not add `type: ignore`. Not a halt.
-- **`int` remains accepted.** `isinstance(value, (int, float))` with the `bool` check first
-  keeps `0` and `1` working for `fixed_output` as round 1 promised. A test that passes a
-  `numpy` float would fail the `isinstance`; no caller does, and section 1 says real number,
-  so it is out of scope. Not a halt.
+  setters; do not add `type: ignore` for the fields (the one in the showcase demo, guide
+  step 11, is the only one this round adds). Not a halt.
+- **`int` remains accepted.** `numbers.Real` with the `bool` check first keeps `0` and
+  `1` working for `fixed_output` as round 1 promised, and numpy scalars and `Fraction`
+  keep working as they do today. `Decimal` is not a `numbers.Real`, so `Decimal("nan")`
+  moves from `ValueError` to `TypeError`; B7 is read as covering `int`, `float`, `str` and
+  `None` inputs, and this one case is stated to the user at the plan gate rather than
+  guarded. Not a halt.
 - **Order of constructor errors.** With several bad arguments the first raised is the first
   assigned. No test may depend on that order; one bad argument per case.
 - **Anything that changes the PI arithmetic** is out of scope; if step 3 finds it cannot
   place `self._pi_output = u` without touching the anti-windup block, **halt**.
+
+### Critique
+
+Findings from the `plan-critic` read, verdict *accept with changes*; all seven applied.
+
+1. **A huge `int` raised a bare `OverflowError` without the attribute name, breaking B7,
+   and step 5 would have had to pick a class.** Applied: the helper re-raises
+   `OverflowError` naming the attribute; T2 and T4 cover it.
+2. **`isinstance(value, (int, float))` was narrower than section 1's "real number" and
+   would have turned numpy and `Fraction` inputs into `TypeError`.** Applied:
+   `numbers.Real`; the risk text corrected. `Decimal("nan")` is the one input whose class
+   changes, stated at the gate.
+3. **The showcase `TypeError` demo needs a `type: ignore`, which the Risks wording seemed
+   to ban.** Applied: the exact comment prescribed in step 11, the ban scoped to the
+   fields, class-level annotations settled as the field declaration.
+4. **The round 1 test changes were unspecified and the failure prediction wrong.** Applied:
+   step 14 names the two parameter cases that fail and spells out the rename, the moved
+   cases and the two `match=` additions.
+5. **Docstrings and `STRUCTURE.md` rows that become false were not in the guide.**
+   Applied to steps 7 and 12.
+6. **B2's "previous value unchanged" for `update` inputs had no test.** Applied: T4 now
+   covers the `TypeError` and overflow calls with the same state check.
+7. **The constructor order was reversed and the range message would report the converted
+   value.** Applied: `mode` first as today; `{value!r}` in the message.
+
 
 ---
 
