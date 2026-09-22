@@ -39,7 +39,7 @@ class HeatingMode(StrEnum):
     one is set) is translated into an actuator command.
 
     Attributes:
-        RADIATOR: Continuous modulation — the PI output is forwarded
+        RADIATOR: Continuous modulation — the demand level is forwarded
             directly to the valve driver.
         FLOOR_HEATING: Binary on/off derived from duty-cycle modulation
             over a rolling 2-hour window (24 samples × 5 min).
@@ -273,7 +273,7 @@ class PIController:
 
         Used by :meth:`_to_command` in floor-heating mode to decide
         whether the current slot should be ON or OFF so that the
-        long-run ON fraction converges to the target PI output.
+        long-run ON fraction converges to the target demand level.
 
         Returns:
             The mean of the history window, or ``0.0`` when the window

@@ -1,6 +1,6 @@
 # Fixed output override
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 
 | Field | Value |
@@ -21,8 +21,8 @@ conventional name `feat/fixed-output`.
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | in progress |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
+| 6 | Concept check | `/concept-check` | in `/build` | in progress |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -338,10 +338,97 @@ Conclusion: in sync. No edits required.
 
 > Written in step 5: the dynamic half.
 
+Two `test-designer` briefs (`input-space`, `contract`) were run in parallel by the
+orchestrator (this environment cannot spawn subagents from inside a subagent) and their
+output merged here: 15 cases each, deduplicated by what they proved, the sharper of any
+pair kept, every contradiction kept. 24 new test functions were written (115 cases
+collected for this file, up from the pre-round count once parametrization is expanded),
+all in `tests/test_pi_controller.py` under six new `# ---` sections, one per test intent.
+No existing test was modified or weakened.
+
 | Intent | Test names | Result |
 |---|---|---|
+| T1 (A1) | `test_fixed_output_defaults_to_none_and_unfixed_sequence_unchanged` | pass |
+| T2 (A2) | `test_fixed_output_radiator_returns_level_regardless_of_error`, `test_fixed_output_accepts_boundaries_at_construction_and_setter`, `test_fixed_output_set_mid_run_leaves_state_untouched_then_pins_every_command` | pass |
+| T3 (A3) | `test_fixed_output_floor_quarter_level_converges_to_exact_fraction`, `test_fixed_output_floor_boundary_levels_are_constant`, `test_fixed_output_floor_first_command_reads_history_before_append`, `test_fixed_output_floor_set_mid_run_reads_existing_history_first`, `test_fixed_output_floor_history_length_one_alternates`, `test_fixed_output_floor_level_just_above_min_fires_once_per_window`, `test_fixed_output_floor_level_just_below_max_rests_once_per_window` | pass |
+| T4 (A4) | `test_fixed_output_integral_matches_unfixed_twin_when_error_reverses`, `test_fixed_output_integral_matches_unfixed_twin_across_regimes`, `test_fixed_output_integral_matches_unfixed_twin_when_error_sequence_reverses`, `test_fixed_output_update_stores_setpoint_and_advances_integral`, `test_fixed_output_update_still_validates_and_appends_nothing` | pass |
+| T5 (A5) | `test_fixed_output_rejects_non_finite_and_out_of_range`, `test_fixed_output_failed_set_leaves_previous_value`, `test_fixed_output_string_raises_type_error_not_value_error`, `test_fixed_output_int_and_bool_stored_and_returned_as_float` | pass |
+| T6 (A6) | `test_fixed_output_release_returns_twin_command_and_keeps_both_in_history`, `test_fixed_output_floor_release_duty_cycle_recovers_over_one_window`, `test_fixed_output_reset_leaves_override_set` (both modes, parametrized), `test_fixed_output_set_and_cleared_while_saturated` | pass |
+
+All 405 tests pass (`349` pre-round + `56` new cases from the 24 functions above); no
+production bug was found — every hand-computed and twin-comparison expectation was
+independently verified against the shipped code before being written into an assertion,
+and matched on the first run. `ruff check .`, `ruff format --check .` and `mypy` are green
+without changes beyond the two docstring fixes below.
+
+Trivial docstring wording fix (outside the Public API table, as invited by the brief):
+`HeatingMode`'s `RADIATOR` attribute doc and `duty_cycle`'s docstring both still said
+"the PI output" after the plan renamed the concept to "demand level" everywhere else;
+reworded both to "the demand level" / "target demand level" in
+`src/heatingsystem/pi_controller/pi_controller.py`.
 
 Edge cases considered and deliberately skipped, with reasons:
+
+- **Negative zero, signed on the way back out** (input-space #14). Skipped: this is float
+  sign-propagation through `float(value)` and radiator pass-through, not a behaviour any
+  acceptance criterion decides or a caller could reasonably depend on either way; pinning
+  it would test CPython's float semantics, not this feature.
+- **A second "still validates, appends nothing" case covering the same combinations**
+  (input-space #11). Skipped as a duplicate of
+  `test_fixed_output_update_still_validates_and_appends_nothing`, which already covers a
+  bad `measured` alone and a bad `setpoint` alongside a good `measured`.
+- **A single test asserting boundary levels pass through in both modes at once**
+  (input-space #7). Skipped as a duplicate: the radiator half is
+  `test_fixed_output_accepts_boundaries_at_construction_and_setter`, the floor half is
+  `test_fixed_output_floor_boundary_levels_are_constant`.
+- **Constructor validation order — an invalid `mode` raising before an invalid
+  `fixed_output` is reached.** Skipped; both briefs flagged it themselves as low value, and
+  it tests an ordering the concept never assigned meaning to.
+- **The pre-existing `update` validation order — a `setpoint` is stored before `measured`
+  is validated.** Not this round's to change, per the brief. Considered rather than tested
+  as a defect: `test_fixed_output_update_still_validates_and_appends_nothing`'s cases are
+  deliberately chosen (bad `measured` alone, or bad `setpoint` with a *good* `measured`) so
+  no assertion depends on that order either way.
+- **Idempotency of `update`.** Skipped; `update` is stateful by design (advances the
+  integral, appends to history), so "same input twice" is not expected to give the same
+  output and asserting so would misdescribe the module.
+- **`duty_cycle` on an empty window / division by zero.** Already guarded and already
+  covered by the pre-existing suite (`test_construction_defaults` and others); not new
+  surface from this round.
+- **`Decimal` / `Fraction` values for `fixed_output`.** Skipped; `math.isfinite` accepts
+  them but nothing in this codebase ever passes one, and the setter's contract is stated in
+  terms of `float | None`.
+
+Other observations from the briefs, resolved:
+
+- **A5's "previous setting unchanged" is vacuous at construction** (no object exists to
+  compare against a "previous" value). `test_fixed_output_rejects_non_finite_and_out_of_range`
+  asserts the raise at both construction and via the setter;
+  `test_fixed_output_failed_set_leaves_previous_value` asserts the *unchanged* half only via
+  the setter, against both a numeric and a `None` previous value, matching the brief's own
+  resolution of this.
+- **The setter's `Raises:` section documents only `ValueError`, not the deliberate,
+  unguarded `TypeError` for a non-numeric value.** Left as-is: `kp`, `ki` and `setpoint`
+  follow the same convention already (a `TypeError` from `math.isfinite` on a non-numeric
+  value is possible but not documented), so this is consistent with the module's existing
+  style rather than a gap this round introduced.
+- **A correction to the plan's own Risks section.** "Integral equality (T4)" worried that a
+  substitution landing *before* the anti-windup block would silently change the integral.
+  On inspection the anti-windup branches test `raw` and `error`, never the demand `level`
+  handed to `_to_command` — so a wrongly-placed substitution could not, in fact, produce a
+  different committed integral by that specific mechanism.
+  `test_fixed_output_integral_matches_unfixed_twin_across_regimes` and its sibling tests
+  still catch a substituted `raw`, a skipped PI block, or a frozen integral; they just do
+  not distinguish those from a merely mislocated (but otherwise correct) substitution. Not
+  a halt — the implementation matches the plan exactly (verified in section 4), and the
+  twin-integral tests pass.
+- **Floor heating's first command after release is decided against a window still full of
+  the fixed commands, not against a clean PI-only history** (contract brief's observation,
+  case 7). `test_fixed_output_floor_release_duty_cycle_recovers_over_one_window` pins this:
+  the first released command is `1.0` precisely because the window is still all zeros from
+  the fixed period. This follows from the concept (history records what the actuator was
+  actually told to do) rather than contradicting it; flagged here for step 6's attention
+  when it reads A3 and A6 together.
 
 ---
 

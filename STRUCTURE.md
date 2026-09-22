@@ -134,6 +134,27 @@ fractional, half and full demand; `history` empty, growing, capped, ordered, a t
 snapshot; `duty_cycle` and `is_history_full` either side of the window filling; `reset`
 clearing every piece of state; and that the package imports without AppDaemon.
 
+`fixed_output`: that an unfixed controller's multi-step command sequence, integral and
+history match hand computation and `fixed_output` stays `None`; radiator `update` returning
+exactly the level regardless of measurement, setpoint or prior state, at construction and
+via the setter, including the `0.0`/`1.0` boundaries, and that setting it alone disturbs
+neither `history` nor `integral`; floor heating modulating the *fixed* level rather than the
+PI demand — an exact ON-slot pattern and duty cycle for a quarter level, the constant
+boundary levels, read-before-append on the first fixed command, re-reading existing history
+when set mid-run, a one-slot window alternating, and a level just inside either edge still
+firing or resting exactly once per window; that a fixed and an unfixed twin's `integral`
+match exactly across the linear region, both saturation directions held, and a reversing
+sequence, in both modes; that `update` still stores a passed setpoint and advances the
+integral while fixed, and still raises on a non-finite input without appending or mutating
+state; `ValueError` for every non-finite or out-of-range level — `nan`, `inf`, boundary
+neighbours, and values further out — at construction and via the setter, naming the value
+and leaving the previous setting (a number or `None`) unchanged; `TypeError` — deliberately
+unguarded — for a non-numeric level such as a string; `int` and `bool` levels stored and
+returned as `float`; clearing the override resuming an unfixed twin's exact command in
+radiator mode with both commands preserved in `history`, and floor heating's duty cycle
+recovering to the PI demand over one full window after release; and `reset` clearing the
+integral and history while leaving `fixed_output` set, in both modes.
+
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file
 found anywhere else.

@@ -1,6 +1,7 @@
 """Tests for the PIController and HeatingMode API."""
 
 import math
+import re
 
 import pytest
 
@@ -628,3 +629,430 @@ def test_history_maxlen_one() -> None:
     assert ctrl.history == (last,)
     assert len(ctrl.history) == 1
     assert ctrl.is_history_full
+
+
+# ---------------------------------------------------------------------------
+# fixed_output — T1: unfixed behaviour is unchanged (A1)
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_output_defaults_to_none_and_unfixed_sequence_unchanged() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    assert ctrl.fixed_output is None
+
+    outs = [ctrl.update(20.5) for _ in range(4)]  # constant error 0.5
+
+    # Hand-computed: raw = 0.3*0.5 + 0.015*integral, integral += 0.5 each step.
+    assert outs == pytest.approx([0.1575, 0.165, 0.1725, 0.18])
+    assert ctrl.integral == pytest.approx(2.0)
+    assert ctrl.history == tuple(outs)
+    assert ctrl.fixed_output is None
+
+
+# ---------------------------------------------------------------------------
+# fixed_output — T2: radiator mode returns exactly the level (A2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("measured", "setpoint"),
+    [(-50.0, None), (50.0, None), (21.0, None), (21.0, 30.0), (21.0, 10.0)],
+)
+def test_fixed_output_radiator_returns_level_regardless_of_error(
+    measured: float, setpoint: float | None
+) -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    ctrl.update(20.5)
+    ctrl.update(20.5)  # a couple of unfixed steps first
+
+    ctrl.fixed_output = 0.2
+    out = ctrl.update(measured, setpoint)
+
+    assert out == 0.2
+    assert ctrl.history[-1] == 0.2
+    assert len(ctrl.history) == 3
+    assert ctrl.fixed_output == 0.2
+    if setpoint is not None:
+        assert ctrl.setpoint == setpoint
+
+
+@pytest.mark.parametrize("level", [0.0, 1.0])
+def test_fixed_output_accepts_boundaries_at_construction_and_setter(
+    level: float,
+) -> None:
+    ctrl = hs.PIController(setpoint=21.0, fixed_output=level)
+    assert ctrl.fixed_output == level
+    assert ctrl.update(20.0) == level
+
+    ctrl2 = hs.PIController(setpoint=21.0)
+    ctrl2.fixed_output = level
+    assert ctrl2.fixed_output == level
+    assert ctrl2.update(20.0) == level
+
+
+def test_fixed_output_set_mid_run_leaves_state_untouched_then_pins_every_command() -> (
+    None
+):
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0, history_length=24)
+    for _ in range(3):
+        ctrl.update(15.0)  # large error, clamps to 1.0 and holds the integral
+    before_history = ctrl.history
+    before_integral = ctrl.integral
+
+    ctrl.fixed_output = 0.2  # setting alone must not run a step
+
+    assert ctrl.history == before_history
+    assert ctrl.integral == before_integral
+
+    outs = [ctrl.update(m) for m in (15.0, 21.0, 30.0)]
+    assert outs == [0.2, 0.2, 0.2]
+    last = ctrl.update(20.0, setpoint=25.0)
+    assert last == 0.2
+    assert ctrl.setpoint == 25.0
+    assert ctrl.history == (1.0, 1.0, 1.0, 0.2, 0.2, 0.2, 0.2)
+
+
+# ---------------------------------------------------------------------------
+# fixed_output — T3: floor-heating duty-cycle modulation (A3)
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_output_floor_quarter_level_converges_to_exact_fraction() -> None:
+    # At measured=-50 the PI demand would clamp to 1.0; fixed_output=0.25
+    # must modulate the *fixed* level instead, giving exactly 6 ON of 24.
+    ctrl = hs.PIController(
+        kp=0.3,
+        ki=0.015,
+        mode="floor_heating",
+        setpoint=21.0,
+        history_length=24,
+        fixed_output=0.25,
+    )
+    outs = [ctrl.update(-50.0) for _ in range(24)]
+
+    assert set(outs) <= {0.0, 1.0}
+    on_steps = [i + 1 for i, out in enumerate(outs) if out == 1.0]
+    assert on_steps == [1, 6, 10, 14, 18, 22]
+    assert ctrl.duty_cycle == pytest.approx(0.25)
+    assert ctrl.is_history_full
+
+    for _ in range(476):  # 500 steps total
+        ctrl.update(-50.0)
+    assert abs(ctrl.duty_cycle - 0.25) <= 1 / 24 + 1e-9
+
+
+@pytest.mark.parametrize(
+    ("level", "measured", "expected"), [(0.0, -50.0, 0.0), (1.0, 50.0, 1.0)]
+)
+def test_fixed_output_floor_boundary_levels_are_constant(
+    level: float, measured: float, expected: float
+) -> None:
+    ctrl = hs.PIController(mode="floor_heating", setpoint=21.0, fixed_output=level)
+    outs = [ctrl.update(measured) for _ in range(60)]
+    assert set(outs) == {expected}
+    assert ctrl.duty_cycle == pytest.approx(expected)
+
+
+def test_fixed_output_floor_first_command_reads_history_before_append() -> None:
+    ctrl = hs.PIController(mode="floor_heating", setpoint=21.0, fixed_output=0.5)
+    assert ctrl.duty_cycle == 0.0  # empty window, so the first slot fires
+
+    out = ctrl.update(50.0)
+
+    assert out == 1.0
+    assert ctrl.history == (1.0,)
+
+
+def test_fixed_output_floor_set_mid_run_reads_existing_history_first() -> None:
+    ctrl = hs.PIController(
+        kp=0.3, ki=0.015, mode="floor_heating", setpoint=21.0, history_length=24
+    )
+    for _ in range(24):
+        ctrl.update(-50.0)  # fills the window with ON, duty_cycle == 1.0
+
+    ctrl.fixed_output = 0.5
+    first = ctrl.update(-50.0)  # duty_cycle (1.0) is not < 0.5, so OFF
+    assert first == 0.0
+
+    for _ in range(47):
+        ctrl.update(-50.0)
+    assert abs(ctrl.duty_cycle - 0.5) <= 1 / 24 + 1e-9
+
+
+@pytest.mark.parametrize("level", [0.01, 0.3, 0.99])
+def test_fixed_output_floor_history_length_one_alternates(level: float) -> None:
+    # With a one-slot window any level strictly between 0 and 1 alternates:
+    # ON when the single stored sample (last command) is below the level.
+    ctrl = hs.PIController(
+        mode="floor_heating", setpoint=21.0, history_length=1, fixed_output=level
+    )
+    outs = [ctrl.update(20.0) for _ in range(6)]
+    assert outs == [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+
+
+def test_fixed_output_floor_level_just_above_min_fires_once_per_window() -> None:
+    level = math.nextafter(0.0, 1.0)
+    ctrl = hs.PIController(
+        mode="floor_heating", setpoint=21.0, history_length=24, fixed_output=level
+    )
+    outs = [ctrl.update(20.0) for _ in range(24)]
+    assert outs[0] == 1.0
+    assert all(out == 0.0 for out in outs[1:])
+    assert ctrl.duty_cycle == pytest.approx(1 / 24)
+
+
+def test_fixed_output_floor_level_just_below_max_rests_once_per_window() -> None:
+    level = math.nextafter(1.0, 0.0)
+    ctrl = hs.PIController(
+        mode="floor_heating", setpoint=21.0, history_length=24, fixed_output=level
+    )
+    outs = [ctrl.update(-50.0) for _ in range(24)]
+    assert outs.count(0.0) == 1
+    assert outs[1] == 0.0
+    assert ctrl.duty_cycle == pytest.approx(23 / 24)
+
+
+# ---------------------------------------------------------------------------
+# fixed_output — T4: the PI calculation still runs underneath (A4)
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_output_integral_matches_unfixed_twin_when_error_reverses() -> None:
+    # The risk called out in the plan: if anti-windup were keyed on the
+    # *issued* command rather than the raw PI output, a fixed 0.0 with a
+    # negative error would look saturated-low-and-worsening and wrongly hold.
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    twin = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    for _ in range(20):
+        ctrl.update(20.5)
+        twin.update(20.5)
+    assert ctrl.integral == pytest.approx(10.0)
+
+    ctrl.fixed_output = 0.0
+    out = ctrl.update(21.2)  # error now -0.2: room overshot the setpoint
+    twin.update(21.2)
+
+    assert out == 0.0
+    assert ctrl.integral == twin.integral
+
+
+@pytest.mark.parametrize(
+    "measured",
+    [20.5, 0.0, 40.0],
+    ids=["linear", "saturated_high_held", "saturated_low_held"],
+)
+@pytest.mark.parametrize("mode", ["radiator", "floor_heating"])
+def test_fixed_output_integral_matches_unfixed_twin_across_regimes(
+    mode: str, measured: float
+) -> None:
+    fixed = hs.PIController(
+        kp=0.3, ki=0.015, mode=mode, setpoint=21.0, fixed_output=0.4
+    )
+    free = hs.PIController(kp=0.3, ki=0.015, mode=mode, setpoint=21.0)
+    for _ in range(5):
+        fixed.update(measured)
+        free.update(measured)
+        assert fixed.integral == free.integral
+
+
+@pytest.mark.parametrize("mode", ["radiator", "floor_heating"])
+def test_fixed_output_integral_matches_unfixed_twin_when_error_sequence_reverses(
+    mode: str,
+) -> None:
+    sequence = [20.5] * 5 + [40.0] * 5 + [0.0] * 5
+    fixed = hs.PIController(
+        kp=0.3, ki=0.015, mode=mode, setpoint=21.0, fixed_output=0.4
+    )
+    free = hs.PIController(kp=0.3, ki=0.015, mode=mode, setpoint=21.0)
+    for measured in sequence:
+        fixed.update(measured)
+        free.update(measured)
+        assert fixed.integral == free.integral
+
+
+def test_fixed_output_update_stores_setpoint_and_advances_integral() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0, fixed_output=0.0)
+    out = ctrl.update(20.0, setpoint=21.5)
+    assert out == 0.0
+    assert ctrl.setpoint == 21.5
+    assert ctrl.integral == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(
+    ("measured", "setpoint"),
+    [
+        (float("nan"), None),
+        (float("inf"), None),
+        (20.0, float("nan")),
+        (20.0, float("-inf")),
+    ],
+)
+def test_fixed_output_update_still_validates_and_appends_nothing(
+    measured: float, setpoint: float | None
+) -> None:
+    ctrl = hs.PIController(setpoint=21.0, fixed_output=0.3)
+    with pytest.raises(ValueError):
+        ctrl.update(measured, setpoint)
+    assert ctrl.history == ()
+    assert ctrl.integral == 0.0
+    assert ctrl.setpoint == 21.0
+    assert ctrl.fixed_output == 0.3
+
+
+# ---------------------------------------------------------------------------
+# fixed_output — T5: invalid values raise and leave the setting alone (A5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        math.nextafter(0.0, -math.inf),
+        math.nextafter(1.0, math.inf),
+        -1e-9,
+        1.0 + 1e-9,
+        2,
+        -1,
+    ],
+)
+def test_fixed_output_rejects_non_finite_and_out_of_range(bad: float) -> None:
+    with pytest.raises(ValueError, match=re.escape(repr(bad))):
+        hs.PIController(fixed_output=bad)
+
+    ctrl = hs.PIController()
+    with pytest.raises(ValueError, match=re.escape(repr(bad))):
+        ctrl.fixed_output = bad
+
+
+def test_fixed_output_failed_set_leaves_previous_value() -> None:
+    ctrl = hs.PIController(fixed_output=0.4)
+    with pytest.raises(ValueError):
+        ctrl.fixed_output = 1.5
+    assert ctrl.fixed_output == 0.4
+
+    with pytest.raises(TypeError):
+        ctrl.fixed_output = "0.5"  # type: ignore[assignment]  # deliberate misuse
+    assert ctrl.fixed_output == 0.4
+
+    ctrl2 = hs.PIController()
+    with pytest.raises(ValueError):
+        ctrl2.fixed_output = float("nan")
+    assert ctrl2.fixed_output is None
+
+
+@pytest.mark.parametrize("bad", ["0.5", "", "unavailable", "None"])
+def test_fixed_output_string_raises_type_error_not_value_error(bad: str) -> None:
+    with pytest.raises(TypeError):
+        hs.PIController(fixed_output=bad)  # type: ignore[arg-type]  # deliberate misuse
+
+    ctrl = hs.PIController(fixed_output=0.4)
+    with pytest.raises(TypeError):
+        ctrl.fixed_output = bad  # type: ignore[assignment]  # deliberate misuse
+    assert ctrl.fixed_output == 0.4
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(1, 1.0), (0, 0.0), (True, 1.0), (False, 0.0)]
+)
+def test_fixed_output_int_and_bool_stored_and_returned_as_float(
+    value: int, expected: float
+) -> None:
+    ctrl = hs.PIController(setpoint=21.0, fixed_output=value)
+    assert ctrl.fixed_output == expected
+    assert type(ctrl.fixed_output) is float
+    out = ctrl.update(20.0)
+    assert out == expected
+    assert type(out) is float
+
+    ctrl2 = hs.PIController(setpoint=21.0)
+    ctrl2.fixed_output = value
+    assert ctrl2.fixed_output == expected
+    assert type(ctrl2.fixed_output) is float
+
+
+# ---------------------------------------------------------------------------
+# fixed_output — T6: clearing hands control back, reset leaves it set (A6)
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_output_release_returns_twin_command_and_keeps_both_in_history() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0, fixed_output=0.9)
+    twin = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    for _ in range(3):
+        ctrl.update(20.5)
+        twin.update(20.5)
+
+    ctrl.fixed_output = None
+    released = ctrl.update(20.5)
+    twin_out = twin.update(20.5)
+
+    assert released == twin_out
+    assert ctrl.history == (0.9, 0.9, 0.9, released)
+    assert ctrl.integral == twin.integral
+    assert ctrl.fixed_output is None
+
+
+def test_fixed_output_floor_release_duty_cycle_recovers_over_one_window() -> None:
+    ctrl = hs.PIController(
+        kp=0.5,
+        ki=0.0,
+        mode="floor_heating",
+        setpoint=21.0,
+        history_length=24,
+        fixed_output=0.0,
+    )
+    for _ in range(24):
+        ctrl.update(20.0)  # PI demand is constant 0.5 throughout
+    assert ctrl.duty_cycle == 0.0
+
+    ctrl.fixed_output = None
+    first_released = ctrl.update(20.0)
+    assert first_released == 1.0  # window is still all zeros, so duty < 0.5
+
+    for _ in range(23):
+        ctrl.update(20.0)
+    assert ctrl.duty_cycle == pytest.approx(0.5)
+    assert ctrl.is_history_full
+
+
+@pytest.mark.parametrize(
+    ("mode", "level", "first_after_reset"),
+    [("radiator", 0.3, 0.3), ("floor_heating", 0.5, 1.0)],
+)
+def test_fixed_output_reset_leaves_override_set(
+    mode: str, level: float, first_after_reset: float
+) -> None:
+    ctrl = hs.PIController(
+        kp=0.3, ki=0.015, mode=mode, setpoint=21.0, fixed_output=level
+    )
+    for _ in range(3):
+        ctrl.update(20.5)
+
+    ctrl.reset()
+
+    assert ctrl.integral == 0.0
+    assert ctrl.history == ()
+    assert ctrl.fixed_output == level
+
+    out = ctrl.update(-50.0)
+    assert out == first_after_reset
+
+
+def test_fixed_output_set_and_cleared_while_saturated() -> None:
+    ctrl = hs.PIController(kp=0.5, ki=0.02, setpoint=21.0)
+    saturated = ctrl.update(19.0)  # error 2.0, clamps to 1.0, integral held at 0
+
+    ctrl.fixed_output = 0.1
+    fixed_command = ctrl.update(19.0)
+
+    ctrl.fixed_output = None
+    resumed = ctrl.update(19.0)
+
+    assert saturated == 1.0
+    assert fixed_command == 0.1
+    assert resumed == 1.0
+    assert ctrl.history == (1.0, 0.1, 1.0)
+    assert ctrl.integral == 0.0
