@@ -169,46 +169,145 @@ and after `reset()`; `mode`'s setter coerces exactly as the constructor does;
 
 ## 2. Plan
 
-> Written in step 2, accepted by the user before step 3 starts. Concrete enough that
-> step 3 is transcription, not invention.
-
 ### Approach
 
-One paragraph on the chosen approach, and one on what was rejected and why.
+**Chosen — one private check, five properties, one new read-only.** A private helper
+takes an attribute name and a value and returns it as a `float`, raising `TypeError` when
+the value is a `bool` or not an `int`/`float` and `ValueError` when it is not finite, with
+both messages naming the attribute and repeating the value. `kp`, `ki` and `setpoint`
+become properties whose setters call it; `fixed_output`'s setter calls it too before its
+range check, which replaces the bare `TypeError` from `math.isfinite`; `mode`'s setter
+coerces through `HeatingMode(value)` and raises `ValueError` naming `mode` for anything
+the enum rejects. The constructor assigns every setting through its property, so it loses
+its own checks and the two paths cannot disagree. `update` runs `measured` through the
+helper first, then assigns a passed setpoint through the setter, so nothing is stored
+until both are known good. A private field holds the clamped PI result of the last step and
+a read-only `pi_output` property exposes it; `reset()` sets it back to `None`. The two
+constants are added to both `__init__.py` files and their `__all__`.
+
+**Rejected — a descriptor class** (`_FiniteFloat` assigned as a class attribute for each
+setting): removes four near-identical property pairs, but the reader then has to know the
+descriptor protocol to see where validation happens, and `fixed_output` (optional, ranged)
+and `mode` (an enum) would each need their own descriptor anyway, so it saves less than it
+looks. **Rejected — inline checks in each setter**: the current style, six copies of the
+finite check; it is exactly what R4 asked to remove.
 
 ### Modules
 
 | Path | New or changed | Purpose |
 |---|---|---|
+| `src/heatingsystem/pi_controller/pi_controller.py` | changed | Private finite-number helper; `kp`, `ki`, `setpoint`, `mode` as properties; `fixed_output` setter rejecting non-numbers with the attribute name; `pi_output`; constructor and `update` assigning through the setters; `reset` clearing `pi_output`; docstrings; showcase |
+| `src/heatingsystem/pi_controller/__init__.py` | changed | Re-export `OUTPUT_MIN` and `OUTPUT_MAX` |
+| `src/heatingsystem/__init__.py` | changed | Re-export `OUTPUT_MIN` and `OUTPUT_MAX` |
+| `tests/test_pi_controller.py` | changed | New section for B1–B7; two round 1 tests updated as section 1 says |
+| `STRUCTURE.md` | changed | Constructor row, new property rows, `update`/`reset`/`main()` rows, both `__init__` export tables, the test-file paragraph |
+| `README.md` | changed | Two lines showing `pi_output` beside the fixed output, and `hs.OUTPUT_MAX` in the range comment |
 
 ### Public API
 
-> Every public class and function, with its full signature as it will be written.
-> `Covers` links back to the acceptance criteria above.
-
 | Signature | Module | Purpose | Covers |
 |---|---|---|---|
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | `pi_controller.py` | Unchanged signature. Assigns `mode`, `kp`, `ki`, `setpoint` and `fixed_output` through their setters, in that order after the `history_length` check, so the constructor raises exactly what the setters raise. | B7 |
+| `PIController.kp -> float` / setter `(value: float) -> None` | `pi_controller.py` | Proportional gain. Setter: finite real number, `bool` rejected. | B1, B2 |
+| `PIController.ki -> float` / setter `(value: float) -> None` | `pi_controller.py` | Integral gain. Same contract. | B1, B2 |
+| `PIController.setpoint -> float` / setter `(value: float) -> None` | `pi_controller.py` | Target temperature. Same contract; also the path a per-call setpoint in `update` takes. | B1, B2, B4 |
+| `PIController.mode -> HeatingMode` / setter `(value: HeatingMode \| str) -> None` | `pi_controller.py` | Actuator mode. Setter coerces with `HeatingMode(value)`; raises `ValueError` naming `mode` and listing the valid values for anything else. | B3 |
+| `PIController.fixed_output -> float \| None` / setter `(value: float \| None) -> None` | `pi_controller.py` | As round 1, plus: a non-numeric or `bool` value raises `TypeError` naming `fixed_output`. | B1, B2 |
+| `PIController.pi_output -> float \| None` | `pi_controller.py` | Read-only. The clamped PI result of the last `update`, in `[OUTPUT_MIN, OUTPUT_MAX]`; `None` before the first update and after `reset()`. Reports the PI result even while `fixed_output` is set. | B5 |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | `pi_controller.py` | Unchanged signature. Validates `measured` through the helper, then assigns `setpoint` through its setter, then computes; records `pi_output` after the clamp. A raise leaves every attribute as it was. | B2, B4, B5 |
+| `PIController.reset() -> None` | `pi_controller.py` | Unchanged signature. Now also sets `pi_output` to `None`; still leaves `fixed_output` and the settings alone. | B5 |
+| `OUTPUT_MIN`, `OUTPUT_MAX` re-exported from `heatingsystem` and `heatingsystem.pi_controller` | both `__init__.py` | The same objects as the module constants, listed in `__all__`. | B6 |
+| `main() -> None` | `pi_controller.py` | Showcase gains: `pi_output` printed beside the command during the fixed steps, one `mode` reassignment, and one `TypeError` demo (`setpoint = "22"`). | — (showcase) |
+
+`integral` stays a plain public attribute and `history_length` stays constructor-only, per
+section 1. `HeatingMode`, `history`, `duty_cycle`, `is_history_full` are unchanged.
 
 ### Implementation guide
 
-Ordered. Each entry small enough to finish and check.
-
-1.
-2.
+1. Add a module-level private helper `_finite(name: str, value: object) -> float` above
+   `HeatingMode`: if `isinstance(value, bool)` or not `isinstance(value, (int, float))`,
+   raise `TypeError(f"{name} must be a real number, got {value!r} ({type(value).__name__}).")`;
+   if `not math.isfinite(value)`, raise `ValueError(f"{name} must be a finite number, got {value!r}.")`;
+   return `float(value)`. Google docstring with `Raises:`.
+2. Replace the `kp`, `ki`, `setpoint` plain attributes with private fields `_kp`, `_ki`,
+   `_setpoint` and property pairs under the *Properties* section (getter returns the field;
+   setter stores `_finite("<name>", value)`). Keep the getters' docstrings one line each and
+   put the contract in the setter's `Raises:`.
+3. Replace `mode` with `_mode` and a property pair: getter returns the enum; setter does
+   `try: self._mode = HeatingMode(value) except ValueError as exc: raise ValueError(f"mode must be a HeatingMode or one of {[m.value for m in HeatingMode]}, got {value!r}.") from exc`.
+   The existing test matches on the word `mode`, which this keeps.
+4. In the `fixed_output` setter, after the `None` branch, replace the `math.isfinite`
+   check with `level = _finite("fixed_output", value)` and range-check `level`, keeping the
+   existing `ValueError` message for the range case; store `level`. Update its docstring:
+   `TypeError` is now raised and named, `bool` rejected.
+5. Add `self._pi_output: float | None = None` to the constructor's state block and a
+   read-only `pi_output` property after `is_history_full`, docstring saying what it is and
+   when it is `None`.
+6. Rewrite the constructor body: `if history_length < 1: raise ValueError(...)` as now,
+   then `self.mode = mode`, `self.kp = kp`, `self.ki = ki`, `self.setpoint = setpoint`,
+   the state block (`integral`, `_history`, `_pi_output`, `_fixed_output = None`), then
+   `self.fixed_output = fixed_output`. Delete the old inline checks. mypy needs the
+   private fields declared with types before the first property assignment; declare them
+   at class level as annotations (`_kp: float`, etc.) or assign through the setters after
+   annotating in `__init__`, whichever mypy accepts cleanly, and keep whichever is used
+   consistent across all five.
+7. In `update`: replace the two validation blocks with `measured = _finite("measured", measured)`
+   first, then `if setpoint is not None: self.setpoint = setpoint`. After the clamp line
+   (`u = ...`), add `self._pi_output = u`. Nothing else in `update` changes; the
+   substitution and anti-windup block stay byte-identical.
+8. In `reset`, add `self._pi_output = None` and mention it in the docstring.
+9. Update the class docstring: `Raises:` gains the `TypeError` line, the `Args:` say
+   `bool` is rejected; note that every setting is a validating property.
+10. Both `__init__.py`: import and list `OUTPUT_MIN`, `OUTPUT_MAX` in `__all__`.
+11. Showcase: in the fixed-output block print `pi_output` on each fixed step's line;
+    after the floor-heating run, add a case in showcase form that reassigns `mode` on the
+    radiator controller and prints one command; in the `ValueError` demo block add a
+    `TypeError` demo in showcase form (`bad_setpoint = "22"` on its own line, then the
+    assignment inside `try`, printing the message).
+12. `STRUCTURE.md`: replace "Public attributes: `kp`, `ki`, `mode`, `setpoint`, `integral`"
+    with the property rows; add `pi_output`; update `update`, `reset`, `main()` rows; add
+    the constants to both `__init__` sections; extend the test-file paragraph.
+13. README: in the fixed-output block add `print(radiator.pi_output)` with a comment that
+    it is the PI demand the loop would have issued; change the range comment on
+    `fixed_output` to name `hs.OUTPUT_MIN` and `hs.OUTPUT_MAX`.
+14. Run `ruff check .`, `ruff format --check .`, `mypy`,
+    `python -m heatingsystem.pi_controller.pi_controller`; the existing suite will fail on
+    exactly the two round 1 tests section 1 names (`bool` stored as float; bare
+    `TypeError`) until step 5 updates them — that is expected and is not a gate failure
+    for step 4, which runs the static checks only.
 
 ### Test intents
 
-> High-level: what a test must prove, not how it is written. Step 5 turns each of these
-> into concrete cases, including the edge cases.
-
 | # | Must prove | Covers |
 |---|---|---|
-| T1 | | |
+| T1 | For each of `kp`, `ki`, `setpoint`: `nan`, `inf`, `-inf` raise `ValueError` whose message contains the attribute name and `repr(value)`, via the setter and as the constructor keyword, and the setter leaves the previous value. For `fixed_output`: the round 1 range cases still raise with the previous value kept. | B1 |
+| T2 | For each of `kp`, `ki`, `setpoint`, `fixed_output`: a `str`, `None` (except `fixed_output`, where it clears), a `list`, `True` and `False` raise `TypeError` whose message names the attribute, via the setter and at construction, leaving the previous value. `update(True)`, `update("20")`, `update(20.0, setpoint=False)` and `update(20.0, setpoint="22")` raise `TypeError` naming `measured` or `setpoint`. An `int` is still accepted and read back as `float`. | B2 |
+| T3 | `mode` accepts each enum member and each string value and reads back the enum; after switching a radiator controller to floor heating, the next command is binary; an unknown string, an `int` and `None` raise `ValueError` naming `mode` and listing the valid values, leaving the previous mode. | B3 |
+| T4 | After `update(nan, setpoint=22.0)`, `update("x", setpoint=22.0)` and `update(20.0, setpoint=nan)` on a controller with prior state (a few good steps, then optionally `fixed_output` set), `setpoint`, `integral`, `history` and `pi_output` all equal their values before the failed call. | B4 |
+| T5 | `pi_output` is `None` on a fresh controller; after one hand-computed step in the linear region it equals the clamped PI result; in saturation it is `1.0` or `0.0`; while `fixed_output` is set it equals an unfixed twin's radiator command for the same measurements, not the fixed level, and in floor mode it is the fractional demand rather than the binary command; it is `None` after `reset()`; assigning to it raises `AttributeError`. | B5 |
+| T6 | `hs.OUTPUT_MIN is pi_controller.OUTPUT_MIN` and likewise for `OUTPUT_MAX`, both from the package root and from the subpackage, and both names are in each `__all__`. | B6 |
+| T7 | Every constructor case the existing suite already covers (invalid mode string, `history_length` 0 and negative, `nan`/`inf` gains and setpoint) still raises `ValueError`, and its message now contains the attribute name; the whole pre-existing suite passes with only the two round 1 tests named in section 1 changed. | B7 |
 
 ### Risks
 
-What could make this harder than it looks, and what the build should do if it does —
-including whether it should halt.
+- **The two round 1 tests that must change.** `test_fixed_output_int_and_bool_stored_and_returned_as_float`
+  asserts `True` is stored as `1.0`, which B2 forbids; the string test asserts a bare
+  `TypeError`, which still passes but should match the new message. Step 5 updates them and
+  records why in the test log. Deleting either, or any other existing test, is not
+  permitted. Not a halt.
+- **mypy and the private fields.** Assigning through a property setter inside `__init__`
+  before the backing field exists is fine at runtime, but mypy wants the field's type
+  declared; class-level annotations do that without giving the fields values. If mypy
+  still objects, declare and assign the fields directly in `__init__` and then call the
+  setters; do not add `type: ignore`. Not a halt.
+- **`int` remains accepted.** `isinstance(value, (int, float))` with the `bool` check first
+  keeps `0` and `1` working for `fixed_output` as round 1 promised. A test that passes a
+  `numpy` float would fail the `isinstance`; no caller does, and section 1 says real number,
+  so it is out of scope. Not a halt.
+- **Order of constructor errors.** With several bad arguments the first raised is the first
+  assigned. No test may depend on that order; one bad argument per case.
+- **Anything that changes the PI arithmetic** is out of scope; if step 3 finds it cannot
+  place `self._pi_output = u` without touching the anti-windup block, **halt**.
 
 ---
 
