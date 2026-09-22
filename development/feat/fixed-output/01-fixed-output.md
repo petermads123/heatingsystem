@@ -517,12 +517,25 @@ onward left its own commit; none is missing.
 
 ## 8. Recommendations
 
-> Written in step 8. Follow-up work this change makes possible or desirable. Not bugs —
-> a bug found here goes back through `/build` before the pull request.
+Three `brainstormer` lenses read the finished round in parallel (`user`, `maintainer`,
+`integrator`); their lists are merged and ranked below by value to the product. The
+build halted on nothing and section 3 records no deviation, so the orchestrator's own
+angle added nothing. Two cosmetic defects the lenses found were fixed under
+`/small-change` before this list was written, not deferred: the README said a per-call
+setpoint is not stored (it is), and the new showcase case used inline literals and a
+hard-coded label.
 
 | # | Recommendation | Why it helps | Effort | Decision |
 |---|---|---|---|---|
-| R1 | | | | |
+| R1 | Expose the PI demand the controller computes and discards while fixed, as a read-only property (e.g. `pi_output`, the clamped `u` of the last `update`). | While held, the only things that leave the controller are the fixed command and the raw integral. A Home Assistant dashboard showing "demand vs actual", or an automation releasing the hold early because demand is near zero anyway, must recompute the PI result by hand today. Two lenses (user, integrator) asked for it independently. | small | |
+| R2 | Add an override window to the `test.py` simulation and a README paragraph on what happens at release. | The concept deferred the simulation to a later round. The key step 1 decision (integral keeps advancing) has a visible consequence nobody has plotted yet: the radiator jumps to the accumulated demand on release, and floor heating fires several slots in a row because the window is full of zeros. Neither is documented for the caller, nor the one-line remedy (`reset()` on release) if the burst is unwanted. Two lenses asked for it. | small–medium | |
+| R3 | A serialisable state snapshot and restore covering `integral`, `history`, `setpoint`, `mode` and `fixed_output`, for the AppDaemon caller to persist across reloads. | AppDaemon reloads the app on every code change and HA restart, and the controller lives in process memory. A reload during a price spike silently constructs a fresh controller with `fixed_output=None` and opens the valve at full demand while prices are high. This round turned a pre-existing gap (losing the integral) into a costly one (losing the override). | medium | |
+| R4 | One numeric-input contract for the whole controller: validating properties for `setpoint`, `kp`, `ki` and `mode` like `fixed_output` has; `update` validating both inputs before storing either; `bool` rejected and the non-numeric `TypeError` naming the attribute; one shared finite-check helper. | This round put a second validation style beside the first. `ctrl.setpoint = nan` is accepted today and silently pins the valve at full; `ctrl.mode = "radiator"` (a str) silently routes to floor modulation; `update(nan, setpoint=22.0)` raises and still stores 22.0, which this round stepped around rather than fixed; `fixed_output = True` stores 1.0, the opposite of "hold". The finite check is written six times. Maintainer and user lenses, merged. | medium | |
+| R5 | A `max_output` ceiling that bounds the PI result instead of replacing it. | The stated use is "hold the valve low or closed during a price spike", but a fixed 0.2 forces 20 % heat into a room that is already warm when the loop would have asked for 0. A cap gives the cost protection without paying for unneeded heat, and `max_output = 0.0` coincides with `fixed_output = 0.0` for the "shut" case. User lens; a sibling feature to this one, not a replacement. | medium | |
+| R6 | Re-export `OUTPUT_MIN` and `OUTPUT_MAX` from the package root. | `fixed_output` is the first caller-supplied input bounded by the actuator range, and the error message names the constants, but an AppDaemon app that clamps an `input_number` or configures a slider's range must reach into the module the README says not to reach into. Integrator lens. | small | |
+| R7 | Split the actuator mapping (`mode`, the history window, `duty_cycle`, `is_history_full`, `fixed_output`, `_to_command`) into a modulator object that `PIController` composes and any future model can reuse. | Nothing in that code is PI-specific, and the second model the repo plans for would otherwise copy the duty-cycle modulation and the override or go without them. The override made the seam visible: it sits exactly where "demand level" becomes "actuator command". Integrator lens. | large | |
+| R8 | Loosen the four floor-heating tests that pin the exact firing schedule (which slots fire) to the count-and-bound assertions that already prove A3, or relabel them as modulator tests. | A3 says the duty cycle converges; the schedule is the private `duty_cycle < level` rule. Any change to the modulator (hysteresis, minimum on-time) breaks tests filed under `fixed_output` that have nothing to do with the override. **Lenses disagree**: step 5's designers pinned the schedule deliberately as the sharpest evidence that the fixed level, not the PI demand, is being modulated. | small | |
+| R9 | Document constructor arguments once: keep `Args:`/`Raises:` on the class docstring and reduce `__init__`'s to one line. | Every argument is described in two places with two phrasings, and the next one will be added to one and forgotten in the other; Ruff cannot see it. Maintainer lens; a `/small-change`. | small | |
 
 Decisions: `deferred`, `rejected`, or `next round` — a new numbered file in this folder,
 taken back through steps 1 to 7 on the same branch.
