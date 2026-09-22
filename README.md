@@ -38,7 +38,7 @@ measured_temp = 19.5  # e.g. read from a sensor entity
 output = radiator.update(measured_temp)
 print(f"Radiator valve: {output:.2f}")  # e.g. 0.46
 
-# Override the setpoint for a single call (does not change the stored setpoint):
+# Pass a new setpoint with the call; it replaces the stored setpoint from here on:
 output = radiator.update(measured_temp, setpoint=22.0)
 
 # Inspect the last 24 issued commands (oldest first) and the mean ON-fraction:

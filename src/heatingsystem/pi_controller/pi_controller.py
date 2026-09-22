@@ -431,18 +431,20 @@ def main() -> None:
     # Demonstrate the fixed_output override.
     print("\n  -- fixed_output override --")
     fixed_level = 0.2
+    fixed_steps = 3
+    cold_temp = 18.0
 
     ctrl_rad.fixed_output = fixed_level
 
-    for i in range(3):
-        cmd = ctrl_rad.update(measured=18.0)
+    for i in range(fixed_steps):
+        cmd = ctrl_rad.update(measured=cold_temp)
         print(
             f"  fixed step {i + 1}: command={cmd:.4f}  integral={ctrl_rad.integral:.4f}"
         )
     print(f"  fixed_output    : {ctrl_rad.fixed_output}")
 
     ctrl_rad.fixed_output = None
-    cmd = ctrl_rad.update(measured=18.0)
+    cmd = ctrl_rad.update(measured=cold_temp)
     print(
         f"  fixed_output    : {ctrl_rad.fixed_output}  (released -> PI result: {cmd:.4f})"
     )
@@ -507,7 +509,7 @@ def main() -> None:
     try:
         PIController(fixed_output=bad_level)
     except ValueError as exc:
-        print(f"  fixed_output=1.5 -> ValueError: {exc}")
+        print(f"  fixed_output={bad_level} -> ValueError: {exc}")
 
     # Non-finite measurement.
     try:
