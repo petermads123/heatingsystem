@@ -1,6 +1,6 @@
 # Fixed output override
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 
 | Field | Value |
@@ -23,8 +23,8 @@ conventional name `feat/fixed-output`.
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | in progress |
-| 8 | Recommend | `/recommend` | with the user | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
+| 8 | Recommend | `/recommend` | with the user | in progress |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
 
@@ -478,10 +478,40 @@ Not applicable — this is round 1 of `feat/fixed-output`, the first round on th
 
 ## 7. Ship log
 
+> Written in step 7. Gates re-run on the whole tree; the round's commits reviewed for
+> anything that should not be there.
+
+| Check | Result |
+|---|---|
+| `ruff check .` | `All checks passed!` |
+| `ruff format --check .` | `38 files already formatted` |
+| `mypy` | `Success: no issues found in 13 source files` |
+| `pytest` | `405 passed in 5.36s` |
+| `python -m heatingsystem.pi_controller.pi_controller` | ran clean, exit 0; `fixed_output` demo and `bad_level` `ValueError` demo both present in the output, as recorded in section 4 |
+
+Plan file cross-check: steps 1–6 all marked `done`, section 6's criteria table has all six
+rows `Met = Yes` with evidence, section 5's intent table has a test group against every one
+of T1–T6. Nothing unmet to send back.
+
+Diff review (`git diff 7ba0fba..HEAD`, the round's changes since the branch left `main`):
+touches exactly five files — `src/heatingsystem/pi_controller/pi_controller.py`,
+`tests/test_pi_controller.py`, `STRUCTURE.md`, `README.md`, and this plan file. No stray
+files, no debug prints, no commented-out code, no secrets (`git diff 7ba0fba..HEAD | grep`
+for API-key/secret/password/token patterns: no hits), no `.claude/.skip-gate` file, no
+weakened or deleted test. `STRUCTURE.md`'s new and changed rows (`PIController` constructor,
+the new `fixed_output` row, `update`'s and `reset`'s descriptions, `main()`'s row, the test
+paragraph) match the shipped code and name no private symbol (`_fixed_output`,
+`_to_command`). The "PI output" wording that remains in the module (`HeatingMode`'s
+docstring intro, `update`'s anti-windup comment, `_to_command`'s docstring) is deliberate,
+not stale: two describe "the demand level (the PI output, or the fixed output when one is
+set)" and the third refers specifically to the raw PI value the anti-windup keys on, which
+is unchanged by this round and correctly still called that. Every step from Implement
+onward left its own commit; none is missing.
+
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits (this round, after merge commit `7ba0fba`) | `b394e06` Add fixed_output override to PIController (Implement) · `eb7e671` Verify: Fixed output override (Verify) · `28a66aa` Test: fixed output override (Test) · `0a4c4db` Concept check: Fixed output override (Concept check) · this commit, Ship: Fixed output override (Ship) |
+| Pushed to | `origin/claude/festive-maxwell-xft6pj` |
 
 ---
 
