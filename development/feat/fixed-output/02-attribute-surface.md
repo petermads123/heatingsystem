@@ -1,6 +1,6 @@
 # Attribute surface: validated settings, PI demand, range constants
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 | Field | Value |
 |---|---|
@@ -21,8 +21,8 @@ conventional name `feat/fixed-output`.
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
-| 6 | Concept check | `/concept-check` | in `/build` | in progress |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
+| 7 | Ship | `/ship` | in `/build` | in progress |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -694,11 +694,100 @@ Edge cases considered and deliberately skipped, with reasons:
 > Written in step 6, against section 1 — not against section 2. The question is whether
 > the thing built is the thing agreed, not whether it matches the plan.
 
+All four gates re-run clean on the current tree: `ruff check .` → `All checks passed!`;
+`ruff format --check .` → `39 files already formatted`; `mypy` → `Success: no issues found
+in 13 source files`; `pytest` → `525 passed` (matches step 5's log exactly, 0 failed).
+`python -m heatingsystem.pi_controller.pi_controller` ran clean, exit 0, only the expected
+`sys.modules` `RuntimeWarning`.
+
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| B1 | Yes | `ctrl.kp = float("nan")` raised `ValueError: kp must be a finite number, got nan.` and left `ctrl.kp` at its previous value (verified live). `test_numeric_setters_reject_non_finite_naming_attribute_and_keep_previous` parametrizes `nan`/`inf`/`-inf` across `kp`/`ki`/`setpoint`; `test_fixed_output_rejects_non_finite_and_out_of_range` and `test_fixed_output_range_error_repeats_the_passed_value_not_the_float` cover `fixed_output`'s non-finite and out-of-range cases, the latter proving the message repeats the caller's original value. `pi_controller.py:329-388` (the three setters) all route through `_finite`; `pi_controller.py:475-481` (`fixed_output`'s range check) likewise. |
+| B2 | Yes | `ctrl.setpoint = True` raised `TypeError: setpoint must be a real number, got True (bool).`, previous value unchanged (verified live). `test_numeric_setters_reject_non_real_types_naming_attribute_and_type` covers 12 wrong types × 3 attributes including `bool`; `test_fixed_output_bool_raises_type_error_naming_attribute_and_keeps_previous` and `test_fixed_output_rejects_non_real_types_naming_attribute` cover `fixed_output`; `test_update_measured_rejects_non_numeric_and_bool_naming_measured` and `test_update_setpoint_kwarg_rejects_non_numeric_and_bool_naming_setpoint` cover `update`'s two parameters. `_finite` (`pi_controller.py:60-63`) is the single `isinstance(value, bool) or not isinstance(value, numbers.Real)` gate every one of these routes through. |
+| B3 | Yes | `ctrl.mode = "nonsense"` raised `ValueError: mode must be a HeatingMode or one of ['radiator', 'floor_heating'], got 'nonsense'.`, previous mode unchanged (verified live). `test_mode_string_is_stored_as_enum_member_not_str`, `test_mode_switch_radiator_to_floor_next_command_is_binary`, `test_mode_switch_floor_to_radiator_next_command_is_continuous` and `test_mode_rejects_everything_else_with_value_error_listing_valid_values` cover acceptance of the enum and its string value, storage as the enum, and rejection of everything else. `pi_controller.py:305-322`. |
+| B4 | Yes | Live check: after one good `update`, `update(nan)` raised and `(setpoint, integral, history, pi_output)` compared equal before/after. `test_update_failed_call_leaves_every_piece_of_state_untouched` parametrizes 8 malformed-input cases × fixed/unfixed controllers; `test_update_failed_call_does_not_consume_a_step` confirms the history length itself is untouched. `measured = _finite(...)` runs first in `update` (`pi_controller.py:229`), before any state is touched, matching the plan and the criterion. |
+| B5 | Yes | Live checks: fresh controller `pi_output is None`; with `fixed_output=0.0` and a cold measurement, `update` returned `0.0` (the fixed level) while `pi_output` read `1.0` (the saturated PI demand) — demand and actual clearly diverge; after `reset()`, `pi_output` is `None` again. A floor-mode case in the linear region (`fixed_output=0.3`, `kp=0.3, ki=0.0`, `measured=20.0` against `setpoint=21.0`) returned the binary command `1.0` while `pi_output` read the fractional demand `0.3` exactly — proving B5's "fractional demand, not binary command" clause, not just a saturated coincidence. `test_pi_output_none_then_value_across_fix_release_and_reset`, `test_pi_output_is_exactly_clamp_bound_in_saturation`, `test_pi_output_at_exact_clamp_edges_holds_the_integral`, `test_pi_output_reports_pi_demand_not_fixed_level_while_fixed`, `test_pi_output_reports_fractional_demand_not_binary_command_in_floor_mode`, `test_pi_output_is_read_only` (also verified live: assigning `ctrl.pi_output = 0.5` raises `AttributeError: property 'pi_output' of 'PIController' object has no setter`). |
+| B6 | Yes | Live check: `hs.OUTPUT_MIN is pi_controller.OUTPUT_MIN` and `hs.OUTPUT_MAX is pi_controller.OUTPUT_MAX` both `True`. `src/heatingsystem/__init__.py` and `src/heatingsystem/pi_controller/__init__.py` both import and list both constants in `__all__`. `test_output_constants_at_package_root_are_the_module_objects`. |
+| B7 | Yes, with one judged exception (below) | `test_constructor_and_setter_raise_identical_error_for_same_value` and `test_every_pre_round_1_constructor_case_still_raises_value_error_with_attribute` cover the class-and-message continuity directly. Every pre-round-1 constructor failure case (invalid mode string, `history_length` 0/negative, non-finite gains/setpoint) still raises the same class it always did, now naming the attribute — confirmed in the showcase output (`Bad mode -> ValueError: mode must be...`, `Infinite kp -> ValueError: kp must be a finite number, got inf.`, `history_length=0 -> ValueError: history_length must be >= 1, got 0.`). One case needs explicit judgment: a huge `int` (`10**400`) for `kp`/`ki`/`setpoint`/`fixed_output` raises `OverflowError` naming the attribute (live-verified: `PIController(kp=10**400)` → `OverflowError: kp is too large to represent as a float.`), not `ValueError` or `TypeError`. Judged **not drift** — see below. |
 
-Drift found, and what was done about it:
+**Judgment on the huge-`int` `OverflowError` case (B1/B2 vs. section 1's prose).** Section
+1's "Inputs and outputs" says "A non-numeric or `bool` value raises `TypeError`; a numeric
+value outside the rule raises `ValueError`", which reads as an exhaustive two-way split,
+and a huge `int` is neither non-numeric nor, in the ordinary sense, non-finite — it is
+finite as an integer, merely too large for `float()` to represent. Read narrowly against
+that sentence alone, `OverflowError` is a third class the prose does not name, and B1/B2
+name only `ValueError`/`TypeError`. Three things move this into "not drift" rather than a
+halt: **(1)** verified directly against round 1's committed code
+(`git show 44ba4de:src/heatingsystem/pi_controller/pi_controller.py`), a huge `int` already
+raised a bare `OverflowError` before this round — `math.isfinite(10**400)` itself raises
+`OverflowError: int too large to convert to float`, confirmed live in this venv — so this
+is pre-existing behaviour, not new behaviour this round introduced. **(2)** B7 is written
+exactly to cover this: "Every input that raised at construction before this round raises
+the same error class there now, with a message that also names the attribute" — a huge
+`int` raised `OverflowError` before (unnamed) and raises `OverflowError` now (named,
+`pi_controller.py:66-67`), which is precisely what B7 asks for, not a violation of it.
+**(3)** this exact question was raised in section 2's Critique item 1, decided there, and
+stated to the user in the plan file the user then accepted at the step 2 gate — one of the
+pipeline's three user decision points — so it was not built silently past the user's view.
+B1/B2's "Inputs and outputs" prose is scope-setting context for the two *ordinary* failure
+modes the round set out to unify, not itself a numbered acceptance criterion; no B1–B7 row
+is contradicted by treating float-overflow as its own class. Recorded here rather than
+silently accepted, per the task's instruction to judge and show the reasoning.
+
+**Out of scope, checked against the diff (`git diff f58375c..HEAD`) and the code — none was
+built:**
+
+- **PI arithmetic, anti-windup, clamp or mode mapping** — `git diff f58375c..HEAD --
+  src/heatingsystem/pi_controller/pi_controller.py` touches no line inside the
+  error/`new_integral`/`raw`/clamp/anti-windup block (`pi_controller.py:236-268`); the only
+  addition there is `self._pi_output = u` immediately after the clamp. The three twin-integral
+  tests inherited from round 1 (T4-equivalent, still present) continue to pass unmodified.
+- **Persisting or restoring state** — no serialization, no file I/O, no new state beyond
+  `_pi_output`; not present anywhere in the diff.
+- **Making `history_length` settable, or `integral` a validated property** — `history_length`
+  is still constructor-only with its original inline `< 1` check (`pi_controller.py:174-175`,
+  untouched by the diff); `integral` is still a plain public attribute
+  (`pi_controller.py:182`), explicitly called out as such in the class docstring.
+- **New validation on `history_length` beyond "at least 1"** — confirmed: its check is
+  byte-identical to round 1's.
+
+**Connections and surface** — `test.py` is untouched by this round (`git diff f58375c..HEAD
+-- test.py` is empty), matching section 1's "How it connects" note. README gained exactly
+the two lines the plan specified (`pi_output` print plus the range comment naming
+`hs.OUTPUT_MIN`/`hs.OUTPUT_MAX`) — confirmed via diff. No public name exists beyond what
+section 1 and the Public API table describe: `kp`, `ki`, `setpoint`, `mode`, `fixed_output`,
+`pi_output`, `OUTPUT_MIN`, `OUTPUT_MAX`; nothing else was added at package level.
+
+**Showcase** — `python -m heatingsystem.pi_controller.pi_controller` runs clean and, read
+top to bottom, is recognisable as the agreed feature: a `kp`/`ki` `TypeError` is never
+directly shown but the `Bad setpoint -> TypeError: setpoint must be a real number, got '22'
+(str).` demo makes the new contract visible; the `pi_output=1.0000` readings alongside the
+fixed `command=0.2000` lines make "demand vs actual" visible exactly as section 1 promises;
+the `mode` reassignment (`command after mode change: 1 (mode now
+<HeatingMode.FLOOR_HEATING: 'floor_heating'>)`) demonstrates B3 as a worked example rather
+than only as an assertion.
+
+**Structure** — no `structure-auditor` subagent is available inside this subagent (this
+environment cannot spawn subagents from inside a subagent, as round 1's step 4 and step 6
+and this round's own step 4 all record); audited by hand instead, row by row, against
+`src/heatingsystem/pi_controller/pi_controller.py`, both `__init__.py` files and
+`tests/test_pi_controller.py`. Every constructor, property, `update`, `reset`, `main()` and
+export-table row in `STRUCTURE.md` (lines 60-207) matches the shipped code's current
+signatures, defaults, return types and raised-exception contracts character for character,
+including the `OverflowError` clauses this round added; the test-file paragraph's "Round 2's
+attribute surface" section (lines 168-201) names every test group actually present and
+matches their content on inspection (spot-checked: the `OverflowError` and
+`Fraction`-repeats-the-original-value claims, the `mode` `is`-not-`==` note, and the
+`update`-leaves-`pi_output`-and-`fixed_output`-untouched claim all hold against the code and
+tests as they stand). No private name (`_finite`, `_kp`, `_ki`, `_setpoint`, `_mode`,
+`_pi_output`, `_fixed_output`, `_to_command`) appears in it. No edit was needed.
+
+Drift found, and what was done about it: none beyond the huge-`int` `OverflowError` case
+judged above, which was reasoned through rather than treated as drift, for the three
+reasons given (pre-existing behaviour, explicitly covered by B7's own wording, and already
+disclosed to and accepted by the user at the step 2 plan gate). No criterion is unmet, no
+out-of-scope item was built, and no undocumented public surface exists. Work proceeds to
+step 7.
 
 ### Earlier rounds still hold
 
@@ -709,6 +798,20 @@ Drift found, and what was done about it:
 
 | Round | # | Criterion | Still met | Evidence |
 |---|---|---|---|---|
+| 1 | A1 | Unfixed controller: same commands, integral, history as before this round | Yes | `test_fixed_output_defaults_to_none_and_unfixed_sequence_unchanged` (round 1's own test, unmodified) still passes; `test_numeric_setters_*` and this round's own tests add validation *before* the unfixed arithmetic runs but never touch it — confirmed by diff: the error/`raw`/clamp/anti-windup block is byte-identical to round 1's code (`git diff f58375c..HEAD -- src/heatingsystem/pi_controller/pi_controller.py` shows no line changed inside it). Live showcase output's radiator warm-up sequence (`command=0.9450`, `0.8325`, `0.6495`, ...) is the same PI arithmetic round 1 shipped. |
+| 1 | A2 | Fixed level (construction or later): radiator `update` returns exactly that level, appended to history, readable back | Yes | `test_fixed_output_radiator_returns_level_regardless_of_error` and `test_fixed_output_accepts_boundaries_at_construction_and_setter` (both round 1's, unmodified) pass; the substitution `level = u if self._fixed_output is None else self._fixed_output` (`pi_controller.py:274`) is unchanged from round 1's plan and still sits between the anti-windup block and `_to_command`. |
+| 1 | A3 | Floor-heating, level strictly in `(0, 1)`: binary output, duty cycle converges to the level | Yes | `test_fixed_output_floor_quarter_level_converges_to_exact_fraction` and the other floor-mode T3 tests (round 1's, unmodified) pass; `_to_command` (`pi_controller.py:487-529`) is unchanged except its parameter's already-renamed-in-round-1 docstring. |
+| 1 | A4 | While fixed: inputs still validated, passed setpoint stored, integral advances exactly as unfixed | Yes | Now validated through the *new* `_finite`/setter path rather than round 1's inline checks, but the twin-integral tests (`test_fixed_output_integral_matches_unfixed_twin_across_regimes` and siblings, round 1's, unmodified) still assert exact equality and still pass — the anti-windup mechanism they depend on is untouched (see A1 evidence). `test_fixed_output_update_stores_setpoint_and_advances_integral` confirms the setpoint-storage half. |
+| 1 | A5 | Non-finite or out-of-range level raises `ValueError` at construction and afterwards, previous setting unchanged | Yes | `test_fixed_output_rejects_non_finite_and_out_of_range` and `test_fixed_output_failed_set_leaves_previous_value` (both round 1's, unmodified in substance) still pass; the setter still raises `ValueError` for the non-finite/out-of-range case exactly as round 1 specified (`pi_controller.py:475-481`) — round 2 only added the `TypeError`/`OverflowError` branches ahead of it via `_finite`, and did not change the `ValueError` contract A5 describes. Note: round 1's *bare* `TypeError` for a non-numeric level (part of A5's neighbourhood but not itself in A5's wording, which only names `ValueError`) is now a named `TypeError` — an intentional, plan-documented change (R4/B2), not a regression of A5, which never claimed anything about the `TypeError` case. |
+| 1 | A6 | Clearing the override: next `update` returns the PI result again; `reset()` leaves the override set | Yes | `test_fixed_output_release_returns_twin_command_and_keeps_both_in_history`, `test_fixed_output_floor_release_duty_cycle_recovers_over_one_window` and `test_fixed_output_reset_leaves_override_set` (round 1's, unmodified) all pass; `reset()`'s new `self._pi_output = None` line is additive and does not touch `fixed_output`, `integral` or `_history` clearing, which round 1's tests already pin. |
+
+Two of round 1's 56 `fixed_output`-related test bodies were changed this round, exactly as
+predicted and permitted by this round's own plan (section 2, guide step 14, applied at step
+5): the `bool` cases of `test_fixed_output_int_and_bool_stored_and_returned_as_float` moved
+into a new, separate `test_fixed_output_bool_raises_type_error_naming_attribute_and_keeps_previous`
+(A5/A6 unaffected — no A-criterion asserts anything about `bool` storage), and
+`match="fixed_output"` was added to two existing assertions without changing what they
+assert. No round 1 test was deleted or weakened; `pytest -k fixed_output` → `66 passed`.
 
 ---
 
