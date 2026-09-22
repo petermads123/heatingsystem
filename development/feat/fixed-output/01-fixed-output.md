@@ -113,46 +113,120 @@ is a demand that is duty-cycle modulated (not a literal command).
 
 ## 2. Plan
 
-> Written in step 2, accepted by the user before step 3 starts. Concrete enough that
-> step 3 is transcription, not invention.
-
 ### Approach
 
-One paragraph on the chosen approach, and one on what was rejected and why.
+**Chosen — a validating property plus a constructor keyword.** `PIController` gets a
+`fixed_output` property whose setter accepts a float in `[OUTPUT_MIN, OUTPUT_MAX]` or
+`None`, validates it, and stores it privately; the constructor takes the same value as a
+keyword-only argument and assigns through the setter so validation lives in one place. In
+`update`, the PI calculation, clamp and anti-windup run untouched; the only change is that
+the level handed to `_to_command` is the fixed output when one is set, and the PI output
+`u` otherwise. Because `_to_command` already does radiator pass-through and floor-heating
+duty-cycle modulation, both modes get the agreed semantics without new mapping code, and
+the existing append-after-mapping order records the fixed command in the history.
+
+**Rejected — a pair of methods** (`fix_output(level)` / `release_output()`) reads well at
+the call site but adds two public names where one suffices, and still needs a property to
+read the level back; three names for one piece of state. **Rejected — a plain public
+attribute** like `setpoint`: it cannot raise on an out-of-range assignment, so A5 would
+only hold at construction, and an automation that writes `1.5` would silently command an
+impossible position. The property costs one more method than the attribute and buys A5 on
+both paths.
 
 ### Modules
 
 | Path | New or changed | Purpose |
 |---|---|---|
+| `src/heatingsystem/pi_controller/pi_controller.py` | changed | `fixed_output` property and setter, the constructor keyword, the substitution in `update`, docstrings, and a showcase case in `main()` |
+| `tests/test_pi_controller.py` | changed | Tests for T1–T6 below, in a new section of the existing file |
+| `STRUCTURE.md` | changed | The `PIController` constructor row and a new `fixed_output` row; the test-file description |
+| `README.md` | changed | Three or four lines in the usage section showing the override being set and cleared |
+
+No new module: the override is one piece of state on the controller and belongs beside
+`setpoint` and `integral`.
 
 ### Public API
 
-> Every public class and function, with its full signature as it will be written.
-> `Covers` links back to the acceptance criteria above.
-
 | Signature | Module | Purpose | Covers |
 |---|---|---|---|
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | `pi_controller.py` | Existing constructor with one new keyword-only argument, defaulting to `None` (no override). Assigns through the `fixed_output` setter, so a bad value raises `ValueError` here too. | A1, A2, A5 |
+| `PIController.fixed_output -> float \| None` | `pi_controller.py` | Property: the current override, or `None` when the PI loop is in control. | A2, A6 |
+| `PIController.fixed_output` setter: `(value: float \| None) -> None` | `pi_controller.py` | Set or clear the override. Raises `ValueError` if `value` is not `None` and is non-finite or outside `[OUTPUT_MIN, OUTPUT_MAX]`; the stored value is untouched on failure. | A2, A5, A6 |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | `pi_controller.py` | Unchanged signature. While `fixed_output` is set, the level passed to the mode mapping is the fixed output rather than the PI result; everything before that point runs as before. | A2, A3, A4, A6 |
+| `PIController.reset() -> None` | `pi_controller.py` | Unchanged signature and behaviour: clears integral and history, leaves `fixed_output` alone (documented). | A6 |
+| `main() -> None` | `pi_controller.py` | Showcase gains one case: a radiator held at a fixed level for a few steps, released, and the history printed. | — (showcase, required by the Python rules) |
+
+The existing `HeatingMode`, `history`, `duty_cycle`, `is_history_full`, `OUTPUT_MIN` and
+`OUTPUT_MAX` are unchanged and not restated.
 
 ### Implementation guide
 
-Ordered. Each entry small enough to finish and check.
-
-1.
-2.
+1. In `PIController.__init__`, add `fixed_output: float | None = None` after
+   `history_length` in the keyword-only group. Extend the `Args:` and `Raises:` sections of
+   both the class docstring and the constructor docstring.
+2. Add the private attribute `self._fixed_output: float | None = None` next to `integral`
+   and `_history`, then assign `self.fixed_output = fixed_output` as the last statement of
+   the constructor so the setter validates it.
+3. Add the `fixed_output` property under the *Properties* section, after
+   `is_history_full`, with a getter that returns `self._fixed_output` and a setter that:
+   - accepts `None` and stores it;
+   - otherwise raises `ValueError(f"fixed_output must be a finite number in "
+     f"[{OUTPUT_MIN}, {OUTPUT_MAX}] or None, got {value!r}.")` when `value` is not finite
+     or is outside the closed range, checking `math.isfinite` first so `nan` does not slip
+     through a comparison;
+   - stores the value only after both checks pass.
+   Google docstrings on both, with `Raises:` on the setter.
+4. In `update`, after the anti-windup block and before the `_to_command` call, replace
+   `command = self._to_command(u)` with a two-line substitution: `level = u if
+   self._fixed_output is None else self._fixed_output`, then `command =
+   self._to_command(level)`. Do not touch the PI computation, clamp, anti-windup or the
+   history append. Update the `update` docstring: one paragraph saying that while
+   `fixed_output` is set the returned command is derived from it instead of the PI result,
+   the integral still advances, and the command is still recorded.
+5. In `reset`'s docstring, add `fixed_output` to the list of things left unchanged.
+6. In `main()`, after the setpoint-override case and before the `reset()` demonstration,
+   add a case in the showcase form: bind `fixed_level = 0.2`, assign it to
+   `ctrl_rad.fixed_output`, run three `update` calls at a cold measurement printing the
+   command and integral each step, print `ctrl_rad.fixed_output`, set it back to `None`,
+   run one more `update` and print that the PI result is back. Add one `ValueError`
+   demonstration for `fixed_output=1.5` in the existing block.
+7. Update `STRUCTURE.md`: the constructor row's signature and description, a new
+   `PIController.fixed_output` row, the `reset` row, the `update` row's description, the
+   `main()` row, and the `tests/test_pi_controller.py` paragraph.
+8. Add the README usage lines: set `radiator.fixed_output = 0.0` with a comment about a
+   price spike, call `update`, set it back to `None`.
+9. Run `ruff check .`, `ruff format --check .`, `mypy` and
+   `python -m heatingsystem.pi_controller.pi_controller`; fix anything they report.
 
 ### Test intents
 
-> High-level: what a test must prove, not how it is written. Step 5 turns each of these
-> into concrete cases, including the edge cases.
-
 | # | Must prove | Covers |
 |---|---|---|
-| T1 | | |
+| T1 | A controller built without `fixed_output` reads back `None` and, in both modes, produces the same commands, integral and history as one built with `fixed_output=None` explicitly; the existing hand-computed radiator steps and floor-heating convergence tests still pass unchanged. | A1 |
+| T2 | With a level set at construction, and separately when set after some unfixed steps, radiator `update` returns exactly that level for a cold, a hot and an at-setpoint measurement and with a per-call setpoint, each command is appended to the history, and `fixed_output` reads back the level. Boundaries `0.0` and `1.0` are accepted and returned. | A2 |
+| T3 | In floor-heating mode with a level strictly inside `(0, 1)`, every command is `0.0` or `1.0`, and after `history_length` steps the duty cycle equals the level to within one slot (`1 / history_length`); a level of `0.0` gives all-off and `1.0` all-on over a full window; the first command still reads the history before appending. | A3 |
+| T4 | A fixed controller and an unfixed twin fed the same measurements have equal `integral` after every step, in both saturation directions and in the linear region; a setpoint passed to `update` while fixed is stored; a non-finite measurement or setpoint still raises while fixed and appends nothing. | A4 |
+| T5 | `nan`, `inf`, `-inf`, a value just below `0.0` and just above `1.0` each raise `ValueError` naming the value, both as the constructor keyword and via the setter; after a failed set the previous level (a number, and separately `None`) is unchanged. | A5 |
+| T6 | After setting then clearing the override, the next `update` equals the unfixed twin's result and the history holds both the fixed and the resumed commands; `reset()` zeroes the integral and clears the history but leaves `fixed_output` set. | A6 |
 
 ### Risks
 
-What could make this harder than it looks, and what the build should do if it does —
-including whether it should halt.
+- **Duty-cycle convergence tolerance (T3).** Over a window of `n` slots the realised duty
+  cycle is quantised to `k / n`, so a level like `0.3` on the default 24-slot window lands
+  at `7/24` or `8/24`. The test must assert within `1 / history_length`, or pick a level
+  that is an exact multiple such as `0.25` on 24 slots. Not a halt: a precision choice.
+- **Integral equality (T4).** Because the anti-windup keys on the raw PI output and not on
+  the issued command, the fixed twin's integral must match the unfixed twin's exactly, not
+  approximately, for identical float inputs. If the build finds they differ, that means
+  the substitution landed before the anti-windup block, which is an implementation bug to
+  fix, not a concept question. If after the fix they still differ, **halt**: A4 would be
+  unachievable as written.
+- **Showcase form.** `main()` already has inline literals in places from before the
+  conventions were written; the new case must follow the showcase form (named inputs,
+  call, output) without rewriting the old cases, which are out of scope.
+- **`bool` sneaking in.** `True` passes `math.isfinite` and the range check and would be
+  stored as `True`. Not guarded: it is consistent with how `kp` and `setpoint` are
+  validated today, and mypy rejects it at the call site.
 
 ---
 
