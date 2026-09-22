@@ -77,7 +77,8 @@ price is the one that sets and clears the override.
 ### How it connects to the rest of the repo
 
 - Changes `src/heatingsystem/pi_controller/pi_controller.py` (`PIController`, its
-  showcase `main`) and `tests/test_pi_controller.py`, plus `STRUCTURE.md`.
+  showcase `main`) and `tests/test_pi_controller.py`, plus `STRUCTURE.md` and three or
+  four lines in `README.md`'s usage section, which documents every other public member.
 - Does not touch `src/heatingsystem/__init__.py` or the subpackage `__init__.py`: no new
   public names at package level.
 - Does not touch `test.py` (the simulation) — it may be extended in a later round to show
@@ -151,7 +152,7 @@ No new module: the override is one piece of state on the controller and belongs 
 |---|---|---|---|
 | `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | `pi_controller.py` | Existing constructor with one new keyword-only argument, defaulting to `None` (no override). Assigns through the `fixed_output` setter, so a bad value raises `ValueError` here too. | A1, A2, A5 |
 | `PIController.fixed_output -> float \| None` | `pi_controller.py` | Property: the current override, or `None` when the PI loop is in control. | A2, A6 |
-| `PIController.fixed_output` setter: `(value: float \| None) -> None` | `pi_controller.py` | Set or clear the override. Raises `ValueError` if `value` is not `None` and is non-finite or outside `[OUTPUT_MIN, OUTPUT_MAX]`; the stored value is untouched on failure. | A2, A5, A6 |
+| `PIController.fixed_output` setter: `(value: float \| None) -> None` | `pi_controller.py` | Set or clear the override. Raises `ValueError` if `value` is not `None` and is non-finite or outside `[OUTPUT_MIN, OUTPUT_MAX]`; the stored value is untouched on failure. A number in range is stored as `float(value)`; a non-numeric value raises `TypeError`, unguarded. | A2, A5, A6 |
 | `PIController.update(measured: float, setpoint: float \| None = None) -> float` | `pi_controller.py` | Unchanged signature. While `fixed_output` is set, the level passed to the mode mapping is the fixed output rather than the PI result; everything before that point runs as before. | A2, A3, A4, A6 |
 | `PIController.reset() -> None` | `pi_controller.py` | Unchanged signature and behaviour: clears integral and history, leaves `fixed_output` alone (documented). | A6 |
 | `main() -> None` | `pi_controller.py` | Showcase gains one case: a radiator held at a fixed level for a few steps, released, and the history printed. | — (showcase, required by the Python rules) |
@@ -174,22 +175,32 @@ The existing `HeatingMode`, `history`, `duty_cycle`, `is_history_full`, `OUTPUT_
      f"[{OUTPUT_MIN}, {OUTPUT_MAX}] or None, got {value!r}.")` when `value` is not finite
      or is outside the closed range, checking `math.isfinite` first so `nan` does not slip
      through a comparison;
-   - stores the value only after both checks pass.
-   Google docstrings on both, with `Raises:` on the setter.
+   - stores `float(value)` only after both checks pass, so an integer `0` or `1` from an
+     automation is stored and later returned by `update` as a float, keeping `update`'s
+     `-> float` and the history's element type honest.
+   A non-numeric value raises `TypeError` from `math.isfinite`, deliberately unguarded and
+   consistent with how `kp`, `ki` and `setpoint` are validated today; it is not converted
+   to `ValueError`. Google docstrings on both, with `Raises:` on the setter.
 4. In `update`, after the anti-windup block and before the `_to_command` call, replace
    `command = self._to_command(u)` with a two-line substitution: `level = u if
    self._fixed_output is None else self._fixed_output`, then `command =
    self._to_command(level)`. Do not touch the PI computation, clamp, anti-windup or the
    history append. Update the `update` docstring: one paragraph saying that while
    `fixed_output` is set the returned command is derived from it instead of the PI result,
-   the integral still advances, and the command is still recorded.
+   the integral still advances, and the command is still recorded. Rename `_to_command`'s
+   parameter from `u` to `level` and reword its docstring, and `HeatingMode`'s, to say
+   "the demand level (the PI output, or the fixed output when one is set)"; add one line
+   to the module docstring noting the override. `_to_command` is private, so no
+   `STRUCTURE.md` row changes for it.
 5. In `reset`'s docstring, add `fixed_output` to the list of things left unchanged.
 6. In `main()`, after the setpoint-override case and before the `reset()` demonstration,
    add a case in the showcase form: bind `fixed_level = 0.2`, assign it to
    `ctrl_rad.fixed_output`, run three `update` calls at a cold measurement printing the
    command and integral each step, print `ctrl_rad.fixed_output`, set it back to `None`,
    run one more `update` and print that the PI result is back. Add one `ValueError`
-   demonstration for `fixed_output=1.5` in the existing block.
+   demonstration to the existing block in the showcase form: bind `bad_level = 1.5` on its
+   own line, then `PIController(fixed_output=bad_level)` inside the `try`, leaving the
+   surrounding demos as they are.
 7. Update `STRUCTURE.md`: the constructor row's signature and description, a new
    `PIController.fixed_output` row, the `reset` row, the `update` row's description, the
    `main()` row, and the `tests/test_pi_controller.py` paragraph.
@@ -202,12 +213,12 @@ The existing `HeatingMode`, `history`, `duty_cycle`, `is_history_full`, `OUTPUT_
 
 | # | Must prove | Covers |
 |---|---|---|
-| T1 | A controller built without `fixed_output` reads back `None` and, in both modes, produces the same commands, integral and history as one built with `fixed_output=None` explicitly; the existing hand-computed radiator steps and floor-heating convergence tests still pass unchanged. | A1 |
+| T1 | A default-constructed controller reads back `fixed_output is None`, and an unfixed controller's full command sequence, integral and history over a multi-step run match hand-computed values in both modes, extending the existing single-step hand computations. Step 7's diff review confirms no existing test in `tests/test_pi_controller.py` was modified or weakened. | A1 |
 | T2 | With a level set at construction, and separately when set after some unfixed steps, radiator `update` returns exactly that level for a cold, a hot and an at-setpoint measurement and with a per-call setpoint, each command is appended to the history, and `fixed_output` reads back the level. Boundaries `0.0` and `1.0` are accepted and returned. | A2 |
 | T3 | In floor-heating mode with a level strictly inside `(0, 1)`, every command is `0.0` or `1.0`, and after `history_length` steps the duty cycle equals the level to within one slot (`1 / history_length`); a level of `0.0` gives all-off and `1.0` all-on over a full window; the first command still reads the history before appending. | A3 |
 | T4 | A fixed controller and an unfixed twin fed the same measurements have equal `integral` after every step, in both saturation directions and in the linear region; a setpoint passed to `update` while fixed is stored; a non-finite measurement or setpoint still raises while fixed and appends nothing. | A4 |
-| T5 | `nan`, `inf`, `-inf`, a value just below `0.0` and just above `1.0` each raise `ValueError` naming the value, both as the constructor keyword and via the setter; after a failed set the previous level (a number, and separately `None`) is unchanged. | A5 |
-| T6 | After setting then clearing the override, the next `update` equals the unfixed twin's result and the history holds both the fixed and the resumed commands; `reset()` zeroes the integral and clears the history but leaves `fixed_output` set. | A6 |
+| T5 | `nan`, `inf`, `-inf`, a value just below `0.0` and just above `1.0` each raise `ValueError` naming the value, both as the constructor keyword and via the setter; after a failed set the previous level (a number, and separately `None`) is unchanged. Integer levels `0` and `1` are accepted, read back as `float`, and `update` returns a `float` while fixed; a `str` level raises `TypeError`, not `ValueError`. | A5 |
+| T6 | In radiator mode, after setting then clearing the override, the next `update` returns exactly the unfixed twin's command (integrals equal by A4, `_to_command` passes through) and the history holds both the fixed and the resumed commands. In floor-heating mode the released command is not compared to a twin, because the fixed commands sit in the duty-cycle window by design; the assertion is instead that over a subsequent full window the duty cycle returns to the PI demand. `reset()` zeroes the integral and clears the history but leaves `fixed_output` set. | A6 |
 
 ### Risks
 
@@ -225,8 +236,33 @@ The existing `HeatingMode`, `history`, `duty_cycle`, `is_history_full`, `OUTPUT_
   conventions were written; the new case must follow the showcase form (named inputs,
   call, output) without rewriting the old cases, which are out of scope.
 - **`bool` sneaking in.** `True` passes `math.isfinite` and the range check and would be
-  stored as `True`. Not guarded: it is consistent with how `kp` and `setpoint` are
-  validated today, and mypy rejects it at the call site.
+  stored as `float(True) == 1.0`. Not guarded: it is consistent with how `kp` and
+  `setpoint` are validated today, and mypy rejects it at the call site.
+
+### Critique
+
+Findings from the `plan-critic` read, verdict *accept with changes*; all six applied.
+
+1. **T6 compared a released floor-heating controller to an unfixed twin, which is
+   guaranteed to differ** because the fixed commands sit in the duty-cycle window by
+   design. Applied: T6 now compares twins in radiator mode only and asserts duty-cycle
+   recovery over a full window in floor mode.
+2. **The setter's numeric contract was open in both directions**: an `int` level would be
+   stored and returned untouched, breaking `update -> float`; a `str` would raise
+   `TypeError` and step 5 would have to guess. Applied: the setter stores `float(value)`,
+   `TypeError` is documented as deliberate and unguarded, and T5 covers both.
+3. **T1 was a tautology** (default `None` versus explicit `None`). Applied: T1 now asserts
+   multi-step hand-computed sequences in both modes and leaves the diff check to step 7.
+4. **The plan touched `README.md` but section 1's scope list did not name it.** Applied to
+   section 1, as a scope clarification rather than a new behaviour: the usage section
+   documents every other public member.
+5. **Three docstrings would contradict the code** (`_to_command`, `HeatingMode`, the
+   module docstring all say "PI output"). Applied to guide step 4: rename the parameter to
+   `level` and reword.
+6. **Guide step 6 put the new `ValueError` demo in a block that uses inline literals, which
+   the Risks section forbids.** Applied: the new demo binds `bad_level` first and leaves the
+   old demos alone.
+
 
 ---
 
