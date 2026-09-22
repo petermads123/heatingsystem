@@ -1,6 +1,6 @@
 # Fixed output override
 
-<!-- claude-plan step=2 status=active -->
+<!-- claude-plan step=3 status=active -->
 
 
 | Field | Value |
@@ -18,8 +18,8 @@ conventional name `feat/fixed-output`.
 | # | Step | Skill | Runs | Status |
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
-| 2 | Plan | `/plan` | with the user | in progress |
-| 3 | Implement | `/implement` | in `/build` | pending |
+| 2 | Plan | `/plan` | with the user | done |
+| 3 | Implement | `/implement` | in `/build` | in progress |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
