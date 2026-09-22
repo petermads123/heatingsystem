@@ -64,6 +64,8 @@ Every new model subpackage is re-exported from here.
 |---|---|
 | `HeatingMode` | `heatingsystem.pi_controller` |
 | `PIController` | `heatingsystem.pi_controller` |
+| `OUTPUT_MIN` | `heatingsystem.pi_controller` |
+| `OUTPUT_MAX` | `heatingsystem.pi_controller` |
 
 Every package directory under `src/`, including every subpackage added later, needs one of
 these. The stop gate blocks on a directory of modules without it: it is not a package, so
@@ -71,9 +73,9 @@ it will not install.
 
 ### `src/heatingsystem/pi_controller/__init__.py`
 
-Subpackage entry point. Re-exports `HeatingMode` and `PIController` from
-`pi_controller.py`, so the package root can import from the subpackage without naming the
-module.
+Subpackage entry point. Re-exports `HeatingMode`, `PIController`, `OUTPUT_MIN` and
+`OUTPUT_MAX` from `pi_controller.py`, so the package root can import from the subpackage
+without naming the module.
 
 ### `src/heatingsystem/pi_controller/pi_controller.py`
 
@@ -88,14 +90,19 @@ integrating would pull a saturated output back toward it.
 | `OUTPUT_MIN: float = 0.0` | Lower clamp of the actuator range. |
 | `OUTPUT_MAX: float = 1.0` | Upper clamp of the actuator range. |
 | `HeatingMode(StrEnum)` | `RADIATOR` (continuous output in `[0, 1]`) or `FLOOR_HEATING` (binary on/off from duty-cycle modulation over the rolling window). |
-| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | The controller. `mode` accepts the enum or its string value; gains and setpoint must be finite; `history_length` must be at least 1; `fixed_output` is assigned through the `fixed_output` setter, so an invalid value raises there too. Public attributes: `kp`, `ki`, `mode`, `setpoint`, `integral`. |
-| `PIController.fixed_output -> float \| None` | Property, settable. The current output override in `[OUTPUT_MIN, OUTPUT_MAX]`, or `None` when the PI loop is in control. The setter raises `ValueError` for a non-finite or out-of-range value (previous setting unchanged) and stores a valid one as `float`. |
-| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). A `setpoint` given here replaces the stored one. While `fixed_output` is set, the command is derived from it instead of the PI result, though the PI calculation and integral still run underneath, and the command is still recorded in `history`. Raises `ValueError` on a non-finite input. |
-| `PIController.reset() -> None` | Zero the integral and clear the rolling history. Leaves `fixed_output` unchanged. |
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | The controller. Every setting — `kp`, `ki`, `mode`, `setpoint`, `fixed_output` — is assigned through its validating property, so a bad value raises the same error at construction as later; `history_length` must be at least 1, checked inline. `integral` is a plain public attribute. |
+| `PIController.kp -> float` (settable) | Proportional gain. Setter: a finite real number; `bool` rejected. Raises `TypeError` naming `kp` for a non-numeric or `bool` value, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. Previous value unchanged on failure. |
+| `PIController.ki -> float` (settable) | Integral gain. Same setter contract as `kp`, naming `ki`. |
+| `PIController.setpoint -> float` (settable) | Target temperature in °C. Same setter contract as `kp`, naming `setpoint`; also the path a per-call `setpoint` of `update` assigns through. |
+| `PIController.mode -> HeatingMode` (settable) | Actuator mode. Setter accepts a `HeatingMode` or its string value via `HeatingMode(value)`; anything else raises `ValueError` naming `mode` and listing the valid values, previous mode unchanged. |
+| `PIController.fixed_output -> float \| None` | Property, settable. The current output override in `[OUTPUT_MIN, OUTPUT_MAX]`, or `None` when the PI loop is in control. The setter raises `TypeError` naming `fixed_output` for a non-numeric or `bool` value, `ValueError` for a non-finite or out-of-range value, and `OverflowError` for one too large to represent as a `float`; the previous setting is unchanged on any failure, and a valid value is stored as `float`. |
+| `PIController.pi_output -> float \| None` | Read-only. The clamped PI result of the last `update`, in `[OUTPUT_MIN, OUTPUT_MAX]`. Reports the PI demand even while `fixed_output` holds the actuator at a different level. `None` before the first `update` and again after `reset()`. |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). `measured` is validated first; a passed `setpoint` is then assigned through its setter, so a call that raises stores nothing. Records `pi_output` from the clamped PI result. While `fixed_output` is set, the command is derived from it instead of the PI result, though the PI calculation and integral still run underneath, and the command is still recorded in `history`. Raises `TypeError` for a non-numeric or `bool` `measured`/`setpoint`, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. |
+| `PIController.reset() -> None` | Zero the integral, clear the rolling history and set `pi_output` back to `None`. Leaves `fixed_output` and every setting unchanged. |
 | `PIController.history -> tuple[float, ...]` | The last `history_length` commands, oldest first. |
 | `PIController.duty_cycle -> float` | Mean of `history`; `0.0` while it is empty. |
 | `PIController.is_history_full -> bool` | Whether `history_length` commands have been issued. |
-| `main() -> None` | Showcase: the enum, a radiator warm-up, a setpoint override, a `fixed_output` override and release, a reset, and a floor-heating run to a converged duty cycle. |
+| `main() -> None` | Showcase: the enum, a radiator warm-up, a setpoint override, a `fixed_output` override (now also printing `pi_output`) and release, a reset, a floor-heating run to a converged duty cycle, a `mode` reassignment, and the `ValueError`/`TypeError` demonstrations. |
 
 Runnable standalone: `python -m heatingsystem.pi_controller.pi_controller`, once the
 package is installed (`pip install -e ".[dev]"`). Under a `src/` layout the repo root is
@@ -150,12 +157,18 @@ sequence, in both modes; that `update` still stores a passed setpoint and advanc
 integral while fixed, and still raises on a non-finite input without appending or mutating
 state; `ValueError` for every non-finite or out-of-range level — `nan`, `inf`, boundary
 neighbours, and values further out — at construction and via the setter, naming the value
-and leaving the previous setting (a number or `None`) unchanged; `TypeError` — deliberately
-unguarded — for a non-numeric level such as a string; `int` and `bool` levels stored and
-returned as `float`; clearing the override resuming an unfixed twin's exact command in
-radiator mode with both commands preserved in `history`, and floor heating's duty cycle
-recovering to the PI demand over one full window after release; and `reset` clearing the
-integral and history while leaving `fixed_output` set, in both modes.
+and leaving the previous setting (a number or `None`) unchanged; `TypeError` naming
+`fixed_output` for a non-numeric level such as a string; `int` levels stored and returned
+as `float`; clearing the override resuming an unfixed twin's exact command in radiator mode
+with both commands preserved in `history`, and floor heating's duty cycle recovering to the
+PI demand over one full window after release; and `reset` clearing the integral and history
+while leaving `fixed_output` set, in both modes.
+
+This round's attribute surface (`kp`, `ki`, `setpoint`, `mode`, `pi_output`, the
+`OUTPUT_MIN`/`OUTPUT_MAX` re-exports, and `update`'s stricter validation) gets its own
+coverage in this paragraph at step 5, once those tests exist; `bool` is no longer among the
+values `fixed_output` accepts as an `int` surrogate, so it moves out of the round 1 test
+named above and into that new coverage.
 
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file

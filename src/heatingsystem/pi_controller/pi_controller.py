@@ -22,6 +22,7 @@ calculation, including the integral, keeps running underneath it.
 """
 
 import math
+import numbers
 from collections import deque
 from enum import StrEnum
 
@@ -30,6 +31,41 @@ from enum import StrEnum
 # ---------------------------------------------------------------------------
 OUTPUT_MIN: float = 0.0
 OUTPUT_MAX: float = 1.0
+
+
+def _finite(name: str, value: object) -> float:
+    """Validate a value as a finite real number and return it as a float.
+
+    The shared numeric contract behind every validating setting on
+    :class:`PIController`: a real number (``bool`` excluded), finite, and
+    representable as a ``float``.
+
+    Args:
+        name: The attribute or parameter name, used in the error messages.
+        value: The value to validate.
+
+    Returns:
+        ``value`` converted to ``float``.
+
+    Raises:
+        TypeError: If ``value`` is a ``bool`` or not an
+            :class:`numbers.Real` (an ``int``, ``float``, ``Fraction`` or
+            numpy scalar passes; a ``Decimal`` does not).
+        ValueError: If ``value`` is not finite (``nan`` or ``inf``).
+        OverflowError: If ``value`` is too large to represent as a float
+            (e.g. an ``int`` such as ``10**400``).
+    """
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise TypeError(
+            f"{name} must be a real number, got {value!r} ({type(value).__name__})."
+        )
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise OverflowError(f"{name} is too large to represent as a float.") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number, got {value!r}.")
+    return number
 
 
 class HeatingMode(StrEnum):
@@ -52,6 +88,12 @@ class HeatingMode(StrEnum):
 class PIController:
     """Discrete-time PI controller for residential heating.
 
+    Every setting — ``kp``, ``ki``, ``mode``, ``setpoint`` and
+    ``fixed_output`` — is a validating property: assigning it, at
+    construction or afterwards, raises on a bad value and leaves the
+    previous value unchanged. ``integral`` remains a plain public
+    attribute.
+
     The controller is stateful: it accumulates an integral term across
     successive :meth:`update` calls and maintains a rolling window of
     past actuator commands for duty-cycle estimation (floor heating).
@@ -62,12 +104,15 @@ class PIController:
     the valid range.
 
     Args:
-        kp: Proportional gain.  Default ``0.3``.
-        ki: Integral gain.  Default ``0.015``.
+        kp: Proportional gain.  Default ``0.3``.  Must be a finite real
+            number; ``bool`` is rejected.
+        ki: Integral gain.  Default ``0.015``.  Same numeric contract as
+            ``kp``.
         mode: Heating mode — ``"radiator"`` or ``"floor_heating"``.
             Accepts a :class:`HeatingMode` instance or a plain string;
             strings are coerced via ``HeatingMode(mode)``.
         setpoint: Initial temperature setpoint in °C.  Default ``21.0``.
+            Same numeric contract as ``kp``.
         history_length: Length of the rolling command window used for
             duty-cycle calculation in floor-heating mode.  Must be ≥ 1.
             At 5-minute polling intervals, ``24`` equals 2 hours.
@@ -75,23 +120,32 @@ class PIController:
         fixed_output: Optional fixed actuator level in
             ``[OUTPUT_MIN, OUTPUT_MAX]``.  While set, :meth:`update`
             returns this level (mode-mapped) instead of the PI result.
-            ``None`` (the default) leaves the PI loop in control.
-            Assigned through the :attr:`fixed_output` setter, so an
-            invalid value raises here too.
+            ``None`` (the default) leaves the PI loop in control.  Same
+            numeric contract as ``kp``, plus the range check.  Assigned
+            through the :attr:`fixed_output` setter, so an invalid value
+            raises here too.
 
     Raises:
         ValueError: If ``mode`` is not a valid :class:`HeatingMode` value.
         ValueError: If ``history_length`` is less than 1.
-        ValueError: If ``kp``, ``ki``, or ``setpoint`` are not finite
-            numbers (e.g. ``nan``, ``inf``).
-        ValueError: If ``fixed_output`` is not ``None`` and is not a
-            finite number in ``[OUTPUT_MIN, OUTPUT_MAX]``.
+        ValueError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output``
+            are not finite numbers (e.g. ``nan``, ``inf``), or
+            ``fixed_output`` is not ``None`` and lies outside
+            ``[OUTPUT_MIN, OUTPUT_MAX]``.
+        TypeError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output`` are
+            not a real number, ``bool`` included; the message names the
+            attribute.
 
     Example:
         >>> ctrl = PIController(kp=0.5, ki=0.02, setpoint=22.0)
         >>> ctrl.update(20.0)
         1.0
     """
+
+    _kp: float
+    _ki: float
+    _setpoint: float
+    _mode: HeatingMode
 
     def __init__(
         self,
@@ -106,30 +160,18 @@ class PIController:
         """Initialise the PI controller.
 
         The arguments and the errors they raise are documented once, on the
-        class docstring, so they cannot drift between two copies.
+        class docstring, so they cannot drift between two copies. Every
+        setting is assigned through its validating property, so
+        construction raises exactly what later assignment would.
         """
-        # --- Coerce and validate mode ---
-        try:
-            self.mode: HeatingMode = HeatingMode(mode)
-        except ValueError as exc:
-            valid = [m.value for m in HeatingMode]
-            raise ValueError(
-                f"Invalid heating mode {mode!r}. Must be one of {valid}."
-            ) from exc
+        self.mode = mode
 
-        # --- Validate numeric constructor arguments ---
         if history_length < 1:
             raise ValueError(f"history_length must be >= 1, got {history_length}.")
-        if not math.isfinite(kp):
-            raise ValueError(f"kp must be a finite number, got {kp!r}.")
-        if not math.isfinite(ki):
-            raise ValueError(f"ki must be a finite number, got {ki!r}.")
-        if not math.isfinite(setpoint):
-            raise ValueError(f"setpoint must be a finite number, got {setpoint!r}.")
 
-        self.kp: float = kp
-        self.ki: float = ki
-        self.setpoint: float = setpoint
+        self.kp = kp
+        self.ki = ki
+        self.setpoint = setpoint
 
         # Integral accumulator, reset to zero on construction and via reset().
         self.integral: float = 0.0
@@ -137,6 +179,9 @@ class PIController:
         # Rolling window of past actuator commands.
         # maxlen=24 at 5-min intervals == 2 h of history for duty-cycle tracking.
         self._history: deque[float] = deque(maxlen=history_length)
+
+        # Clamped PI result of the last update(); None before the first step.
+        self._pi_output: float | None = None
 
         # Fixed output override — None means the PI loop is in control.
         self._fixed_output: float | None = None
@@ -169,18 +214,18 @@ class PIController:
             :attr:`history`.
 
         Raises:
-            ValueError: If ``measured`` or the new ``setpoint`` are
-                non-finite.
+            TypeError: If ``measured`` or the new ``setpoint`` is not a
+                real number, ``bool`` included; the message names which.
+            ValueError: If ``measured`` or the new ``setpoint`` is not
+                finite.
+            OverflowError: If ``measured`` or the new ``setpoint`` is too
+                large to represent as a float.
         """
+        measured = _finite("measured", measured)
+
         # --- Optional setpoint update ---
         if setpoint is not None:
-            if not math.isfinite(setpoint):
-                raise ValueError(f"setpoint must be a finite number, got {setpoint!r}.")
             self.setpoint = setpoint
-
-        # --- Validate measurement ---
-        if not math.isfinite(measured):
-            raise ValueError(f"measured must be a finite number, got {measured!r}.")
 
         # --- Error: positive means too cold, controller ramps output up ---
         error: float = self.setpoint - measured
@@ -195,6 +240,7 @@ class PIController:
 
         # Clamp raw output to the actuator's physical range.
         u: float = max(OUTPUT_MIN, min(OUTPUT_MAX, raw))
+        self._pi_output = u
 
         # Anti-windup — only commit the new integral when it is useful:
         #   * Not saturated at all  → always safe to integrate.
@@ -234,15 +280,107 @@ class PIController:
     def reset(self) -> None:
         """Reset the controller state to initial values.
 
-        Clears the integral accumulator and the history window.  The gains,
-        mode, setpoint, and :attr:`fixed_output` are left unchanged.
+        Clears the integral accumulator, the history window, and
+        :attr:`pi_output`.  The gains, mode, setpoint, and
+        :attr:`fixed_output` are left unchanged.
         """
         self.integral = 0.0
         self._history.clear()
+        self._pi_output = None
 
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
+
+    @property
+    def mode(self) -> HeatingMode:
+        """The heating actuator mode."""
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: HeatingMode | str) -> None:
+        """Set the heating actuator mode.
+
+        Args:
+            value: A :class:`HeatingMode` member or its string value.
+
+        Raises:
+            ValueError: If ``value`` is not a valid :class:`HeatingMode`
+                member or value. The previous mode is left unchanged.
+        """
+        try:
+            self._mode = HeatingMode(value)
+        except ValueError as exc:
+            valid = [m.value for m in HeatingMode]
+            raise ValueError(
+                f"mode must be a HeatingMode or one of {valid}, got {value!r}."
+            ) from exc
+
+    @property
+    def kp(self) -> float:
+        """The proportional gain."""
+        return self._kp
+
+    @kp.setter
+    def kp(self, value: float) -> None:
+        """Set the proportional gain.
+
+        Args:
+            value: A finite real number. ``bool`` is rejected.
+
+        Raises:
+            TypeError: If ``value`` is not a real number, ``bool``
+                included. The previous gain is left unchanged.
+            ValueError: If ``value`` is not finite. The previous gain is
+                left unchanged.
+            OverflowError: If ``value`` is too large to represent as a
+                float. The previous gain is left unchanged.
+        """
+        self._kp = _finite("kp", value)
+
+    @property
+    def ki(self) -> float:
+        """The integral gain."""
+        return self._ki
+
+    @ki.setter
+    def ki(self, value: float) -> None:
+        """Set the integral gain.
+
+        Args:
+            value: A finite real number. ``bool`` is rejected.
+
+        Raises:
+            TypeError: If ``value`` is not a real number, ``bool``
+                included. The previous gain is left unchanged.
+            ValueError: If ``value`` is not finite. The previous gain is
+                left unchanged.
+            OverflowError: If ``value`` is too large to represent as a
+                float. The previous gain is left unchanged.
+        """
+        self._ki = _finite("ki", value)
+
+    @property
+    def setpoint(self) -> float:
+        """The target temperature in °C."""
+        return self._setpoint
+
+    @setpoint.setter
+    def setpoint(self, value: float) -> None:
+        """Set the target temperature.
+
+        Args:
+            value: A finite real number. ``bool`` is rejected.
+
+        Raises:
+            TypeError: If ``value`` is not a real number, ``bool``
+                included. The previous setpoint is left unchanged.
+            ValueError: If ``value`` is not finite. The previous setpoint
+                is left unchanged.
+            OverflowError: If ``value`` is too large to represent as a
+                float. The previous setpoint is left unchanged.
+        """
+        self._setpoint = _finite("setpoint", value)
 
     @property
     def history(self) -> tuple[float, ...]:
@@ -281,6 +419,21 @@ class PIController:
         return len(self._history) == self._history.maxlen
 
     @property
+    def pi_output(self) -> float | None:
+        """The clamped PI result of the last :meth:`update` call.
+
+        Reports the PI loop's demand even while :attr:`fixed_output` holds
+        the actuator at a different level, so a caller can see demand and
+        actual command side by side.
+
+        Returns:
+            The clamped PI output in [``OUTPUT_MIN``, ``OUTPUT_MAX``], or
+            ``None`` before the first :meth:`update` call and again after
+            :meth:`reset`.
+        """
+        return self._pi_output
+
+    @property
     def fixed_output(self) -> float | None:
         """The current fixed-output override, or ``None`` if unset.
 
@@ -297,23 +450,30 @@ class PIController:
         Args:
             value: A finite number in [``OUTPUT_MIN``, ``OUTPUT_MAX``] to
                 fix the output, or ``None`` to release it back to the PI
-                loop. Stored as ``float(value)``, so an ``int`` such as
-                ``0`` or ``1`` is accepted and read back as a float.
+                loop. ``bool`` is rejected. Stored as ``float(value)``, so
+                an ``int`` such as ``0`` or ``1`` is accepted and read back
+                as a float.
 
         Raises:
+            TypeError: If ``value`` is not ``None`` and is not a real
+                number, ``bool`` included. The previous setting is left
+                unchanged.
             ValueError: If ``value`` is not ``None`` and is not finite or
                 lies outside [``OUTPUT_MIN``, ``OUTPUT_MAX``]. The previous
                 setting is left unchanged.
+            OverflowError: If ``value`` is too large to represent as a
+                float. The previous setting is left unchanged.
         """
         if value is None:
             self._fixed_output = None
             return
-        if not math.isfinite(value) or value < OUTPUT_MIN or value > OUTPUT_MAX:
+        level = _finite("fixed_output", value)
+        if level < OUTPUT_MIN or level > OUTPUT_MAX:
             raise ValueError(
                 f"fixed_output must be a finite number in "
                 f"[{OUTPUT_MIN}, {OUTPUT_MAX}] or None, got {value!r}."
             )
-        self._fixed_output = float(value)
+        self._fixed_output = level
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -373,9 +533,11 @@ def main() -> None:
     include a mid-run setpoint change and a :attr:`~PIController.fixed_output`
     override, and prints the :attr:`~PIController.history`,
     :attr:`~PIController.duty_cycle`, :attr:`~PIController.is_history_full`
-    properties and the effect of :meth:`~PIController.reset`.  It also
+    and :attr:`~PIController.pi_output` properties, a :attr:`~PIController.mode`
+    reassignment, and the effect of :meth:`~PIController.reset`.  It also
     demonstrates the ``HeatingMode`` enum directly and shows that invalid
-    constructor arguments raise :class:`ValueError`.
+    or non-numeric constructor and attribute values raise
+    :class:`ValueError` or :class:`TypeError`.
     """
     print("=== HeatingMode enum ===")
     for hm in HeatingMode:
@@ -426,6 +588,7 @@ def main() -> None:
         cmd = ctrl_rad.update(measured=cold_temp)
         print(
             f"  fixed step {i + 1}: command={cmd:.4f}  integral={ctrl_rad.integral:.4f}"
+            f"  pi_output={ctrl_rad.pi_output:.4f}"
         )
     print(f"  fixed_output    : {ctrl_rad.fixed_output}")
 
@@ -470,7 +633,16 @@ def main() -> None:
     print(f"  is_history_full : {ctrl_floor.is_history_full}")
     print(f"  duty_cycle      : {ctrl_floor.duty_cycle:.3f}")
 
-    print("\n=== ValueError demonstrations ===")
+    # Demonstrate reassigning mode on an existing (just-reset) controller.
+    print("\n  -- mode reassigned on the radiator controller --")
+    new_mode = HeatingMode.FLOOR_HEATING  # RADIATOR, FLOOR_HEATING
+
+    ctrl_rad.mode = new_mode
+    cmd = ctrl_rad.update(measured=cold_temp)
+
+    print(f"  command after mode change: {cmd:.0f}  (mode now {ctrl_rad.mode!r})")
+
+    print("\n=== ValueError and TypeError demonstrations ===")
 
     # Invalid mode string.
     try:
@@ -508,6 +680,13 @@ def main() -> None:
         ctrl_rad.update(measured=20.0, setpoint=float("nan"))
     except ValueError as exc:
         print(f"  NaN setpoint   -> ValueError: {exc}")
+
+    # Non-numeric setpoint (TypeError, not ValueError).
+    bad_setpoint = "22"
+    try:
+        ctrl_rad.setpoint = bad_setpoint  # type: ignore[assignment]  # deliberate misuse for the demo
+    except TypeError as exc:
+        print(f"  Bad setpoint   -> TypeError: {exc}")
 
     print("\nAll demonstrations completed successfully.")
 

@@ -1,6 +1,6 @@
 # Attribute surface: validated settings, PI demand, range constants
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,8 +18,8 @@ conventional name `feat/fixed-output`.
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | in progress |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
+| 4 | Verify | `/verify` | in `/build` | in progress |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -370,6 +370,65 @@ Findings from the `plan-critic` read, verdict *accept with changes*; all seven a
 
 > Written in step 3. Only deviations from the plan above, each with its reason. "Built as
 > planned" is a complete and good entry.
+
+Built as planned. Every guide step was followed in order: the module-level `_finite(name,
+value)` helper above `HeatingMode` (raising `TypeError` for a `bool` or non-`numbers.Real`
+value, `ValueError` for non-finite, `OverflowError` — re-raised naming the attribute — for
+a value too large to represent as a `float`); `kp`, `ki`, `setpoint` and `mode` replaced by
+`_kp`/`_ki`/`_setpoint`/`_mode` and validating property pairs under *Properties*; the
+`fixed_output` setter now calling `_finite("fixed_output", value)` before its range check
+and storing the returned `level`, with the range message still built from `{value!r}` (the
+caller's original value); the read-only `pi_output` property added after
+`is_history_full`, backed by `self._pi_output: float | None = None`; the constructor
+rewritten in the specified order (`mode`, the `history_length` check, `kp`/`ki`/`setpoint`,
+the state block, `fixed_output` last) with the four class-level annotations (`_kp: float`,
+`_ki: float`, `_setpoint: float`, `_mode: HeatingMode`) declared above `__init__`; `update`
+validating `measured` through the helper first, then assigning a passed `setpoint` through
+its setter, with `self._pi_output = u` inserted immediately after the clamp line and the
+anti-windup block left byte-identical; `reset` clearing `_pi_output` to `None`; the class
+docstring's `Args`/`Raises` rewritten to state the validating-property contract and the new
+`TypeError`; both `__init__.py` files re-exporting `OUTPUT_MIN` and `OUTPUT_MAX` (ruff
+format wrapped the now four-name import); the three showcase additions in `main()` (a
+`pi_output` reading on each fixed step's line, a `mode` reassignment case in showcase form
+after the floor-heating run, and a `bad_setpoint = "22"` `TypeError` demo carrying exactly
+`# type: ignore[assignment]  # deliberate misuse for the demo`); `STRUCTURE.md`'s
+constructor row, the four new property rows, `pi_output`, `update`, `reset` and `main()`
+rows, and both `__init__` export tables; and the README `pi_output` line and range comment.
+`ruff check .`, `ruff format .`, `mypy` and
+`python -m heatingsystem.pi_controller.pi_controller` all ran clean; `pytest` shows exactly
+the two predicted failures
+(`test_fixed_output_int_and_bool_stored_and_returned_as_float[True-1.0]` and `[False-0.0]`,
+403 passed / 2 failed), left for step 5 as guide step 14 specifies.
+
+Three points of judgment, none touching an acceptance criterion:
+
+- **Property order.** The plan names an order for the *constructor's* assignments but not
+  for the property definitions themselves. `mode`, `kp`, `ki`, `setpoint` were placed at
+  the top of the *Properties* section (mirroring the constructor's assignment order),
+  ahead of the pre-existing `history`/`duty_cycle`/`is_history_full`; `pi_output` sits
+  between `is_history_full` and `fixed_output` exactly as guide step 5 says.
+- **README "range comment on fixed_output."** No comment naming a range already sat next
+  to `fixed_output` to rewrite in place — the nearby range wording (`continuous output in
+  [0.0, 1.0]`) describes the radiator constructor a dozen lines above, not the override.
+  Read the instruction as introducing that comment at the override: a new line,
+  `# Any level in [hs.OUTPUT_MIN, hs.OUTPUT_MAX] is accepted; anything else raises
+  ValueError.`, directly above `radiator.fixed_output = 0.0`. `ruff format` then wrapped
+  the `pi_output` print's trailing comment onto its own line for width; the comment was
+  shortened to keep it a single readable line instead, matching the file's existing
+  one-line-per-statement style.
+- **`STRUCTURE.md`'s test-file paragraph.** Guide step 12 asks to rewrite the two claims
+  that "stop being true" (`bool` no longer stored as `float`; the `TypeError` no longer
+  deliberately unguarded) and "extend it with this round's coverage." The two stale claims
+  are fixed now, since they describe the shipped code's actual contract. The extension is
+  left as a forward pointer to step 5: round 1's step 4 established (and this plan's own
+  section 1 confirms) that the paragraph's content for a round's tests is written once
+  those tests exist, and none of T1–T7's tests exist yet at this step.
+
+One presentational addition beyond the guide, for the same reason as round 1's: `main()`'s
+own docstring was reworded to mention the `pi_output` reading, the `mode` reassignment and
+the `TypeError` demonstration, and the `=== ValueError demonstrations ===` banner was
+renamed `=== ValueError and TypeError demonstrations ===`, since it is no longer accurate
+otherwise. Neither changes a planned signature or behaviour.
 
 ---
 

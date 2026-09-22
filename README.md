@@ -65,8 +65,10 @@ print(f"Duty cycle over window: {floor.duty_cycle:.2f}")
 radiator.reset()  # zeroes the integral accumulator and clears the history window
 
 # --- Fixed output override (e.g. hold the valve shut during a price spike) ---
+# Any level in [hs.OUTPUT_MIN, hs.OUTPUT_MAX] is accepted; anything else raises ValueError.
 radiator.fixed_output = 0.0  # update() now returns 0.0 regardless of measured_temp
 output = radiator.update(measured_temp)
+print(radiator.pi_output)  # the PI demand the loop would have issued, unheld
 radiator.fixed_output = None  # release the override; update() resumes the PI result
 ```
 
