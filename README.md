@@ -70,6 +70,14 @@ output = radiator.update(measured_temp)
 radiator.fixed_output = None  # release the override; update() resumes the PI result
 ```
 
+The PI loop keeps running underneath a hold: the integral goes on accumulating the error
+the room builds up, and the fixed commands are recorded in `history` like any others. So
+when the hold is released the controller does not resume gently. A radiator jumps to the
+demand that built up during the hold, and floor heating fires several slots in a row
+because its duty-cycle window is still full of the held commands. That burst is usually
+what you want after a cold spell, since the room needs the heat it went without. If you
+would rather resume from a clean state, call `reset()` at release.
+
 `test.py` at the repo root runs a closed-loop simulation of both modes and plots the
 result. It needs matplotlib, which is installed with the `sim` extra:
 

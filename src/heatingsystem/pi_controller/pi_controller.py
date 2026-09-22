@@ -76,6 +76,8 @@ class PIController:
             ``[OUTPUT_MIN, OUTPUT_MAX]``.  While set, :meth:`update`
             returns this level (mode-mapped) instead of the PI result.
             ``None`` (the default) leaves the PI loop in control.
+            Assigned through the :attr:`fixed_output` setter, so an
+            invalid value raises here too.
 
     Raises:
         ValueError: If ``mode`` is not a valid :class:`HeatingMode` value.
@@ -103,24 +105,8 @@ class PIController:
     ) -> None:
         """Initialise the PI controller.
 
-        Args:
-            kp: Proportional gain.
-            ki: Integral gain.
-            mode: Heating actuator mode.
-            setpoint: Initial temperature setpoint in °C.
-            history_length: Rolling window length for duty-cycle
-                computation (must be ≥ 1).
-            fixed_output: Optional fixed actuator level in
-                ``[OUTPUT_MIN, OUTPUT_MAX]``, or ``None`` for PI control.
-                Assigned through the :attr:`fixed_output` setter, so an
-                invalid value raises here too.
-
-        Raises:
-            ValueError: If ``mode`` is not a recognised :class:`HeatingMode`.
-            ValueError: If ``history_length`` < 1.
-            ValueError: If ``kp``, ``ki``, or ``setpoint`` are non-finite.
-            ValueError: If ``fixed_output`` is not ``None`` and is not a
-                finite number in ``[OUTPUT_MIN, OUTPUT_MAX]``.
+        The arguments and the errors they raise are documented once, on the
+        class docstring, so they cannot drift between two copies.
         """
         # --- Coerce and validate mode ---
         try:

@@ -106,8 +106,10 @@ being in `sys.modules` is the expected consequence of the subpackage re-exportin
 ## Script: `test.py`
 
 Closed-loop simulation of `PIController` against a first-order thermal model of a room,
-once per `HeatingMode`, with a setpoint step halfway through, drawn as two stacked
-matplotlib subplots and saved as `simulation.png` (git-ignored). Not a test, despite the
+once per `HeatingMode`, with a fixed-output hold once the room has settled (hatched on the
+plot, so the sag during it and the burst at release are visible) and a setpoint step
+halfway through, drawn as two stacked matplotlib subplots and saved as `simulation.png`
+(git-ignored). Not a test, despite the
 name: it lives outside `tests/` on purpose, `pytest` never collects it, and matplotlib is
 only installed with the `sim` extra (`pip install -e ".[dev,sim]"`).
 
