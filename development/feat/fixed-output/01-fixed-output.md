@@ -7,8 +7,11 @@
 |---|---|
 | Feature | `feat/fixed-output` |
 | Round | `1` |
-| Branch | `claude/festive-maxwell-xft6pj` (hosted session; folder keeps the conventional name `feat/fixed-output`) |
+| Branch | `claude/festive-maxwell-xft6pj` |
 | Started | `2026-09-22` |
+
+The branch is the one this hosted session was told to push to; the folder keeps the
+conventional name `feat/fixed-output`.
 
 ## Progress
 
