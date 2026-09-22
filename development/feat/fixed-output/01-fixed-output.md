@@ -1,6 +1,6 @@
 # Fixed output override
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 
 | Field | Value |
@@ -22,8 +22,8 @@ conventional name `feat/fixed-output`.
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
-| 6 | Concept check | `/concept-check` | in `/build` | in progress |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
+| 7 | Ship | `/ship` | in `/build` | in progress |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -439,9 +439,28 @@ Other observations from the briefs, resolved:
 
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| A1 | Yes | `test_fixed_output_defaults_to_none_and_unfixed_sequence_unchanged` (T1) hand-computes 4 unfixed steps and matches exactly. The full pre-existing 349-case suite is unmodified (`git diff 7ba0fba..28a66aa -- tests/test_pi_controller.py` adds only new sections) and still passes: `pytest tests/` → `405 passed`, no failures, no weakened assertions. `pi_controller.py:200-231` (error, PI computation, clamp, anti-windup) is byte-identical to before this round; only lines 233-240 insert the `level = u if self._fixed_output is None else self._fixed_output` substitution, which is a no-op when `_fixed_output is None`. |
+| A2 | Yes | `test_fixed_output_radiator_returns_level_regardless_of_error` (T2) parametrizes measured ∈ {-50, 50, 21} and per-call setpoint overrides, asserting `update` returns exactly `0.2` every time, appended to history. `test_fixed_output_accepts_boundaries_at_construction_and_setter` covers both construction (`fixed_output=level`) and post-hoc setting for `0.0` and `1.0`. `fixed_output` reads back the level via the getter (`pi_controller.py:297-305`), exercised in every T2 test. |
+| A3 | Yes | `test_fixed_output_floor_quarter_level_converges_to_exact_fraction`: level `0.25`, floor-heating, 24-step window — every output ∈ {0.0, 1.0} (`set(outs) <= {0.0, 1.0}`), `duty_cycle == pytest.approx(0.25)` exactly at the window boundary, and after 500 steps stays within `1/24` of 0.25. `test_fixed_output_floor_boundary_levels_are_constant` and the `history_length=1` alternation test corroborate the binary-output guarantee at other levels. |
+| A4 | Yes | Three twin-comparison tests (`..._when_error_reverses`, `..._across_regimes` parametrized over both modes and 3 measurement regimes, `..._when_error_sequence_reverses`) assert `fixed.integral == free.integral` (exact equality, not `approx`) after every step, including saturation in both directions. `test_fixed_output_update_stores_setpoint_and_advances_integral` confirms a passed setpoint is stored (`ctrl.setpoint == 21.5`) and the integral advances while fixed. `test_fixed_output_update_still_validates_and_appends_nothing` confirms `ValueError` on non-finite `measured`/`setpoint` while fixed, with nothing appended and the integral untouched — validation and the anti-windup-keyed-on-raw-`u` mechanism (`pi_controller.py:207-231`, unchanged) both still run underneath the override, exactly as A4 requires. |
+| A5 | Yes | `test_fixed_output_rejects_non_finite_and_out_of_range` parametrizes `nan`, `inf`, `-inf`, and just-outside-boundary floats, at both construction and via the setter, matching the value in the raised message. `test_fixed_output_failed_set_leaves_previous_value` asserts the prior setting (a number, then `None` on a fresh controller) survives a failed `ValueError` set and a failed `TypeError` set. Construction-time "previous unchanged" is inherently vacuous (no object exists yet to compare against) — correctly noted as such in section 5 rather than asserted as something it cannot be. |
+| A6 | Yes | `test_fixed_output_release_returns_twin_command_and_keeps_both_in_history`: after clearing, the next `update` equals an unfixed twin's command exactly (radiator mode, where `_to_command` passes the level through so this is the direct test of "PI result again"), and history holds both the fixed and resumed commands. `test_fixed_output_floor_release_duty_cycle_recovers_over_one_window` shows the floor-mode duty cycle recovering to the PI demand over one window after release. `test_fixed_output_reset_leaves_override_set` (both modes) asserts `reset()` zeroes integral and history but `fixed_output` stays at its set level. |
 
-Drift found, and what was done about it:
+Out-of-scope items checked against the diff (`git diff 7ba0fba..28a66aa`) and the code — none were built:
+
+- **Timing, scheduling or automatic release** — not present; `fixed_output` only ever changes when the caller assigns it (`pi_controller.py:307-330`), nothing clears it based on elapsed time or step count.
+- **Price awareness of any kind** — no reference to price, cost or any external signal anywhere in the diff.
+- **Any change to how the integral or anti-windup work** — `pi_controller.py:200-231` is unchanged text; confirmed by the A4 twin-integral tests passing with exact equality.
+- **A "hold at the last computed value" mode** — no such mode exists; `fixed_output` is always an explicit float the caller supplies (constructor keyword or setter), never derived from a prior `update` call.
+
+Surface check: no new public name was added at package level (`src/heatingsystem/__init__.py` and `src/heatingsystem/pi_controller/__init__.py` are untouched by this round's diff — confirmed via `git diff 7ba0fba..28a66aa --stat`), matching section 1's "does not touch" note. `test.py` is likewise untouched, matching section 1. The showcase (`python -m heatingsystem.pi_controller.pi_controller`) runs clean (exit 0, only the expected `sys.modules` `RuntimeWarning`) and includes a worked `fixed_output` example in the required named-variable / call / output showcase form: `fixed_level = 0.2` bound, `ctrl_rad.fixed_output = fixed_level`, three `update` calls each printing `command=0.2000` alongside the still-advancing `integral`, then release showing `fixed_output : None  (released -> PI result: 1.0000)` — a reader who only read the concept would recognise this as the agreed feature. `ruff check .`, `ruff format --check .` and `mypy` are all green; `STRUCTURE.md` was audited by hand against the code (no `Agent`/subagent-spawn tool is available inside this subagent either) — the `PIController` constructor row, the `fixed_output` row, `update`'s description, `reset`'s note and `main()`'s row all match the shipped signatures and behaviour character for character; no private name (`_fixed_output`) appears in it.
+
+The two observations flagged for this step's attention, judged rather than obeyed:
+
+- **Floor heating's first command after release is decided against a window still holding the fixed commands.** This is not drift: section 1 states explicitly that "the fixed command is appended to the history like any other command, so the history and duty cycle always describe what the actuator was actually told to do." A window that is still full of `0.0`s from a fixed period causing the first released command to fire high is the direct, intended consequence of that sentence, not a contradiction of A3 or A6. `test_fixed_output_floor_release_duty_cycle_recovers_over_one_window` pins exactly this and is correct evidence for, not against, A6 ("clearing hands control back to the PI loop on the next call" — it does; the *duty-cycle* value that call is judged against is, by design, history, not a fresh PI-only baseline).
+- **`update` stores a passed `setpoint` before validating `measured`.** Confirmed pre-existing: `pi_controller.py:189-197` is unchanged by this round's diff (`git diff 7ba0fba..28a66aa -- src/heatingsystem/pi_controller/pi_controller.py` touches only lines 19-22, 75-86, 94-157, 233-330 and the `_to_command`/`HeatingMode` docstrings — never the setpoint/measured validation order). Section 1 and its acceptance criteria never mention validation *order*, only that inputs are validated and a passed setpoint is stored (A4) — both of which hold regardless of order. Correctly out of this round's remit; not a finding against any A1–A6 criterion.
+
+Drift found, and what was done about it: none. Every acceptance criterion is met with direct, checkable evidence; nothing from the out-of-scope list was built; no public surface exists beyond what section 1 and the plan's Public API table describe. Work proceeds to step 7.
 
 ### Earlier rounds still hold
 
@@ -449,6 +468,8 @@ Drift found, and what was done about it:
 > folder: this round changed code they depend on, and their tests passing is necessary but
 > not sufficient — a criterion can be satisfied by tests that no longer describe what the
 > feature does.
+
+Not applicable — this is round 1 of `feat/fixed-output`, the first round on this branch; there are no earlier rounds to re-check.
 
 | Round | # | Criterion | Still met | Evidence |
 |---|---|---|---|---|
