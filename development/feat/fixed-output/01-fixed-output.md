@@ -1,6 +1,6 @@
 # Fixed output override
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 
 | Field | Value |
@@ -19,8 +19,8 @@ conventional name `feat/fixed-output`.
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | in progress |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
+| 4 | Verify | `/verify` | in `/build` | in progress |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -270,6 +270,25 @@ Findings from the `plan-critic` read, verdict *accept with changes*; all six app
 
 > Written in step 3. Only deviations from the plan above, each with its reason. "Built as
 > planned" is a complete and good entry.
+
+Built as planned. Every step of the implementation guide was followed in order: the
+`fixed_output: float | None = None` keyword-only constructor argument, the private
+`_fixed_output` attribute assigned through the setter, the `fixed_output` property under
+*Properties* after `is_history_full`, the `level = u if self._fixed_output is None else
+self._fixed_output` substitution in `update` (inserted after the anti-windup block and
+before `_to_command`, leaving the PI computation, clamp, anti-windup and history append
+untouched), `_to_command`'s parameter renamed from `u` to `level` with its docstring and
+`HeatingMode`'s reworded, the `reset` docstring note, the two showcase additions in `main()`
+(the fixed-output demo case and the `bad_level` `ValueError` demo), `STRUCTURE.md`, and the
+README usage lines.
+
+One presentational addition beyond the guide: `main()`'s own docstring (not itself part of
+the Public API table) was updated to mention the new `fixed_output` demonstration, for
+consistency with the rest of its description — not a deviation from any planned signature
+or behaviour.
+
+`ruff format` reflowed one README line to fit its width; the comment was shortened rather
+than left to wrap.
 
 ---
 

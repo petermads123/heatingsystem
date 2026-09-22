@@ -15,6 +15,10 @@ Module-level output clamp constants:
 
 * ``OUTPUT_MIN = 0.0``
 * ``OUTPUT_MAX = 1.0``
+
+A controller's output can also be pinned to a fixed level via
+:attr:`PIController.fixed_output`, overriding the PI result while the PI
+calculation, including the integral, keeps running underneath it.
 """
 
 import math
@@ -31,8 +35,8 @@ OUTPUT_MAX: float = 1.0
 class HeatingMode(StrEnum):
     """Heating actuator mode.
 
-    Selects how the normalised PI output (0–1) is translated into an
-    actuator command.
+    Selects how the demand level (the PI output, or the fixed output when
+    one is set) is translated into an actuator command.
 
     Attributes:
         RADIATOR: Continuous modulation — the PI output is forwarded
@@ -68,12 +72,18 @@ class PIController:
             duty-cycle calculation in floor-heating mode.  Must be ≥ 1.
             At 5-minute polling intervals, ``24`` equals 2 hours.
             Default ``24``.
+        fixed_output: Optional fixed actuator level in
+            ``[OUTPUT_MIN, OUTPUT_MAX]``.  While set, :meth:`update`
+            returns this level (mode-mapped) instead of the PI result.
+            ``None`` (the default) leaves the PI loop in control.
 
     Raises:
         ValueError: If ``mode`` is not a valid :class:`HeatingMode` value.
         ValueError: If ``history_length`` is less than 1.
         ValueError: If ``kp``, ``ki``, or ``setpoint`` are not finite
             numbers (e.g. ``nan``, ``inf``).
+        ValueError: If ``fixed_output`` is not ``None`` and is not a
+            finite number in ``[OUTPUT_MIN, OUTPUT_MAX]``.
 
     Example:
         >>> ctrl = PIController(kp=0.5, ki=0.02, setpoint=22.0)
@@ -89,6 +99,7 @@ class PIController:
         setpoint: float = 21.0,
         *,
         history_length: int = 24,
+        fixed_output: float | None = None,
     ) -> None:
         """Initialise the PI controller.
 
@@ -99,11 +110,17 @@ class PIController:
             setpoint: Initial temperature setpoint in °C.
             history_length: Rolling window length for duty-cycle
                 computation (must be ≥ 1).
+            fixed_output: Optional fixed actuator level in
+                ``[OUTPUT_MIN, OUTPUT_MAX]``, or ``None`` for PI control.
+                Assigned through the :attr:`fixed_output` setter, so an
+                invalid value raises here too.
 
         Raises:
             ValueError: If ``mode`` is not a recognised :class:`HeatingMode`.
             ValueError: If ``history_length`` < 1.
             ValueError: If ``kp``, ``ki``, or ``setpoint`` are non-finite.
+            ValueError: If ``fixed_output`` is not ``None`` and is not a
+                finite number in ``[OUTPUT_MIN, OUTPUT_MAX]``.
         """
         # --- Coerce and validate mode ---
         try:
@@ -135,6 +152,10 @@ class PIController:
         # maxlen=24 at 5-min intervals == 2 h of history for duty-cycle tracking.
         self._history: deque[float] = deque(maxlen=history_length)
 
+        # Fixed output override — None means the PI loop is in control.
+        self._fixed_output: float | None = None
+        self.fixed_output = fixed_output
+
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
@@ -154,7 +175,12 @@ class PIController:
         Returns:
             The actuator command for this step.  For ``RADIATOR`` mode this
             is a continuous value in [0.0, 1.0].  For ``FLOOR_HEATING`` mode
-            it is binary: 0.0 (off) or 1.0 (on).
+            it is binary: 0.0 (off) or 1.0 (on).  While :attr:`fixed_output`
+            is set, the command is derived from it instead of the PI
+            result — the PI calculation still runs in full underneath
+            (inputs are validated, the integral still advances with the
+            usual anti-windup), and the fixed command is still recorded in
+            :attr:`history`.
 
         Raises:
             ValueError: If ``measured`` or the new ``setpoint`` are
@@ -204,10 +230,14 @@ class PIController:
             self.integral = new_integral
         # else: output is saturated and error would deepen the windup — hold.
 
-        # --- Map normalised output to actuator command ---
+        # --- Map demand level to actuator command ---
+        # While fixed_output is set, it replaces the PI result u as the
+        # demand level handed to _to_command; the PI computation and
+        # anti-windup above are unaffected either way.
+        level: float = u if self._fixed_output is None else self._fixed_output
         # _to_command reads self._history (the trailing window) BEFORE we
         # append the new command, so duty_cycle reflects only past samples.
-        command: float = self._to_command(u)
+        command: float = self._to_command(level)
 
         # Append AFTER _to_command so this step's command is not included
         # in its own duty-cycle calculation.
@@ -219,7 +249,7 @@ class PIController:
         """Reset the controller state to initial values.
 
         Clears the integral accumulator and the history window.  The gains,
-        mode, and setpoint are left unchanged.
+        mode, setpoint, and :attr:`fixed_output` are left unchanged.
         """
         self.integral = 0.0
         self._history.clear()
@@ -264,22 +294,58 @@ class PIController:
         """
         return len(self._history) == self._history.maxlen
 
+    @property
+    def fixed_output(self) -> float | None:
+        """The current fixed-output override, or ``None`` if unset.
+
+        Returns:
+            The fixed actuator level in [``OUTPUT_MIN``, ``OUTPUT_MAX``], or
+            ``None`` when the PI loop is in control.
+        """
+        return self._fixed_output
+
+    @fixed_output.setter
+    def fixed_output(self, value: float | None) -> None:
+        """Set or clear the fixed-output override.
+
+        Args:
+            value: A finite number in [``OUTPUT_MIN``, ``OUTPUT_MAX``] to
+                fix the output, or ``None`` to release it back to the PI
+                loop. Stored as ``float(value)``, so an ``int`` such as
+                ``0`` or ``1`` is accepted and read back as a float.
+
+        Raises:
+            ValueError: If ``value`` is not ``None`` and is not finite or
+                lies outside [``OUTPUT_MIN``, ``OUTPUT_MAX``]. The previous
+                setting is left unchanged.
+        """
+        if value is None:
+            self._fixed_output = None
+            return
+        if not math.isfinite(value) or value < OUTPUT_MIN or value > OUTPUT_MAX:
+            raise ValueError(
+                f"fixed_output must be a finite number in "
+                f"[{OUTPUT_MIN}, {OUTPUT_MAX}] or None, got {value!r}."
+            )
+        self._fixed_output = float(value)
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _to_command(self, u: float) -> float:
-        """Map a normalised PI output to a mode-specific actuator command.
+    def _to_command(self, level: float) -> float:
+        """Map a demand level to a mode-specific actuator command.
 
-        For ``RADIATOR`` mode the output is forwarded unchanged (already in
-        [0, 1]).  For ``FLOOR_HEATING`` mode a binary signal is derived
-        using duty-cycle modulation:
+        ``level`` is the demand level (the PI output, or the fixed output
+        when one is set).  For ``RADIATOR`` mode it is forwarded unchanged
+        (already in [0, 1]).  For ``FLOOR_HEATING`` mode a binary signal is
+        derived using duty-cycle modulation:
 
-        * If ``u`` is at or below ``OUTPUT_MIN`` the slot is always OFF.
-        * If ``u`` is at or above ``OUTPUT_MAX`` the slot is always ON.
+        * If ``level`` is at or below ``OUTPUT_MIN`` the slot is always OFF.
+        * If ``level`` is at or above ``OUTPUT_MAX`` the slot is always ON.
         * Otherwise the slot is ON when the realised duty cycle so far
-          (mean of the trailing window) is below the target ``u``.  Over
-          many cycles this causes the ON-fraction to converge to ``u``,
+          (mean of the trailing window) is below the target ``level``.  Over
+          many cycles this causes the ON-fraction to converge to ``level``,
           which is why a long window (24 samples = 2 h at 5-min intervals)
           is needed for good modulation fidelity.
 
@@ -287,7 +353,8 @@ class PIController:
         history, so :attr:`duty_cycle` reflects only past samples.
 
         Args:
-            u: Normalised PI output in [``OUTPUT_MIN``, ``OUTPUT_MAX``].
+            level: Demand level in [``OUTPUT_MIN``, ``OUTPUT_MAX``] — the PI
+                output, or the fixed output when one is set.
 
         Returns:
             The actuator command: a float in [0.0, 1.0] for ``RADIATOR``
@@ -295,20 +362,20 @@ class PIController:
         """
         if self.mode is HeatingMode.RADIATOR:
             # Continuous modulation — pass through directly.
-            return u
+            return level
 
         # --- FLOOR_HEATING: duty-cycle modulation ---
-        if u <= OUTPUT_MIN:
+        if level <= OUTPUT_MIN:
             # No demand — keep the floor off.
             return 0.0
-        if u >= OUTPUT_MAX:
+        if level >= OUTPUT_MAX:
             # Full demand — keep the floor on.
             return 1.0
 
-        # Fire this slot when the realised duty so far is below target u.
-        # Over a full window the ON-fraction will converge to u, spreading
+        # Fire this slot when the realised duty so far is below target level.
+        # Over a full window the ON-fraction will converge to level, spreading
         # heat pulses evenly rather than bunching them at the start of the window.
-        return 1.0 if self.duty_cycle < u else 0.0
+        return 1.0 if self.duty_cycle < level else 0.0
 
 
 def main() -> None:
@@ -317,7 +384,8 @@ def main() -> None:
     This function constructs :class:`PIController` instances in both
     :attr:`HeatingMode.RADIATOR` and :attr:`HeatingMode.FLOOR_HEATING`
     modes, performs several :meth:`~PIController.update` calls that
-    include a mid-run setpoint change, and prints the :attr:`~PIController.history`,
+    include a mid-run setpoint change and a :attr:`~PIController.fixed_output`
+    override, and prints the :attr:`~PIController.history`,
     :attr:`~PIController.duty_cycle`, :attr:`~PIController.is_history_full`
     properties and the effect of :meth:`~PIController.reset`.  It also
     demonstrates the ``HeatingMode`` enum directly and shows that invalid
@@ -358,6 +426,25 @@ def main() -> None:
     cmd = ctrl_rad.update(measured=21.3, setpoint=22.0)
     print(
         f"  command after setpoint change: {cmd:.4f}  (setpoint now {ctrl_rad.setpoint})"
+    )
+
+    # Demonstrate the fixed_output override.
+    print("\n  -- fixed_output override --")
+    fixed_level = 0.2
+
+    ctrl_rad.fixed_output = fixed_level
+
+    for i in range(3):
+        cmd = ctrl_rad.update(measured=18.0)
+        print(
+            f"  fixed step {i + 1}: command={cmd:.4f}  integral={ctrl_rad.integral:.4f}"
+        )
+    print(f"  fixed_output    : {ctrl_rad.fixed_output}")
+
+    ctrl_rad.fixed_output = None
+    cmd = ctrl_rad.update(measured=18.0)
+    print(
+        f"  fixed_output    : {ctrl_rad.fixed_output}  (released -> PI result: {cmd:.4f})"
     )
 
     # Demonstrate reset().
@@ -414,6 +501,13 @@ def main() -> None:
         PIController(history_length=0)
     except ValueError as exc:
         print(f"  history_length=0 -> ValueError: {exc}")
+
+    # fixed_output out of range.
+    bad_level = 1.5
+    try:
+        PIController(fixed_output=bad_level)
+    except ValueError as exc:
+        print(f"  fixed_output=1.5 -> ValueError: {exc}")
 
     # Non-finite measurement.
     try:

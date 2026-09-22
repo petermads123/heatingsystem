@@ -63,6 +63,11 @@ print(f"Duty cycle over window: {floor.duty_cycle:.2f}")
 
 # --- Reset (e.g. on controller restart or setpoint change) ---
 radiator.reset()  # zeroes the integral accumulator and clears the history window
+
+# --- Fixed output override (e.g. hold the valve shut during a price spike) ---
+radiator.fixed_output = 0.0  # update() now returns 0.0 regardless of measured_temp
+output = radiator.update(measured_temp)
+radiator.fixed_output = None  # release the override; update() resumes the PI result
 ```
 
 `test.py` at the repo root runs a closed-loop simulation of both modes and plots the

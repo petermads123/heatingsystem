@@ -88,13 +88,14 @@ integrating would pull a saturated output back toward it.
 | `OUTPUT_MIN: float = 0.0` | Lower clamp of the actuator range. |
 | `OUTPUT_MAX: float = 1.0` | Upper clamp of the actuator range. |
 | `HeatingMode(StrEnum)` | `RADIATOR` (continuous output in `[0, 1]`) or `FLOOR_HEATING` (binary on/off from duty-cycle modulation over the rolling window). |
-| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24)` | The controller. `mode` accepts the enum or its string value; gains and setpoint must be finite; `history_length` must be at least 1. Public attributes: `kp`, `ki`, `mode`, `setpoint`, `integral`. |
-| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). A `setpoint` given here replaces the stored one. Raises `ValueError` on a non-finite input. |
-| `PIController.reset() -> None` | Zero the integral and clear the rolling history. |
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | The controller. `mode` accepts the enum or its string value; gains and setpoint must be finite; `history_length` must be at least 1; `fixed_output` is assigned through the `fixed_output` setter, so an invalid value raises there too. Public attributes: `kp`, `ki`, `mode`, `setpoint`, `integral`. |
+| `PIController.fixed_output -> float \| None` | Property, settable. The current output override in `[OUTPUT_MIN, OUTPUT_MAX]`, or `None` when the PI loop is in control. The setter raises `ValueError` for a non-finite or out-of-range value (previous setting unchanged) and stores a valid one as `float`. |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). A `setpoint` given here replaces the stored one. While `fixed_output` is set, the command is derived from it instead of the PI result, though the PI calculation and integral still run underneath, and the command is still recorded in `history`. Raises `ValueError` on a non-finite input. |
+| `PIController.reset() -> None` | Zero the integral and clear the rolling history. Leaves `fixed_output` unchanged. |
 | `PIController.history -> tuple[float, ...]` | The last `history_length` commands, oldest first. |
 | `PIController.duty_cycle -> float` | Mean of `history`; `0.0` while it is empty. |
 | `PIController.is_history_full -> bool` | Whether `history_length` commands have been issued. |
-| `main() -> None` | Showcase: the enum, a radiator warm-up, a setpoint override, a reset, and a floor-heating run to a converged duty cycle. |
+| `main() -> None` | Showcase: the enum, a radiator warm-up, a setpoint override, a `fixed_output` override and release, a reset, and a floor-heating run to a converged duty cycle. |
 
 Runnable standalone: `python -m heatingsystem.pi_controller.pi_controller`, once the
 package is installed (`pip install -e ".[dev]"`). Under a `src/` layout the repo root is
