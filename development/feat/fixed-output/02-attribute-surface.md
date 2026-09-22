@@ -1,6 +1,6 @@
 # Attribute surface: validated settings, PI demand, range constants
 
-<!-- claude-plan step=1 status=active -->
+<!-- claude-plan step=2 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,8 +16,8 @@ conventional name `feat/fixed-output`.
 
 | # | Step | Skill | Runs | Status |
 |---|---|---|---|---|
-| 1 | Conceptualize | `/conceptualize` | with the user | in progress |
-| 2 | Plan | `/plan` | with the user | pending |
+| 1 | Conceptualize | `/conceptualize` | with the user | done |
+| 2 | Plan | `/plan` | with the user | in progress |
 | 3 | Implement | `/implement` | in `/build` | pending |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
@@ -74,37 +74,96 @@ What is already on the branch that this round must not break:
 
 ## 1. Concept
 
-> Written in step 1, agreed with the user before step 2 starts. Prose, not code. Steps 3
-> to 7 run without the user, and the one thing that stops them is a finding that would
-> change this section — so what is not decided here is decided by a halt.
-
 ### What this is
+
+Every setting on `PIController` gets the contract `fixed_output` received in round 1.
+`kp`, `ki`, `setpoint` and `mode` become validating properties, and the constructor
+assigns through them so one validation path serves construction and later assignment
+alike. A wrong value raises `ValueError`, a wrong type raises `TypeError`, both naming the
+attribute and the offending value, and a failed assignment leaves the previous value
+untouched. `bool` counts as a wrong type for every numeric input, including `measured` and
+the per-call `setpoint` of `update`. `update` validates its measurement before it stores
+anything, so a call that raises changes no state at all.
+
+A new read-only property reports the PI demand of the last step: the clamped result in
+the actuator range that the mode mapping would have received. While the output is held by
+`fixed_output`, it still reports what the loop wanted, so a caller can see demand and
+actual side by side. It reads `None` before the first `update` and again after `reset()`,
+because the loop has computed nothing at those points.
+
+`OUTPUT_MIN` and `OUTPUT_MAX` are importable from the package root, next to
+`PIController` and `HeatingMode`.
 
 ### Why it is worth building
 
+The controller runs unattended under an automation. Today `ctrl.setpoint = nan` is
+accepted and silently pins the valve at full, `ctrl.mode = "radiator"` as a plain string
+silently routes to floor-heating modulation, `update(nan, setpoint=22.0)` raises and still
+stores the setpoint, and `fixed_output = True` stores `1.0`, the opposite of "hold". None
+of these surface anywhere; they are found by a cold or overheated room. Round 1 introduced
+the validating-property style for one attribute; this round makes it the rule so the next
+attribute has a convention to follow.
+
+The PI demand exists at every step and is thrown away. A Home Assistant dashboard showing
+"demand vs actual", or an automation that releases a hold early because the loop wants
+nothing anyway, has to recompute it by hand. The range constants are named in the
+`fixed_output` error message and bound the first caller-supplied input that has a range,
+but the README tells callers not to reach into the module that defines them.
+
 ### Inputs and outputs
+
+- **Settings, in:** `kp`, `ki`, `setpoint` take a real number (not `bool`) that is
+  finite; `fixed_output` as in round 1, now also rejecting `bool`; `mode` takes a
+  `HeatingMode` or its string value and stores the enum. The same values are accepted at
+  construction. A non-numeric or `bool` value raises `TypeError`; a numeric value outside
+  the rule raises `ValueError`; an unknown mode raises `ValueError`. Every message names
+  the attribute and repeats the value.
+- **`update`, in:** `measured` and the optional `setpoint`, under the same numeric rule.
+  `measured` is validated first; the setpoint is then assigned through its setter. A
+  failed call stores nothing.
+- **Out:** the PI demand property, a float in `[OUTPUT_MIN, OUTPUT_MAX]` or `None`.
+  `update`'s return value and `history` are unchanged.
+- **Package root:** `OUTPUT_MIN` and `OUTPUT_MAX`, equal to the module's constants.
 
 ### How it connects to the rest of the repo
 
-Which existing modules it calls, which call it, what it does not touch.
+- Changes `src/heatingsystem/pi_controller/pi_controller.py` (`PIController`, its
+  showcase `main`), `src/heatingsystem/__init__.py` and
+  `src/heatingsystem/pi_controller/__init__.py` (the two re-exports),
+  `tests/test_pi_controller.py`, `STRUCTURE.md`, and the README usage section (the new
+  property and the constants).
+- Round 1's test that pins a bare `TypeError` for a string `fixed_output` is updated to
+  expect the attribute-naming message; its `bool` case flips from "stored as float" to
+  "rejected". Nothing else in the existing suite may change.
+- `test.py` is untouched; a later round may plot the PI demand under the hold band.
 
 ### Explicitly out of scope
 
-### Acceptance criteria
+- Any change to the PI arithmetic, anti-windup, clamp or mode mapping.
+- Persisting or restoring state (round 3) and moving anything out of the controller
+  (round 4).
+- Making `history_length` settable (it would resize the window) or `integral` a
+  validated property (round 3 decides how state is written).
+- New validation on `history_length` beyond the existing "at least 1".
 
-> Numbered, observable, and phrased so that step 6 can mark each one met or not met.
-> These are the contract. Step 2 plans against them, step 5 tests them, step 6 audits
-> against them. If a criterion cannot be observed from outside the code, rewrite it.
+### Acceptance criteria
 
 | # | The finished feature... |
 |---|---|
-| A1 | |
-| A2 | |
+| B1 | Assigning a non-finite value to `kp`, `ki` or `setpoint`, or a non-finite or out-of-range value to `fixed_output`, raises `ValueError` naming the attribute and the value, and the previous value is unchanged. |
+| B2 | Assigning a non-numeric value, `bool` included, to `kp`, `ki`, `setpoint` or `fixed_output`, or passing one as `measured` or `setpoint` to `update`, raises `TypeError` naming the attribute, and the previous value is unchanged. |
+| B3 | Assigning `mode` accepts a `HeatingMode` or its string value and stores the enum; anything else raises `ValueError` naming the attribute, and the previous mode is unchanged. |
+| B4 | An `update` call that raises, for any reason, leaves `setpoint`, `integral`, `history` and the PI demand exactly as they were. |
+| B5 | After each successful `update`, the PI demand property equals that step's clamped PI result; while the output is fixed it still reports the PI result rather than the fixed level; it is `None` before the first update and after `reset()`. |
+| B6 | `OUTPUT_MIN` and `OUTPUT_MAX` are importable from the package root and equal the module's values. |
+| B7 | Every input that raised at construction before this round raises the same error class there now, with a message that also names the attribute, and round 1's six criteria still hold. |
 
 ### Open questions
 
-> Must be empty before step 2 begins. An unanswered question here is a decision being
-> made by accident later — and nobody is watching when it happens.
+None. Decisions taken in step 1 without asking, because one reading was clearly right:
+the PI demand is the clamped value, not the raw sum; it is `None` before the first update
+and after `reset()`; `mode`'s setter coerces exactly as the constructor does;
+`history_length` and `integral` stay as they are.
 
 ---
 
