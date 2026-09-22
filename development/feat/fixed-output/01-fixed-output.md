@@ -1,6 +1,6 @@
 # Fixed output override
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 
 | Field | Value |
@@ -20,8 +20,8 @@ conventional name `feat/fixed-output`.
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | in progress |
-| 5 | Test | `/test` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
+| 5 | Test | `/test` | in `/build` | in progress |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -298,12 +298,39 @@ than left to wrap.
 
 | Check | Result |
 |---|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
+| `ruff check .` | `All checks passed!` |
+| `ruff format --check .` | `38 files already formatted` |
+| `mypy` | `Success: no issues found in 13 source files` |
+| `pytest` (existing suite, confirms nothing broke) | `349 passed in 4.89s` |
+| Plan completeness | every signature in the Public API table exists as written — see table below |
+| `STRUCTURE.md` | in sync — audited manually (no `Agent`/subagent-spawn tool was available in this run to invoke `structure-auditor`; compared every changed entry against the code by hand instead) |
+| `python -m heatingsystem.pi_controller.pi_controller` | ran clean, exit 0; expected `RuntimeWarning` about re-import from `sys.modules`; output includes the new `-- fixed_output override --` block (three fixed steps at `command=0.2000`, `fixed_output : 0.2`, then release showing `fixed_output : None  (released -> PI result: 1.0000)`) and the new `bad_level = 1.5` `ValueError` demo (`fixed_output=1.5 -> ValueError: fixed_output must be a finite number in [0.0, 1.0] or None, got 1.5.`) |
+
+### Plan completeness — Public API table (section 2) vs. code
+
+| Signature | Result |
+|---|---|
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | Match — `pi_controller.py:94-103`, assigned through the setter at line 157 as planned |
+| `PIController.fixed_output -> float \| None` (getter) | Match — `pi_controller.py:297-305` |
+| `PIController.fixed_output` setter `(value: float \| None) -> None` | Match — `pi_controller.py:307-330`; `ValueError` message, range check and `math.isfinite` order, and `float(value)` storage all as planned |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | Match — signature unchanged (`pi_controller.py:163`); the `level = u if self._fixed_output is None else self._fixed_output` substitution sits after the anti-windup block and before `_to_command`, exactly as guided |
+| `PIController.reset() -> None` | Match — signature and behaviour unchanged (`pi_controller.py:248-255`); docstring notes `fixed_output` is left alone |
+| `main() -> None` | Match — showcase gained the fixed-output case and the `bad_level` `ValueError` demo, both in the required named-variable / call / output form |
+
+No **Missing**, no **Deviation**, no **Unplanned** entries — every row of the plan's Public API table exists in the code exactly as written, and no additional public surface was added beyond it.
+
+### STRUCTURE.md audit
+
+Compared by hand against `src/heatingsystem/pi_controller/pi_controller.py`, `src/heatingsystem/pi_controller/__init__.py` and `src/heatingsystem/__init__.py`:
+
+- The `PIController` constructor row, the new `PIController.fixed_output` row, the `update` row's description and the `main()` row all match the code's current signatures and behaviour character for character.
+- `reset`'s row already says "Leaves `fixed_output` unchanged."
+- No private name (`_fixed_output`, `_to_command`) appears in `STRUCTURE.md`.
+- `src/heatingsystem/pi_controller/__init__.py` and `src/heatingsystem/__init__.py` are unchanged by this round (no new package-level export, per section 1's scope) and their `STRUCTURE.md` entries still match.
+- The `tests/test_pi_controller.py` paragraph does not yet mention `fixed_output` coverage — correct at this step, since step 5 (Test) has not run yet; nothing to update here until then.
+- No stale entries (files that no longer exist) and no module on disk missing from the file.
+
+Conclusion: in sync. No edits required.
 
 ---
 
