@@ -1,6 +1,6 @@
 # Attribute surface: validated settings, PI demand, range constants
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -22,8 +22,8 @@ conventional name `feat/fixed-output`.
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | in progress |
-| 8 | Recommend | `/recommend` | with the user | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
+| 8 | Recommend | `/recommend` | with the user | in progress |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
 
@@ -817,10 +817,59 @@ assert. No round 1 test was deleted or weakened; `pytest -k fixed_output` → `6
 
 ## 7. Ship log
 
+> Written in step 7. Gates re-run on the whole tree; the round's commits reviewed for
+> anything that should not be there.
+
+| Check | Result |
+|---|---|
+| `ruff check .` | `All checks passed!` |
+| `ruff format --check .` | `39 files already formatted` |
+| `mypy` | `Success: no issues found in 13 source files` |
+| `pytest` | `525 passed in 5.61s` |
+| `python -m heatingsystem.pi_controller.pi_controller` | ran clean, exit 0; only the expected `sys.modules` `RuntimeWarning`; the `pi_output` readings, `mode` reassignment and `TypeError` demo all present as recorded in sections 4 and 6 |
+| `MPLBACKEND=Agg .venv/bin/python test.py` | ran clean, exit 0, `Saved figure to simulation.png`; `simulation.png` is git-ignored and was not staged |
+
+Plan file cross-check: steps 1–6 all marked `done`, section 6's criteria table has all
+seven B-rows `Met = Yes` (B7 with a judged, non-drift exception explained in place), the
+"Earlier rounds still hold" table re-confirms all six of round 1's A-criteria, and section
+5's intent table has a passing test group against every one of T1–T7. Nothing unmet to
+send back.
+
+Diff review (`git diff f58375c..HEAD`, the round's changes since round 1 closed at
+`f58375c`): touches exactly the six files the plan named —
+`src/heatingsystem/pi_controller/pi_controller.py`, both `__init__.py` files,
+`tests/test_pi_controller.py`, `STRUCTURE.md`, `README.md` — plus this plan file. No stray
+files (`git diff f58375c..HEAD --stat` lists nothing else), no debug prints, no
+commented-out code, no secrets (`git diff f58375c..HEAD | grep -iE
+'api[_-]?key|secret|password|token|BEGIN (RSA|OPENSSH|PRIVATE)'`: no hits), no
+`.claude/.skip-gate` file, no private name (`_finite`, `_kp`, `_ki`, `_setpoint`, `_mode`,
+`_pi_output`, `_fixed_output`, `_to_command`) in `STRUCTURE.md`.
+
+Test-file diff checked line by line against guide step 14 / section 5's log and nothing
+beyond it: the round 1 test renamed to `test_fixed_output_int_stored_and_returned_as_float`
+keeping only the `(1, 1.0)`/`(0, 0.0)` cases, its `True`/`False` cases moved into the new
+`test_fixed_output_bool_raises_type_error_naming_attribute_and_keeps_previous`;
+`match="fixed_output"` added to the two `TypeError` assertions in
+`test_fixed_output_string_raises_type_error_not_value_error` and to the bare `TypeError`
+assertion in `test_fixed_output_failed_set_leaves_previous_value`; `match=<attribute>`
+added to eight pre-existing assertions
+(`test_history_length_zero_raises`, `test_history_length_negative_raises`,
+`test_non_finite_kp_raises`, `test_non_finite_ki_raises`, `test_non_finite_setpoint_raises`,
+`test_update_non_finite_measured_raises`, `test_update_inf_measured_raises`,
+`test_update_setpoint_override_non_finite_raises`) — an added assertion, not a weakened
+one. No existing test was deleted or made less strict; the removed lines in the diff are
+exactly these two renames/moves and the `match=` additions, confirmed with `git diff
+f58375c..HEAD -- tests/test_pi_controller.py | grep -E '^-'`. `STRUCTURE.md`'s new and
+changed rows (constructor, the four new property rows, `pi_output`, `update`, `reset`,
+`main()`, both `__init__` export tables, the test-file paragraph) match the shipped code;
+the "Two pre-existing arithmetic quirks... left alone" paragraph correctly describes them as
+deferred rather than fixed. Every step from Concept onward left its own commit; none is
+missing.
+
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits (this round, after `Open round 2: attribute surface` = `f58375c`) | `b0037a5` Concept: Attribute surface (round 2) · `2bdaa02` Plan: Attribute surface (round 2) · `4c76121` Plan: apply the plan-critic's seven findings (round 2) · `611e864` Plan accepted: Attribute surface (round 2) · `5bcced1` Add validating properties, pi_output and OUTPUT_MIN/MAX exports (Implement) · `a769596` Verify: Attribute surface (round 2) · `1cd6973` Test: attribute surface (round 2) · `5fb4593` Concept check: Attribute surface (round 2) · this commit, Ship: Attribute surface (round 2) |
+| Pushed to | `origin/claude/festive-maxwell-xft6pj` |
 
 ---
 
