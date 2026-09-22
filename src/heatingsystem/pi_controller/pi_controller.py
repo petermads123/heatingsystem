@@ -49,8 +49,10 @@ def _finite(name: str, value: object) -> float:
 
     Raises:
         TypeError: If ``value`` is a ``bool`` or not an
-            :class:`numbers.Real` (an ``int``, ``float``, ``Fraction`` or
-            numpy scalar passes; a ``Decimal`` does not).
+            :class:`numbers.Real` (an ``int``, ``float``, ``Fraction`` and
+            most numpy scalar types pass — ``numpy.bool_`` does not, for the
+            same reason a plain ``bool`` does not; a ``Decimal`` does not
+            either).
         ValueError: If ``value`` is not finite (``nan`` or ``inf``).
         OverflowError: If ``value`` is too large to represent as a float
             (e.g. an ``int`` such as ``10**400``).
@@ -135,6 +137,9 @@ class PIController:
         TypeError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output`` are
             not a real number, ``bool`` included; the message names the
             attribute.
+        OverflowError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output``
+            are too large to represent as a ``float`` (e.g. an ``int`` such
+            as ``10**400``); the message names the attribute.
 
     Example:
         >>> ctrl = PIController(kp=0.5, ki=0.02, setpoint=22.0)

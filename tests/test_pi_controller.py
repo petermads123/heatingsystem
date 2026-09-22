@@ -2,10 +2,14 @@
 
 import math
 import re
+import sys
+from decimal import Decimal
+from fractions import Fraction
 
 import pytest
 
 import heatingsystem as hs
+from heatingsystem.pi_controller import pi_controller as pi_controller_module
 
 # ---------------------------------------------------------------------------
 # Construction / defaults
@@ -60,27 +64,27 @@ def test_invalid_mode_string_raises() -> None:
 
 
 def test_history_length_zero_raises() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="history_length"):
         hs.PIController(history_length=0)
 
 
 def test_history_length_negative_raises() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="history_length"):
         hs.PIController(history_length=-5)
 
 
 def test_non_finite_kp_raises() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="kp"):
         hs.PIController(kp=math.nan)
 
 
 def test_non_finite_ki_raises() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="ki"):
         hs.PIController(ki=math.inf)
 
 
 def test_non_finite_setpoint_raises() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="setpoint"):
         hs.PIController(setpoint=math.nan)
 
 
@@ -91,19 +95,19 @@ def test_non_finite_setpoint_raises() -> None:
 
 def test_update_non_finite_measured_raises() -> None:
     ctrl = hs.PIController()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="measured"):
         ctrl.update(math.nan)
 
 
 def test_update_inf_measured_raises() -> None:
     ctrl = hs.PIController()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="measured"):
         ctrl.update(math.inf)
 
 
 def test_update_setpoint_override_non_finite_raises() -> None:
     ctrl = hs.PIController()
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="setpoint"):
         ctrl.update(20.0, setpoint=math.inf)
 
 
@@ -933,7 +937,7 @@ def test_fixed_output_failed_set_leaves_previous_value() -> None:
         ctrl.fixed_output = 1.5
     assert ctrl.fixed_output == 0.4
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="fixed_output"):
         ctrl.fixed_output = "0.5"  # type: ignore[assignment]  # deliberate misuse
     assert ctrl.fixed_output == 0.4
 
@@ -945,19 +949,17 @@ def test_fixed_output_failed_set_leaves_previous_value() -> None:
 
 @pytest.mark.parametrize("bad", ["0.5", "", "unavailable", "None"])
 def test_fixed_output_string_raises_type_error_not_value_error(bad: str) -> None:
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="fixed_output"):
         hs.PIController(fixed_output=bad)  # type: ignore[arg-type]  # deliberate misuse
 
     ctrl = hs.PIController(fixed_output=0.4)
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="fixed_output"):
         ctrl.fixed_output = bad  # type: ignore[assignment]  # deliberate misuse
     assert ctrl.fixed_output == 0.4
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"), [(1, 1.0), (0, 0.0), (True, 1.0), (False, 0.0)]
-)
-def test_fixed_output_int_and_bool_stored_and_returned_as_float(
+@pytest.mark.parametrize(("value", "expected"), [(1, 1.0), (0, 0.0)])
+def test_fixed_output_int_stored_and_returned_as_float(
     value: int, expected: float
 ) -> None:
     ctrl = hs.PIController(setpoint=21.0, fixed_output=value)
@@ -971,6 +973,22 @@ def test_fixed_output_int_and_bool_stored_and_returned_as_float(
     ctrl2.fixed_output = value
     assert ctrl2.fixed_output == expected
     assert type(ctrl2.fixed_output) is float
+
+
+@pytest.mark.parametrize("bad", [True, False])
+def test_fixed_output_bool_raises_type_error_naming_attribute_and_keeps_previous(
+    bad: bool,
+) -> None:
+    # Round 2 flip: fixed_output=True/False used to be accepted and stored as
+    # 1.0/0.0 (the opposite of "hold"); B2 rejects bool for every setting.
+    with pytest.raises(TypeError, match="fixed_output"):
+        hs.PIController(fixed_output=bad)
+
+    ctrl = hs.PIController(fixed_output=0.4)
+    with pytest.raises(TypeError, match="fixed_output"):
+        ctrl.fixed_output = bad
+    assert ctrl.fixed_output == 0.4
+    assert ctrl.update(20.0) == 0.4
 
 
 # ---------------------------------------------------------------------------
@@ -1056,3 +1074,542 @@ def test_fixed_output_set_and_cleared_while_saturated() -> None:
     assert resumed == 1.0
     assert ctrl.history == (1.0, 0.1, 1.0)
     assert ctrl.integral == 0.0
+
+
+# ===========================================================================
+# Round 2 — attribute surface: kp/ki/setpoint/mode as validating properties,
+# pi_output, OUTPUT_MIN/OUTPUT_MAX re-exported (development/feat/fixed-output/
+# 02-attribute-surface.md)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# T1 (B1): kp, ki, setpoint reject non-finite values; the previous value is
+# kept; the fixed_output range error names the value the caller passed
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("attr", ["kp", "ki", "setpoint"])
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+def test_numeric_setters_reject_non_finite_naming_attribute_and_keep_previous(
+    attr: str, bad: float
+) -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    previous = getattr(ctrl, attr)
+
+    with pytest.raises(ValueError, match=re.escape(repr(bad))) as excinfo:
+        setattr(ctrl, attr, bad)
+    assert attr in str(excinfo.value)
+    assert getattr(ctrl, attr) == previous
+
+    with pytest.raises(ValueError, match=attr):
+        hs.PIController(**{attr: bad})  # type: ignore[arg-type]  # attr is kp/ki/setpoint
+
+
+def test_fixed_output_range_error_repeats_the_passed_value_not_the_float() -> None:
+    ctrl = hs.PIController(fixed_output=0.4)
+
+    with pytest.raises(ValueError, match=re.escape("Fraction(3, 2)")):
+        ctrl.fixed_output = Fraction(3, 2)  # type: ignore[assignment]  # numbers.Real, not a float
+    assert ctrl.fixed_output == 0.4
+
+    ctrl.fixed_output = Fraction(1, 2)  # type: ignore[assignment]  # numbers.Real, not a float
+    assert ctrl.fixed_output == 0.5
+    assert type(ctrl.fixed_output) is float
+
+
+# ---------------------------------------------------------------------------
+# T2 (B2, B7): non-numeric and bool inputs raise TypeError naming the
+# attribute; int and Fraction are accepted and read back as float; a huge
+# int raises OverflowError rather than ValueError (decided at the plan gate,
+# plan's Critique item 1 — not drift from section 1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "0.3",
+        "",
+        None,
+        [0.3],
+        (0.3,),
+        {},
+        complex(0.3, 0),
+        Decimal("0.3"),
+        Decimal("nan"),
+        b"0.3",
+        True,
+        False,
+    ],
+)
+@pytest.mark.parametrize("attr", ["kp", "ki", "setpoint"])
+def test_numeric_setters_reject_non_real_types_naming_attribute_and_type(
+    attr: str, bad: object
+) -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    previous = getattr(ctrl, attr)
+
+    with pytest.raises(TypeError, match=attr) as excinfo:
+        setattr(ctrl, attr, bad)
+    assert type(bad).__name__ in str(excinfo.value)
+    assert getattr(ctrl, attr) == previous
+
+    with pytest.raises(TypeError, match=attr):
+        hs.PIController(**{attr: bad})  # type: ignore[arg-type]  # deliberate misuse
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["0.3", [0.3], True, False, Decimal("0.3")],
+    ids=["str", "list", "true", "false", "decimal"],
+)
+def test_fixed_output_rejects_non_real_types_naming_attribute(bad: object) -> None:
+    ctrl = hs.PIController(fixed_output=0.4)
+    with pytest.raises(TypeError, match="fixed_output"):
+        ctrl.fixed_output = bad  # type: ignore[assignment]  # deliberate misuse
+    assert ctrl.fixed_output == 0.4
+
+
+@pytest.mark.parametrize(
+    "bad", ["20", [20.0], True, False], ids=["str", "list", "true", "false"]
+)
+def test_update_measured_rejects_non_numeric_and_bool_naming_measured(
+    bad: object,
+) -> None:
+    ctrl = hs.PIController(setpoint=21.0)
+    with pytest.raises(TypeError, match="measured"):
+        ctrl.update(bad)  # type: ignore[arg-type]  # deliberate misuse
+
+
+@pytest.mark.parametrize(
+    "bad", ["22", [22.0], True, False], ids=["str", "list", "true", "false"]
+)
+def test_update_setpoint_kwarg_rejects_non_numeric_and_bool_naming_setpoint(
+    bad: object,
+) -> None:
+    ctrl = hs.PIController(setpoint=21.0)
+    with pytest.raises(TypeError, match="setpoint"):
+        ctrl.update(20.0, setpoint=bad)  # type: ignore[arg-type]  # deliberate misuse
+    assert ctrl.setpoint == 21.0
+
+
+def test_update_setpoint_none_is_not_an_override_not_a_type_error() -> None:
+    # None is a TypeError for the numeric setters, but update()'s setpoint
+    # parameter uses None as "no override" by design (its own Optional
+    # contract, not a validated value) — the two are different questions.
+    ctrl = hs.PIController(setpoint=21.0)
+    out = ctrl.update(20.5, setpoint=None)
+    assert ctrl.setpoint == 21.0
+    assert out == pytest.approx(0.1575)
+
+
+@pytest.mark.parametrize("attr", ["kp", "ki", "setpoint"])
+def test_numeric_setters_accept_int_and_fraction_read_back_as_float(
+    attr: str,
+) -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+
+    setattr(ctrl, attr, 1)
+    assert getattr(ctrl, attr) == 1.0
+    assert type(getattr(ctrl, attr)) is float
+
+    setattr(ctrl, attr, Fraction(3, 10))
+    assert getattr(ctrl, attr) == pytest.approx(0.3)
+    assert type(getattr(ctrl, attr)) is float
+
+
+def test_update_accepts_fraction_measured_and_int_setpoint() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    twin = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+
+    out = ctrl.update(Fraction(41, 2))  # type: ignore[arg-type]  # numbers.Real, not a float; 20.5 exactly
+    twin_out = twin.update(20.5)
+    assert out == twin_out
+    assert type(out) is float
+
+    out2 = ctrl.update(20.0, setpoint=22)
+    assert ctrl.setpoint == 22.0
+    assert type(ctrl.setpoint) is float
+    assert type(out2) is float
+
+
+@pytest.mark.parametrize("attr", ["kp", "ki", "setpoint"])
+def test_numeric_setters_overflow_raises_naming_attribute_and_keeps_previous(
+    attr: str,
+) -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    previous = getattr(ctrl, attr)
+
+    with pytest.raises(OverflowError, match=attr):
+        setattr(ctrl, attr, 10**400)
+    assert getattr(ctrl, attr) == previous
+
+    with pytest.raises(OverflowError, match=attr):
+        hs.PIController(**{attr: 10**400})  # type: ignore[arg-type]  # attr is kp/ki/setpoint
+
+
+def test_update_overflow_int_raises_naming_measured_or_setpoint() -> None:
+    ctrl = hs.PIController(setpoint=21.0)
+
+    with pytest.raises(OverflowError, match="measured"):
+        ctrl.update(10**400)
+    assert ctrl.history == ()
+
+    with pytest.raises(OverflowError, match="setpoint"):
+        ctrl.update(20.0, setpoint=10**400)
+    assert ctrl.setpoint == 21.0
+
+
+def test_fixed_output_overflow_int_raises_overflow_not_range_value_error() -> None:
+    ctrl = hs.PIController(fixed_output=0.4)
+    with pytest.raises(OverflowError, match="fixed_output"):
+        ctrl.fixed_output = 10**400
+    assert ctrl.fixed_output == 0.4
+
+
+def test_numeric_setters_overflow_boundary_either_side() -> None:
+    # The largest representable float, as an int, is accepted; one bit past
+    # it overflows float() itself rather than merely failing the range/finite
+    # check, on both sides of zero.
+    ctrl = hs.PIController()
+
+    ctrl.kp = int(sys.float_info.max)
+    assert ctrl.kp == sys.float_info.max
+    assert type(ctrl.kp) is float
+
+    with pytest.raises(OverflowError, match="kp"):
+        ctrl.kp = 2**1024
+    with pytest.raises(OverflowError, match="kp"):
+        ctrl.kp = -(2**1024)
+
+    # fixed_output: one power of two short of the boundary is a plain
+    # out-of-range ValueError (float() succeeds); past it, float() itself
+    # overflows and OverflowError takes over instead.
+    with pytest.raises(ValueError, match=re.escape(repr(2**1023))):
+        ctrl.fixed_output = 2**1023
+    with pytest.raises(OverflowError, match="fixed_output"):
+        ctrl.fixed_output = 2**1024
+
+
+# ---------------------------------------------------------------------------
+# T3 (B3): mode coerces to the enum in both directions, an invalid value
+# raises ValueError naming mode and listing the valid values
+# ---------------------------------------------------------------------------
+
+
+def test_mode_string_is_stored_as_enum_member_not_str() -> None:
+    # `"radiator" == HeatingMode.RADIATOR` is True for a plain str comparison,
+    # so this must assert identity, not equality, to actually prove coercion.
+    ctrl = hs.PIController(mode="floor_heating")
+    assert ctrl.mode is hs.HeatingMode.FLOOR_HEATING
+    assert type(ctrl.mode) is hs.HeatingMode
+
+    ctrl.mode = "radiator"
+    assert ctrl.mode is hs.HeatingMode.RADIATOR
+
+
+def test_mode_switch_radiator_to_floor_next_command_is_binary() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    ctrl.update(20.5)
+
+    ctrl.mode = "floor_heating"
+    out = ctrl.update(20.5)
+
+    assert out in {0.0, 1.0}
+
+
+def test_mode_switch_floor_to_radiator_next_command_is_continuous() -> None:
+    # The R4 defect this round fixes: `ctrl.mode = "radiator"` as a plain
+    # string used to silently keep routing to floor-heating modulation.
+    ctrl = hs.PIController(mode="floor_heating", kp=0.3, ki=0.015, setpoint=21.0)
+    ctrl.update(20.5)
+
+    ctrl.mode = "radiator"
+    out = ctrl.update(20.5)
+
+    assert out == pytest.approx(0.165)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["steam", "RADIATOR", "Radiator", " radiator", "radiator\n", "", 1, None, True, []],
+    ids=[
+        "unknown",
+        "upper-case",
+        "title-case",
+        "leading-space",
+        "trailing-newline",
+        "empty",
+        "int",
+        "none",
+        "bool",
+        "list",
+    ],
+)
+def test_mode_rejects_everything_else_with_value_error_listing_valid_values(
+    bad: object,
+) -> None:
+    ctrl = hs.PIController()
+
+    with pytest.raises(ValueError, match=re.escape("['radiator', 'floor_heating']")):
+        ctrl.mode = bad  # type: ignore[assignment]  # deliberate misuse
+    assert ctrl.mode is hs.HeatingMode.RADIATOR
+
+    with pytest.raises(ValueError, match="mode"):
+        hs.PIController(mode=bad)  # type: ignore[arg-type]  # deliberate misuse
+
+
+# ---------------------------------------------------------------------------
+# T4 (B2, B4): a raising update() leaves every piece of state exactly as it
+# was — the motivating R4 bug was update(nan, setpoint=22.0) raising but
+# still storing the new setpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("measured", "setpoint"),
+    [
+        (math.nan, 22.0),
+        ("x", 22.0),
+        (20.5, math.nan),
+        (True, None),
+        (20.5, "22"),
+        (20.5, True),
+        (10**400, None),
+        (20.5, 10**400),
+    ],
+    ids=[
+        "nan-measured-good-setpoint",
+        "str-measured-good-setpoint",
+        "good-measured-nan-setpoint",
+        "bool-measured",
+        "good-measured-str-setpoint",
+        "good-measured-bool-setpoint",
+        "overflow-measured",
+        "overflow-setpoint",
+    ],
+)
+@pytest.mark.parametrize("fixed", [None, 0.3], ids=["unfixed", "fixed"])
+def test_update_failed_call_leaves_every_piece_of_state_untouched(
+    measured: object, setpoint: object, fixed: float | None
+) -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0, fixed_output=fixed)
+    ctrl.update(20.5)
+    ctrl.update(20.5)
+    before = (
+        ctrl.setpoint,
+        ctrl.integral,
+        ctrl.history,
+        ctrl.pi_output,
+        ctrl.fixed_output,
+    )
+
+    with pytest.raises((ValueError, TypeError, OverflowError)):
+        ctrl.update(measured, setpoint)  # type: ignore[arg-type]  # deliberate misuse
+
+    after = (
+        ctrl.setpoint,
+        ctrl.integral,
+        ctrl.history,
+        ctrl.pi_output,
+        ctrl.fixed_output,
+    )
+    assert after == before
+
+
+def test_update_failed_call_does_not_consume_a_step() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    twin = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    ctrl.update(20.5)
+    twin.update(20.5)
+
+    with pytest.raises(ValueError):
+        ctrl.update(math.nan, setpoint=22.0)
+
+    ctrl.update(20.5)
+    twin.update(20.5)
+
+    assert ctrl.integral == twin.integral
+    assert ctrl.pi_output == twin.pi_output
+    assert ctrl.history == twin.history
+
+
+# ---------------------------------------------------------------------------
+# T5 (B5): pi_output — the clamped PI result of the last update()
+# ---------------------------------------------------------------------------
+
+
+def test_pi_output_none_then_value_across_fix_release_and_reset() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    assert ctrl.pi_output is None
+
+    ctrl.update(20.5)
+    assert ctrl.pi_output == pytest.approx(0.1575)
+
+    ctrl.fixed_output = 0.9
+    assert ctrl.pi_output == pytest.approx(0.1575)  # assignment alone runs no step
+
+    cmd = ctrl.update(20.5)
+    assert cmd == 0.9
+    assert ctrl.pi_output == pytest.approx(0.165)  # the PI result, not the fixed level
+
+    ctrl.fixed_output = None
+    assert ctrl.pi_output == pytest.approx(0.165)
+
+    cmd2 = ctrl.update(20.5)
+    assert cmd2 == pytest.approx(0.1725)
+    assert ctrl.pi_output == pytest.approx(0.1725)
+
+    ctrl.fixed_output = 0.9
+    ctrl.reset()
+    assert ctrl.pi_output is None
+    assert ctrl.fixed_output == 0.9  # reset leaves fixed_output alone
+
+    ctrl.update(20.5)
+    assert ctrl.pi_output == pytest.approx(0.1575)  # integral was cleared too
+
+
+def test_pi_output_is_exactly_clamp_bound_in_saturation() -> None:
+    high = hs.PIController(kp=0.5, ki=0.02, setpoint=21.0)
+    high.update(19.0)
+    assert high.pi_output == 1.0
+
+    low = hs.PIController()
+    low.update(30.0)
+    assert low.pi_output == 0.0
+
+
+def test_pi_output_at_exact_clamp_edges_holds_the_integral() -> None:
+    # raw lands exactly on a clamp bound rather than deep in saturation.
+    at_zero = hs.PIController(kp=0.5, ki=0.02, setpoint=21.0)
+    at_zero.update(21.0)  # error 0.0 -> raw exactly 0.0
+    assert at_zero.pi_output == 0.0
+    assert at_zero.integral == 0.0
+
+    at_one = hs.PIController(kp=1.0, ki=0.0, setpoint=21.0)
+    at_one.update(20.0)  # error 1.0 -> raw exactly 1.0
+    assert at_one.pi_output == 1.0
+    assert at_one.integral == 0.0
+
+
+def test_pi_output_reports_pi_demand_not_fixed_level_while_fixed() -> None:
+    fixed = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0, fixed_output=0.9)
+    free = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+
+    cmd = fixed.update(20.5)
+    free.update(20.5)
+
+    assert cmd == 0.9
+    assert fixed.pi_output == free.pi_output == pytest.approx(0.1575)
+
+
+def test_pi_output_reports_fractional_demand_not_binary_command_in_floor_mode() -> None:
+    ctrl = hs.PIController(
+        kp=0.3, ki=0.015, mode="floor_heating", setpoint=21.0, fixed_output=0.25
+    )
+    cmd = ctrl.update(20.5)
+    assert cmd in {0.0, 1.0}
+    assert ctrl.pi_output == pytest.approx(0.1575)
+
+
+def test_pi_output_is_read_only() -> None:
+    ctrl = hs.PIController()
+    with pytest.raises(AttributeError):
+        ctrl.pi_output = 0.5  # type: ignore[misc]  # deliberate misuse
+    assert ctrl.pi_output is None
+
+
+# ---------------------------------------------------------------------------
+# T6 (B6): OUTPUT_MIN and OUTPUT_MAX re-exported from the package root
+# ---------------------------------------------------------------------------
+
+
+def test_output_constants_at_package_root_are_the_module_objects() -> None:
+    assert hs.OUTPUT_MIN is hs.pi_controller.OUTPUT_MIN
+    assert hs.OUTPUT_MIN is pi_controller_module.OUTPUT_MIN
+    assert hs.OUTPUT_MAX is hs.pi_controller.OUTPUT_MAX
+    assert hs.OUTPUT_MAX is pi_controller_module.OUTPUT_MAX
+    assert hs.OUTPUT_MIN == 0.0
+    assert hs.OUTPUT_MAX == 1.0
+    assert "OUTPUT_MIN" in hs.__all__
+    assert "OUTPUT_MAX" in hs.__all__
+    assert "OUTPUT_MIN" in hs.pi_controller.__all__
+    assert "OUTPUT_MAX" in hs.pi_controller.__all__
+
+
+# ---------------------------------------------------------------------------
+# T7 (B7): construction and later assignment raise the identical error for
+# the same bad value; state isolation between settings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("attr", "value", "exc_type"),
+    [
+        ("kp", math.nan, ValueError),
+        ("ki", math.inf, ValueError),
+        ("setpoint", math.nan, ValueError),
+        ("mode", "steam", ValueError),
+        ("mode", None, ValueError),
+        ("fixed_output", 1.5, ValueError),
+        ("kp", "0.3", TypeError),
+        ("setpoint", None, TypeError),
+        ("fixed_output", True, TypeError),
+        ("fixed_output", Decimal("0.5"), TypeError),
+        ("ki", 10**400, OverflowError),
+    ],
+)
+def test_constructor_and_setter_raise_identical_error_for_same_value(
+    attr: str, value: object, exc_type: type[Exception]
+) -> None:
+    ctrl = hs.PIController()
+
+    with pytest.raises(exc_type) as ctor_info:
+        hs.PIController(**{attr: value})  # type: ignore[arg-type]  # deliberate misuse
+    with pytest.raises(exc_type) as setter_info:
+        setattr(ctrl, attr, value)
+
+    assert type(ctor_info.value) is exc_type
+    assert type(setter_info.value) is exc_type
+    assert str(ctor_info.value) == str(setter_info.value)
+    assert attr in str(ctor_info.value)
+
+
+def test_setters_on_success_change_only_their_own_attribute() -> None:
+    ctrl = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0, fixed_output=0.4)
+    for _ in range(4):
+        ctrl.update(20.5)
+    integral, history, pi_output = ctrl.integral, ctrl.history, ctrl.pi_output
+
+    ctrl.kp = 0.5
+    ctrl.ki = 0.02
+    ctrl.setpoint = 22.0
+    ctrl.mode = "floor_heating"
+    ctrl.mode = hs.HeatingMode.FLOOR_HEATING  # idempotent re-assignment
+
+    assert ctrl.kp == 0.5
+    assert ctrl.ki == 0.02
+    assert ctrl.setpoint == 22.0
+    assert ctrl.mode is hs.HeatingMode.FLOOR_HEATING
+    assert ctrl.integral == integral
+    assert ctrl.history == history
+    assert ctrl.pi_output == pi_output
+    assert ctrl.fixed_output == 0.4
+
+
+def test_every_pre_round_1_constructor_case_still_raises_value_error_with_attribute() -> (
+    None
+):
+    # T7/B7 regression: every constructor case the pre-round-1 suite already
+    # covered raises the same class as before, now naming the attribute too.
+    cases: list[tuple[dict[str, object], str]] = [
+        ({"mode": "steam_radiator"}, "mode"),
+        ({"history_length": 0}, "history_length"),
+        ({"history_length": -5}, "history_length"),
+        ({"kp": math.nan}, "kp"),
+        ({"ki": math.inf}, "ki"),
+        ({"setpoint": math.nan}, "setpoint"),
+    ]
+    for kwargs, attr in cases:
+        with pytest.raises(ValueError, match=attr):
+            hs.PIController(**kwargs)  # type: ignore[arg-type]  # attr varies per case

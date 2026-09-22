@@ -158,17 +158,48 @@ integral while fixed, and still raises on a non-finite input without appending o
 state; `ValueError` for every non-finite or out-of-range level — `nan`, `inf`, boundary
 neighbours, and values further out — at construction and via the setter, naming the value
 and leaving the previous setting (a number or `None`) unchanged; `TypeError` naming
-`fixed_output` for a non-numeric level such as a string; `int` levels stored and returned
-as `float`; clearing the override resuming an unfixed twin's exact command in radiator mode
-with both commands preserved in `history`, and floor heating's duty cycle recovering to the
-PI demand over one full window after release; and `reset` clearing the integral and history
-while leaving `fixed_output` set, in both modes.
+`fixed_output` for a non-numeric level such as a string, and for `bool` specifically (its
+own test, since round 1 stored `True`/`False` as `1.0`/`0.0` and round 2 forbids it); `int`
+levels stored and returned as `float`; clearing the override resuming an unfixed twin's
+exact command in radiator mode with both commands preserved in `history`, and floor
+heating's duty cycle recovering to the PI demand over one full window after release; and
+`reset` clearing the integral and history while leaving `fixed_output` set, in both modes.
 
-This round's attribute surface (`kp`, `ki`, `setpoint`, `mode`, `pi_output`, the
-`OUTPUT_MIN`/`OUTPUT_MAX` re-exports, and `update`'s stricter validation) gets its own
-coverage in this paragraph at step 5, once those tests exist; `bool` is no longer among the
-values `fixed_output` accepts as an `int` surrogate, so it moves out of the round 1 test
-named above and into that new coverage.
+Round 2's attribute surface: for `kp`, `ki` and `setpoint`, `ValueError` for `nan`/`inf`/
+`-inf` naming the attribute and the value, `TypeError` for a dozen non-`numbers.Real` types
+(`str`, `None`, `list`, `tuple`, `dict`, `complex`, `Decimal`, `bytes`, `bool`) naming the
+attribute and the offending type, `OverflowError` for a huge `int` and for one past
+`float`'s representable range, and `int`/`Fraction` accepted and read back as `float`, all
+checked identically at construction and via the setter, with the previous value left alone
+on every failure; the same `OverflowError` and range-vs-overflow boundary for
+`fixed_output`, and that its range error repeats the caller's original value (a `Fraction`)
+rather than its `float` conversion; `mode` storing the coerced `HeatingMode` (checked with
+`is`, not `==`, since a string compares equal to its member) in both directions of a
+mid-run switch — including floor-to-radiator, the exact case a plain string used to route
+to the wrong mapping — and rejecting everything else, near misses included, with
+`ValueError` naming `mode` and listing the valid values; `update` validating `measured`
+before touching any state, `None` accepted as "no override" for its `setpoint` parameter
+(a different question from the setter's own contract), a per-call `Fraction` measurement
+and `int` setpoint accepted, and a huge `int` raising `OverflowError` naming `measured` or
+`setpoint`; that a raising `update` — non-finite, non-numeric, `bool`, or overflowing,
+combined with every prior good-setpoint case — leaves `setpoint`, `integral`, `history`,
+`pi_output` and `fixed_output` all exactly as they were and consumes no step, in both
+fixed and unfixed controllers; `pi_output` reading `None` before the first `update` and
+after `reset()`, tracking the clamped PI result exactly (including both clamp bounds hit
+precisely) rather than the fixed level or the binary floor-heating command, unaffected by
+assigning `fixed_output` alone, and read-only; `OUTPUT_MIN`/`OUTPUT_MAX` importable from
+both `heatingsystem` and `heatingsystem.pi_controller` as the identical module objects and
+listed in both `__all__`; that a bad value raises the identical exception type and message
+at construction and via the setter; that a successful setter changes only its own
+attribute, leaving every other setting and all running state untouched; and that every
+constructor case the pre-round-1 suite already covered still raises the same class, now
+naming the attribute.
+
+Two pre-existing arithmetic quirks were considered and deliberately left alone, as outside
+this round's scope: a `raw` PI value that becomes `nan` from finite-but-extreme inputs
+(`kp * -inf` etc.) still clamps to `OUTPUT_MAX`, and `-0.0` passes `fixed_output`'s range
+check and comes back sign-preserved in radiator mode. Both are recorded as step 8
+candidates rather than tested here.
 
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file

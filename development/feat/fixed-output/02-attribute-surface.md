@@ -1,6 +1,6 @@
 # Attribute surface: validated settings, PI demand, range constants
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -20,8 +20,8 @@ conventional name `feat/fixed-output`.
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | in progress |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
+| 6 | Concept check | `/concept-check` | in `/build` | in progress |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -586,10 +586,106 @@ run, so the halting rule for a gate failing twice never came into play.
 
 > Written in step 5: the dynamic half.
 
+Two `test-designer` subagents ran in parallel (`input-space`, `contract`), each against the
+shipped code and this plan; their merged output is
+`/tmp/claude-0/-home-user-heatingsystem/87d9b7a4-0c90-5a51-97fb-1b439f365d19/scratchpad/test-designer-briefs-round2.md`.
+Every hand-computed number either designer proposed was re-verified against the venv
+Python before it went into an assertion (`kp=0.3, ki=0.015, setpoint=21.0, measured=20.5`:
+steps `0.1575, 0.165, 0.1725, 0.18`, matching the brief; every overflow, `TypeError` and
+`ValueError` message, the mode-switch and `pi_output` sequences, and the
+`test_constructor_and_setter_raise_identical_error_for_same_value` cases were all run
+directly rather than assumed).
+
+Round 1's two prescribed changes (guide step 14): the `bool` cases of
+`test_fixed_output_int_and_bool_stored_and_returned_as_float` moved into a new
+`test_fixed_output_bool_raises_type_error_naming_attribute_and_keeps_previous`, the
+survivor renamed `test_fixed_output_int_stored_and_returned_as_float`; `match="fixed_output"`
+added to `test_fixed_output_string_raises_type_error_not_value_error` and to the bare
+`TypeError` assertion in `test_fixed_output_failed_set_leaves_previous_value`. Per the
+contract designer's T7 suggestion (permitted by this round's brief: "nothing else in the
+existing suite may change beyond adding `match=` to existing assertions where a designer
+suggests it"), `match=<attribute>` was also added to eight pre-existing template
+assertions that already raised the right exception but didn't check the message:
+`test_history_length_zero_raises`, `test_history_length_negative_raises`,
+`test_non_finite_kp_raises`, `test_non_finite_ki_raises`, `test_non_finite_setpoint_raises`,
+`test_update_non_finite_measured_raises`, `test_update_inf_measured_raises`,
+`test_update_setpoint_override_non_finite_raises`. No other existing test's body changed;
+`test_invalid_mode_string_raises` already carried `match="mode"` and was left untouched.
+
 | Intent | Test names | Result |
 |---|---|---|
+| T1 (B1) | `test_numeric_setters_reject_non_finite_naming_attribute_and_keep_previous` (`kp`/`ki`/`setpoint` × `nan`/`inf`/`-inf`), `test_fixed_output_range_error_repeats_the_passed_value_not_the_float` | pass |
+| T2 (B2, B7) | `test_numeric_setters_reject_non_real_types_naming_attribute_and_type`, `test_fixed_output_rejects_non_real_types_naming_attribute`, `test_fixed_output_bool_raises_type_error_naming_attribute_and_keeps_previous`, `test_update_measured_rejects_non_numeric_and_bool_naming_measured`, `test_update_setpoint_kwarg_rejects_non_numeric_and_bool_naming_setpoint`, `test_update_setpoint_none_is_not_an_override_not_a_type_error`, `test_numeric_setters_accept_int_and_fraction_read_back_as_float`, `test_update_accepts_fraction_measured_and_int_setpoint`, `test_numeric_setters_overflow_raises_naming_attribute_and_keeps_previous`, `test_update_overflow_int_raises_naming_measured_or_setpoint`, `test_fixed_output_overflow_int_raises_overflow_not_range_value_error`, `test_numeric_setters_overflow_boundary_either_side` | pass |
+| T3 (B3) | `test_mode_string_is_stored_as_enum_member_not_str`, `test_mode_switch_radiator_to_floor_next_command_is_binary`, `test_mode_switch_floor_to_radiator_next_command_is_continuous`, `test_mode_rejects_everything_else_with_value_error_listing_valid_values` | pass |
+| T4 (B2, B4) | `test_update_failed_call_leaves_every_piece_of_state_untouched` (8 malformed inputs × fixed/unfixed), `test_update_failed_call_does_not_consume_a_step` | pass |
+| T5 (B5) | `test_pi_output_none_then_value_across_fix_release_and_reset`, `test_pi_output_is_exactly_clamp_bound_in_saturation`, `test_pi_output_at_exact_clamp_edges_holds_the_integral`, `test_pi_output_reports_pi_demand_not_fixed_level_while_fixed`, `test_pi_output_reports_fractional_demand_not_binary_command_in_floor_mode`, `test_pi_output_is_read_only` | pass |
+| T6 (B6) | `test_output_constants_at_package_root_are_the_module_objects` | pass |
+| T7 (B7) | `test_constructor_and_setter_raise_identical_error_for_same_value`, `test_setters_on_success_change_only_their_own_attribute`, `test_every_pre_round_1_constructor_case_still_raises_value_error_with_attribute`, plus the eight pre-existing tests above that gained `match=` | pass |
+
+Full-tree `pytest`: **525 passed, 0 failed** (was 403 passed / 2 failed before this step, on
+the two round-1 cases guide step 14 predicted; net +120 cases, all new). `ruff check .`,
+`ruff format --check .` and `mypy` all clean after the test additions and two docstring
+fixes (below) — no gate failed twice, so the halting rule for a repeated gate never applied.
+
+No bug was found in the shipped production code by these tests — round 2's implementation
+(step 3) already matched the plan. Two docstring-only fixes were made, both outside the
+Public API table per this round's brief:
+
+- The class docstring's `Raises:` was missing `OverflowError`, which the constructor does
+  raise through the setters (confirmed by both designers). Added, naming which attributes.
+- `_finite`'s docstring claimed "numpy scalar passes" without qualification; confirmed with
+  the venv's numpy 2.5.3 that `numpy.bool_` (a distinct type, not `numbers.Real` and not
+  `bool`) is correctly rejected by the same `TypeError` path as a plain `bool`, so the
+  claim was over-broad. Reworded to say most numpy scalar types pass and `numpy.bool_` does
+  not, for the same reason `bool` does not.
 
 Edge cases considered and deliberately skipped, with reasons:
+
+- **`fixed_output = -0.0` / `kp = -0.0` etc. (both designers).** `-0.0` passes the range and
+  finiteness checks and is returned sign-preserved in radiator mode. Section 1's out-of-scope
+  list and this round's brief both say this is not this round's to change (round 1 already
+  skipped it as float semantics); noted in `STRUCTURE.md` and left for a step 8 recommendation
+  rather than pinned by a test.
+- **Extreme finite inputs producing a `nan` `raw` PI value that clamps to `OUTPUT_MAX`
+  (input-space #14).** E.g. `setpoint=-1e308`, `measured=1e308` makes `error = -inf`, and
+  `kp * -inf` (or `0.0 * -inf`) is `nan`; `max(0.0, min(1.0, nan))` clamps to `1.0`. This is
+  the pre-existing PI arithmetic, explicitly out of scope this round (section 1); noted in
+  `STRUCTURE.md` as a considered quirk and left for step 8 rather than tested or fixed here.
+- **Gain change mid-run does not rescale the already-accumulated integral
+  (input-space #13).** Existing, unrelated-to-this-round behaviour of `kp`/`ki` becoming
+  settable — the integral is a raw accumulator, not a function of the current gains, and
+  nothing in section 1 asks that to change. Not tested; a candidate for a step 8 note if it
+  ever surprises a caller.
+- **`mode` switch mid-run keeping the pre-switch commands in the duty-cycle window
+  (input-space #12, contract observation).** Already exercised indirectly by the two
+  mode-switch tests above and by the pre-existing floor-heating history tests; a dedicated
+  test of the exact fractional-then-binary transition would mostly restate
+  `PIController._to_command`'s existing, unit-tested duty-cycle rule rather than prove
+  anything new about this round's B1–B7.
+- **Two-bad-argument constructor calls and constructor argument order.** The plan's Risks
+  section explicitly forbids depending on which argument's error fires first when several
+  are bad; every test here uses exactly one bad argument per case, so this was not a case to
+  add, only a constraint to respect.
+- **`history_length` as `True`/`1.5`/`"24"` (both designers).** `history_length` is
+  explicitly out of scope for this round's numeric contract (section 1: "New validation on
+  `history_length` beyond the existing 'at least 1' " is excluded) — its own check is
+  untouched by this round's changes, so widening its coverage here would be testing code
+  this round did not write.
+- **A parametrize list of a dozen-plus additional wrong-type values per attribute (e.g. the
+  input-space brief's 16-value list including `"x" * 10_000` and separate Unicode-digit and
+  whitespace-padded string cases).** `test_numeric_setters_reject_non_real_types_naming_attribute_and_type`
+  already parametrizes 12 representative wrong types (`str`, empty `str`, `None`, `list`,
+  `tuple`, `dict`, `complex`, two `Decimal`s, `bytes`, `bool` × 2) across three attributes
+  (36 cases); adding a 10,000-character string or more near-duplicate string variants proves
+  the same `isinstance(value, numbers.Real)` branch again without adding information, which
+  this round's brief asks to avoid ("a parametrize list of a dozen wrong-type values is
+  enough, do not include a ten-thousand-character string").
+- **Purity and idempotency checklist rows beyond what the state-preservation and
+  state-isolation tests already prove.** `test_update_failed_call_leaves_every_piece_of_state_untouched`,
+  `test_update_failed_call_does_not_consume_a_step` and
+  `test_setters_on_success_change_only_their_own_attribute` already cover "does a failed or
+  successful call touch anything beyond what it should"; a further explicit
+  call-twice-get-the-same-answer test would not exercise anything these do not.
 
 ---
 
