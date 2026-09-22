@@ -1,6 +1,6 @@
 # Attribute surface: validated settings, PI demand, range constants
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,8 +19,8 @@ conventional name `feat/fixed-output`.
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | in progress |
-| 5 | Test | `/test` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
+| 5 | Test | `/test` | in `/build` | in progress |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -438,12 +438,147 @@ otherwise. Neither changes a planned signature or behaviour.
 
 | Check | Result |
 |---|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
+| `ruff check .` | `All checks passed!` (exit 0), first run, nothing to fix |
+| `ruff format --check .` | `39 files already formatted` (exit 0), first run |
+| `mypy` | `Success: no issues found in 13 source files` (exit 0), first run |
+| Plan completeness | every signature in the Public API table exists as written — see table below |
+| `STRUCTURE.md` | in sync, checked by hand row by row (see below); no edit needed |
+| `python -m heatingsystem.pi_controller.pi_controller` | ran clean, exit 0; output below |
+
+`pytest` (not this step's gate, run to confirm the plan's prediction): `403 passed, 2
+failed` — exactly `test_fixed_output_int_and_bool_stored_and_returned_as_float[True-1.0]`
+and `[False-0.0]`, both on the new `TypeError` raised for a `bool` `fixed_output`, as guide
+step 14 predicted. Left untouched for step 5; `tests/` was not edited this step.
+
+### Plan completeness — Public API table (section 2) vs. code
+
+| Signature | Result |
+|---|---|
+| `PIController(kp, ki, mode, setpoint, *, history_length, fixed_output)` | Present, verbatim — `pi_controller.py:150-159` |
+| `PIController.kp` / setter | Present, verbatim — `pi_controller.py:319-339` |
+| `PIController.ki` / setter | Present, verbatim — `pi_controller.py:341-361` |
+| `PIController.setpoint` / setter | Present, verbatim — `pi_controller.py:363-383` |
+| `PIController.mode` / setter | Present, verbatim — `pi_controller.py:295-317` |
+| `PIController.fixed_output` / setter | Present, verbatim — `pi_controller.py:436-476` |
+| `PIController.pi_output -> float \| None` (read-only) | Present, verbatim, no setter defined — `pi_controller.py:421-434` |
+| `PIController.update(measured, setpoint=None) -> float` | Present, verbatim — `pi_controller.py:194-224`; validates `measured` first, assigns `setpoint` through its setter, records `pi_output` after the clamp |
+| `PIController.reset() -> None` | Present, verbatim — `pi_controller.py:280-289`; clears `_pi_output` |
+| `OUTPUT_MIN`, `OUTPUT_MAX` re-exported | Present in both `__init__.py` files and both `__all__` lists |
+| `main() -> None` | Present; `pi_output` printed on each fixed step, a `mode` reassignment case, a `TypeError` demo with the exact prescribed `type: ignore` comment |
+
+No missing, no unplanned, no undocumented deviation. Nothing to fix here — step 3's
+implementation notes (section 3) already record the three points of judgment, none of
+which touch a signature.
+
+### STRUCTURE.md audit (by hand — subagents cannot spawn subagents in this environment)
+
+Checked every row named in the task by hand against the code and the file on disk:
+
+- **`src/heatingsystem/__init__.py` export table**: lists `HeatingMode`, `PIController`,
+  `OUTPUT_MIN`, `OUTPUT_MAX`, all from `heatingsystem.pi_controller` — matches
+  `src/heatingsystem/__init__.py`'s actual import and `__all__` exactly.
+- **`src/heatingsystem/pi_controller/__init__.py` prose**: says it re-exports
+  `HeatingMode`, `PIController`, `OUTPUT_MIN` and `OUTPUT_MAX` from `pi_controller.py` —
+  matches the file exactly.
+- **`PIController` controller-section rows**: `OUTPUT_MIN`/`OUTPUT_MAX` constants, the
+  `HeatingMode` row, the constructor row (validating-property language, `history_length`
+  checked inline, `integral` plain), `kp`/`ki`/`setpoint`/`mode`/`fixed_output` property
+  rows, the new `pi_output` row, `update`, `reset`, `history`, `duty_cycle`,
+  `is_history_full`, and `main()` — every one read against the corresponding code above and
+  matches the current signatures, defaults, return types and raised-exception contracts.
+  No stale claim found (the constructor row no longer lists `kp`/`ki`/`mode`/`setpoint` as
+  plain "Public attributes", which round 1's wording did).
+- **Test-file paragraph** (`tests/test_pi_controller.py` section): the `fixed_output`
+  paragraph's two round-1 claims were already rewritten to match this round's code — the
+  `TypeError` is described as naming `fixed_output` (no longer "deliberately unguarded"),
+  and only `int` levels are described as stored/returned as `float` (`bool` dropped, since
+  B2 now rejects it). Checked against the actual test source
+  (`test_fixed_output_string_raises_type_error_not_value_error`,
+  `test_fixed_output_int_and_bool_stored_and_returned_as_float`,
+  `test_fixed_output_failed_set_leaves_previous_value`): both claims hold for the tests as
+  they exist right now, before step 5 touches them. The forward-pointer sentence added
+  after it ("This round's attribute surface ... gets its own coverage ... at step 5") is
+  accurate — none of T1–T7's tests exist yet.
+
+No edit to `STRUCTURE.md` was needed; step 3 already left it in sync.
+
+### `python -m heatingsystem.pi_controller.pi_controller` — full output
+
+```
+<frozen runpy>:128: RuntimeWarning: 'heatingsystem.pi_controller.pi_controller' found in sys.modules after import of package 'heatingsystem.pi_controller', but prior to execution of 'heatingsystem.pi_controller.pi_controller'; this may result in unpredictable behaviour
+=== HeatingMode enum ===
+  HeatingMode.RADIATOR = 'radiator'
+  HeatingMode.FLOOR_HEATING = 'floor_heating'
+
+=== RADIATOR mode (5-step warm-up) ===
+  Initial integral : 0.0
+  Initial duty_cycle: 0.0
+  is_history_full  : False
+  step 1: measured=18.0 C  command=0.9450  integral=3.0000
+  step 2: measured=18.5 C  command=0.8325  integral=5.5000
+  step 3: measured=19.2 C  command=0.6495  integral=7.3000
+  step 4: measured=20.0 C  command=0.4245  integral=8.3000
+  step 5: measured=20.6 C  command=0.2505  integral=8.7000
+  step 6: measured=21.3 C  command=0.0360  integral=8.4000
+  history         : (0.945, 0.8325, 0.6495000000000002, 0.4245, 0.25049999999999956, 0.03599999999999977)
+  duty_cycle      : 0.5230
+  is_history_full : True
+
+  -- setpoint raised to 22 deg C mid-run --
+  command after setpoint change: 0.3465  (setpoint now 22.0)
+
+  -- fixed_output override --
+  fixed step 1: command=0.2000  integral=9.1000  pi_output=1.0000
+  fixed step 2: command=0.2000  integral=9.1000  pi_output=1.0000
+  fixed step 3: command=0.2000  integral=9.1000  pi_output=1.0000
+  fixed_output    : 0.2
+  fixed_output    : None  (released -> PI result: 1.0000)
+
+  After reset(): integral=0.0, history=()
+
+=== FLOOR_HEATING mode (24-sample window) ===
+  mode coerced to : <HeatingMode.FLOOR_HEATING: 'floor_heating'>
+  10 steps at 19.0 deg C (demand > 0 -> ON/OFF switching):
+    step  1: duty_cycle=1.000  command=1
+    step  2: duty_cycle=0.500  command=0
+    step  3: duty_cycle=0.667  command=1
+    step  4: duty_cycle=0.750  command=1
+    step  5: duty_cycle=0.600  command=0
+    step  6: duty_cycle=0.667  command=1
+    step  7: duty_cycle=0.714  command=1
+    step  8: duty_cycle=0.750  command=1
+    step  9: duty_cycle=0.778  command=1
+    step 10: duty_cycle=0.800  command=1
+  is_history_full : False
+  Running 14 more steps to fill window...
+  is_history_full : True
+  duty_cycle      : 0.917
+
+  -- mode reassigned on the radiator controller --
+  command after mode change: 1  (mode now <HeatingMode.FLOOR_HEATING: 'floor_heating'>)
+
+=== ValueError and TypeError demonstrations ===
+  Bad mode       -> ValueError: mode must be a HeatingMode or one of ['radiator', 'floor_heating'], got 'steam'.
+  Infinite kp    -> ValueError: kp must be a finite number, got inf.
+  history_length=0 -> ValueError: history_length must be >= 1, got 0.
+  fixed_output=1.5 -> ValueError: fixed_output must be a finite number in [0.0, 1.0] or None, got 1.5.
+  NaN measured   -> ValueError: measured must be a finite number, got nan.
+  NaN setpoint   -> ValueError: setpoint must be a finite number, got nan.
+  Bad setpoint   -> TypeError: setpoint must be a real number, got '22' (str).
+
+All demonstrations completed successfully.
+```
+
+The `RuntimeWarning` is the expected consequence of the subpackage re-exporting the module,
+per `.claude/rules/python.md`. The showcase form was checked against the rules: every
+argument in the new additions (`new_mode`, `bad_setpoint`, `fixed_level`, `fixed_steps`,
+`cold_temp`) is a named variable, the calls are on their own lines, results are named and
+printed, `new_mode` carries the same-line comment listing `HeatingMode`'s members, and the
+`bad_setpoint` case carries exactly the `type: ignore[assignment]  # deliberate misuse for
+the demo` comment the plan's guide step 11 prescribes.
+
+Nothing needed fixing — no ruff, format, mypy or showcase failure occurred on the first
+run, so the halting rule for a gate failing twice never came into play.
 
 ---
 
