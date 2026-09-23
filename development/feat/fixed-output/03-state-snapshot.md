@@ -225,7 +225,7 @@ No new module and no change to either `__init__.py`.
 | `PIController.history_length -> int` (read-only) | `pi_controller.py` | The window length given at construction. | C5 |
 | `PIController.integral -> float` / setter `(value: float) -> None` | `pi_controller.py` | The integral accumulator, now a validating property on the round 2 contract, naming `integral`. | C6 |
 | `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | `pi_controller.py` | Unchanged signature. `history_length` now goes through `_window_length`: `TypeError` naming it for a `bool` or non-`int`, `ValueError` below 1. | C5 |
-| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | `pi_controller.py` | Unchanged signature. If the raw PI sum or the tentative integral is not finite, the demand is `OUTPUT_MIN`, `pi_output` is `0.0`, and the integral is held. Otherwise as before. | C7 |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | `pi_controller.py` | Unchanged signature. If the raw PI sum or the tentative integral is not finite, the PI *demand* is `OUTPUT_MIN`, `pi_output` is `0.0`, and the integral is held; the guard defines the demand only, so while `fixed_output` is set the command is still the fixed level (round 1's A2). Otherwise as before. | C7 |
 | `main() -> None` | `pi_controller.py` | Showcase gains a save, JSON round trip, restore and a matching next command. | — (showcase) |
 
 `_finite` (private) also changes: `-0.0` comes back as `+0.0`. `reset()`, `fixed_output`,
@@ -235,10 +235,18 @@ No new module and no change to either `__init__.py`.
 
 1. In `_finite`, change the last line to `return number + 0.0` and add one sentence to its
    docstring: a negative zero is returned as positive zero.
-2. Add a private module-level helper `_window_length(value: object) -> int` below
-   `_finite`: `if isinstance(value, bool) or not isinstance(value, int): raise TypeError(f"history_length must be an int, got {value!r} ({type(value).__name__}).")`;
+2. Add two private module-level helpers below `_finite`. `_window_length(value: object) -> int`:
+   `if isinstance(value, bool) or not isinstance(value, int): raise TypeError(f"history_length must be an int, got {value!r} ({type(value).__name__}).")`;
    `if value < 1: raise ValueError(f"history_length must be >= 1, got {value}.")` (the
-   existing message); `return value`. Google docstring with `Raises:`.
+   existing message); `if value > sys.maxsize: raise OverflowError(f"history_length is too large, got {value}.")`
+   (a `deque` refuses a larger `maxlen` with a bare error); `return value`. And
+   `_level(name: str, value: object) -> float`: `level = _finite(name, value)`; if
+   `level < OUTPUT_MIN or level > OUTPUT_MAX`: `raise ValueError(f"{name} must be in [{OUTPUT_MIN}, {OUTPUT_MAX}], got {value!r}.")`;
+   return `level`. Rewrite the `fixed_output` setter's non-`None` branch to
+   `self._fixed_output = _level("fixed_output", value)`, keeping its existing message text
+   by passing the check through (the message may drop the "or None" suffix; the existing
+   round 1 tests match on the value's repr and the attribute name only). Google docstrings
+   with `Raises:`. `import sys` at the top.
 3. Add class-level annotations `_history_length: int` and `_integral: float` beside the
    existing ones. In the constructor replace the inline `history_length < 1` check with
    `self._history_length = _window_length(history_length)`, build the deque with
@@ -258,8 +266,10 @@ No new module and no change to either `__init__.py`.
    literally in key order `kp, ki, setpoint, mode, history_length, fixed_output, integral,
    history`, with `self.mode.value` and `list(self._history)`. Docstring lists the keys and
    says the result is JSON-serialisable and a copy.
-7. Add `from_dict` as a `@classmethod` right after `to_dict`, `from typing import Mapping, Self`
-   (`Mapping` from `collections.abc`). Body, in order:
+7. Add `from_dict` as a `@classmethod` right after `to_dict`, with
+   `from collections.abc import Mapping` and `from typing import Self`. Body, in order:
+   - `if not isinstance(data, Mapping): raise TypeError(f"snapshot must be a mapping, got {type(data).__name__}.")`
+     (a caller passing the JSON text instead of the loaded dict gets a named error).
    - `expected = frozenset({...eight keys...})` as a module-level constant `_SNAPSHOT_KEYS`;
      `missing = sorted(expected - data.keys())`, `unknown = sorted(data.keys() - expected)`;
      raise `ValueError(f"snapshot is missing keys {missing}.")` / `ValueError(f"snapshot has unknown keys {unknown}.")`
@@ -272,20 +282,27 @@ No new module and no change to either `__init__.py`.
      — the constructor's setters validate again, including the `fixed_output` range.
    - `controller.integral = _finite("integral", data["integral"])`.
    - `if len(history) > controller.history_length: raise ValueError(f"history has {len(history)} entries but history_length is {controller.history_length}.")`.
-   - For `i, entry in enumerate(history)`: `level = _finite(f"history[{i}]", entry)`; if
-     `level < OUTPUT_MIN or level > OUTPUT_MAX`: `raise ValueError(f"history[{i}] must be in [{OUTPUT_MIN}, {OUTPUT_MAX}], got {entry!r}.")`;
-     collect into a local list; only after the loop `controller._history.extend(levels)`,
-     so a failure part-way leaves nothing (the controller is discarded anyway).
+   - For `i, entry in enumerate(history)`: `levels.append(_level(f"history[{i}]", entry))`;
+     only after the loop `controller._history.extend(levels)`, so a failure part-way leaves
+     nothing (the controller is discarded anyway).
    - `return controller`. `pi_output` is `None` because the constructor set it so.
    Docstring: the keys, the errors, that the result's `pi_output` is `None`.
-8. Class docstring: mention `to_dict`/`from_dict` in one sentence and add
-   `history_length`'s `TypeError` to `Raises:`.
-9. Showcase: after the `reset()` demonstration on the radiator controller, add a case in
-   showcase form: run two updates, `snapshot = ctrl_rad.to_dict()`, `text = json.dumps(snapshot)`,
-   `restored = PIController.from_dict(json.loads(text))`, then `next_original = ctrl_rad.update(measured=cold_temp)`
-   and `next_restored = restored.update(measured=cold_temp)`, printing the JSON text and
-   both commands. `import json` at the top. Add one `ValueError` demo for a snapshot with a
-   missing key (`bad_snapshot = {"kp": 0.3}` on its own line).
+8. Class docstring: rewrite the paragraph that lists the validating properties and says
+   `integral` "remains a plain public attribute": `integral` is now a validating property
+   on the same contract and `history_length` is validated at construction and read-only;
+   update the `Args:` entry for `history_length`; add `history_length`'s `TypeError` and
+   `OverflowError` to `Raises:`; mention `to_dict`/`from_dict` in one sentence.
+9. Showcase: add a new case in showcase form after the floor-heating run and before the
+   `mode` reassignment, on a fresh controller so no existing demo's output changes: bind
+   `hold_level = 0.2  # None, or a level in [0, 1]`, build `ctrl_saved` with
+   `fixed_output=hold_level`, run two updates at a cold measurement,
+   `snapshot = ctrl_saved.to_dict()`, `text = json.dumps(snapshot)`,
+   `restored = PIController.from_dict(json.loads(text))`, then
+   `next_saved = ctrl_saved.update(measured=cold_temp)` and
+   `next_restored = restored.update(measured=cold_temp)`; print the JSON text,
+   `restored.fixed_output` (the hold survived the round trip, which is what this round is
+   for) and both next commands. `import json` at the top. Add one `ValueError` demo for a
+   snapshot with a missing key (`bad_snapshot = {"kp": 0.3}` on its own line).
 10. `STRUCTURE.md`: add rows for `to_dict`, `from_dict`, `history_length`, `integral`;
     rewrite the constructor row ("`history_length` must be at least 1, checked inline" and
     "`integral` is a plain public attribute"); rewrite the `update` row for the finite
@@ -306,10 +323,10 @@ No new module and no change to either `__init__.py`.
 | T1 | `to_dict` on a controller with non-default settings, a hold, a built-up integral and a partly filled window returns a dict with exactly the eight keys and the expected values (`mode` as its string, `history` as a list oldest first, `fixed_output` `None` when unset), `json.dumps` accepts it, and mutating the returned dict or its list, or updating the controller afterwards, leaves the other unchanged. | C1 |
 | T2 | `from_dict(to_dict())` gives a controller equal in every setting and in `integral`, `history`, `duty_cycle`, `is_history_full`, `fixed_output`, with `pi_output` `None`; and for a sequence of measurements the restored controller's commands equal the original's exactly, in both modes, fixed and unfixed, with a full and a partly filled window. | C2 |
 | T3 | The same as T2 after `json.dumps` and `json.loads`, including a controller whose window is empty and one whose `fixed_output` is `None`. | C3 |
-| T4 | Each of: a missing key, an extra key, a `kp` of `"0.3"`, a `mode` of `"steam"`, a `fixed_output` of `1.5`, an `integral` of `nan`, a `history` that is not a list, a history entry of `1.5` and of `nan`, and a history one longer than `history_length` raises `TypeError` or `ValueError` whose message names the key (with index for entries), and the original controller is untouched; missing keys are reported before unknown ones. | C4 |
-| T5 | `history_length` reads back at construction and after restore; `True`, `2.0`, `"24"` and `None` raise `TypeError` naming it and `0`/`-1` `ValueError`, at construction and via `from_dict`. | C5 |
-| T6 | `integral` reads back as `float` after assignment of an `int`; `nan`/`inf` raise `ValueError` and `"1"`/`True`/`None` `TypeError`, naming `integral`, previous value kept; `update` still advances it. | C6 |
-| T7 | With finite inputs that make the raw sum non-finite (`setpoint=-1e308`, `measured=1e308`, `ki=0.0`), `update` returns `0.0` in radiator mode and appends it, `pi_output` is `0.0`, and `integral` is unchanged; the same when only the tentative integral is non-finite (`ki=0.0`, `integral` near `1e308` and an error that overflows the sum while `kp * error` stays finite); `-0.0` assigned to `kp`, `ki`, `setpoint`, `integral`, `fixed_output` and passed as `measured` reads back with a positive sign; every existing twin-integral and hand-computed test still passes. | C7 |
+| T4 | Each of: a missing key, an extra key, a `kp` of `"0.3"`, a `mode` of `"steam"`, a `fixed_output` of `1.5`, an `integral` of `nan`, a `history` that is not a list, a history entry of `1.5` and of `nan`, a history one longer than `history_length`, and a `kp` of `10**400` (which raises `OverflowError`, what the setter raises) raise an error whose message names the key (with index for entries), and the original controller is untouched; missing keys are reported before unknown ones; passing the JSON text instead of the loaded dict raises `TypeError` naming the snapshot. | C4 |
+| T5 | `history_length` reads back at construction and after restore; assigning to it raises `AttributeError` and the window is unchanged; `True`, `2.0`, `"24"` and `None` raise `TypeError` naming it, `0`/`-1` `ValueError`, and `2**63` `OverflowError`, at construction and via `from_dict`. | C5 |
+| T6 | `integral` reads back as `float` after assignment of an `int`; `nan`/`inf` raise `ValueError`, `"1"`/`True`/`None` `TypeError`, and `10**400` `OverflowError`, naming `integral`, previous value kept; `update` still advances it. | C6 |
+| T7 | With finite inputs that make the raw sum `+inf` (`kp=1e300`, `ki=0.0`, error `1e10`) and `-inf` (mirrored), an unfixed radiator `update` returns `0.0` and appends it, `pi_output` is `0.0`, `integral` is unchanged; with `integral=1e308` (through the setter), `ki=-0.015`, `setpoint=1e308`, `measured=0.0` the tentative integral overflows to `inf` and `raw` to `-inf`: no raise, integral held, command `0.0`, history grows by one (the case that would otherwise raise mid-`update` through the new setter); with `fixed_output=0.3` and a non-finite raw sum the command is `0.3` in radiator mode and the floor modulation of `0.3` in floor mode, `pi_output` is `0.0`, integral unchanged; `-0.0` assigned to `kp`, `ki`, `setpoint`, `integral` and `fixed_output`, and passed as a per-call `setpoint`, reads back with a positive sign (`math.copysign`), and a radiator controller with `fixed_output=-0.0` returns a positively signed command; every existing twin-integral and hand-computed test still passes. | C7 |
 
 ### Risks
 
@@ -324,13 +341,50 @@ No new module and no change to either `__init__.py`.
   classmethod returns `cls(...)`, which mypy accepts. Every value read from `data` is
   narrowed by a helper before use, so no cast or `Any` is needed; if mypy still objects to
   the `mode` branch, `isinstance` narrowing to `HeatingMode | str` is what it needs.
-- **`from_dict` on a `dict` from `json.loads`** hands back `int` for whole-number floats
-  (`"kp": 1` for `1.0`) and `float` for the rest; `_finite` converts, so the round trip is
-  exact for every float `json` can represent. `-0.0` survives JSON as `-0.0` and is
-  normalised on the way in.
+- **A hand-written snapshot may carry `int`s** (`"kp": 1`); `_finite` converts them, so
+  the round trip is exact for every float `json` can represent (`json.dumps(1.0)` is
+  `"1.0"` and loads as a float). `-0.0` survives JSON as `-0.0` and is normalised on the
+  way in.
+- **How C7 is read against round 1.** The finite guard defines the PI *demand*. While
+  `fixed_output` is set the command is still the fixed level, as A2 requires; `pi_output`
+  is `0.0` and the integral is held. Round 1's A1 ("same commands as before") holds on the
+  finite path only; on the non-finite path C7 supersedes it, by the user's decision at
+  this gate. Step 6 reads A1 and A2 that way.
+- **How C4 is read.** "`TypeError` or `ValueError`" means "what the matching setter or
+  check raises"; a huge `int` therefore raises `OverflowError` naming the key, as section
+  1's Inputs paragraph says. Stated to the user at this gate.
 - **Halting line.** A case where the snapshot's key set must grow to satisfy a criterion
   (for example a criterion that turns out to need `pi_output`) would amend section 1:
   **halt**.
+
+### Critique
+
+Findings from the `plan-critic` read, verdict *accept with changes*; all nine applied.
+
+1. **C7 and round 1's A2 meet when the sum is non-finite while a hold is set, and the plan
+   picked a side silently.** Applied: the `update` row and Risks say the guard defines the
+   demand only, the fixed level still wins, and A1 holds on the finite path; T7 covers it in
+   both modes; stated to the user at the gate.
+2. **Two T7 clauses could not be built** (the integral term cannot be non-finite alone;
+   `measured` is never stored). Applied: T7 rewritten with buildable `+inf`/`-inf` cases,
+   the overflowing-integral case that would otherwise raise mid-`update`, and the `-0.0`
+   cases on `setpoint` and `fixed_output`.
+3. **C4 names two error classes but a huge `int` raises `OverflowError`.** Applied: Risks
+   record the reading, T4 covers it; stated to the user at the gate.
+4. **`history_length=2**63` and `from_dict(json_text)` were undecided.** Applied: the
+   window check raises `OverflowError` above `sys.maxsize`; `from_dict` rejects a
+   non-mapping with `TypeError`; T4 and T5 cover both.
+5. **No test intent for the read-only getter or `integral`'s `OverflowError`.** Applied to
+   T5 and T6.
+6. **The class docstring's "integral remains a plain attribute" sentence was not in the
+   guide.** Applied to step 8.
+7. **`typing.Mapping` would fail Ruff, and the `json.loads` risk misstated ints.** Applied.
+8. **The showcase would have changed a later demo's output and did not show the hold
+   surviving.** Applied: a fresh controller with a hold, restored, its `fixed_output`
+   printed.
+9. **The history range check duplicated the `fixed_output` setter's.** Applied: one private
+   `_level` helper used by both.
+
 
 ---
 
