@@ -9,7 +9,8 @@ Two heating modes are supported via :class:`HeatingMode`:
 
 * ``RADIATOR`` — continuous output in [0, 1] (e.g. a thermostatic valve).
 * ``FLOOR_HEATING`` — binary on/off signal derived from duty-cycle modulation over
-  a rolling window of the last 24 samples (24 × 5 min = 2 h).
+  a rolling window of the last ``history_length`` samples (24 by default,
+  24 × 5 min = 2 h).
 
 Module-level output clamp constants:
 
@@ -303,7 +304,8 @@ class PIController:
             is set, the command is derived from it instead of the PI
             result — the PI calculation still runs in full underneath
             (inputs are validated, the integral still advances with the
-            usual anti-windup), and the fixed command is still recorded in
+            usual anti-windup, except on the non-finite raw sum described
+            under Note), and the fixed command is still recorded in
             :attr:`history`.
 
         Raises:
@@ -344,8 +346,14 @@ class PIController:
         # the valve and holds the integral rather than propagating nan/inf.
         finite: bool = math.isfinite(raw) and math.isfinite(new_integral)
 
-        # Clamp raw output to the actuator's physical range.
-        u: float = max(OUTPUT_MIN, min(OUTPUT_MAX, raw)) if finite else OUTPUT_MIN
+        # Clamp raw output to the actuator's physical range. `+ 0.0`
+        # normalises a -0.0 clamp result explicitly, rather than relying on
+        # max(OUTPUT_MIN, ...) returning its first (positive) argument when
+        # tied with -0.0 -- the same argument-order accident R2 asked this
+        # round to remove.
+        u: float = (
+            (max(OUTPUT_MIN, min(OUTPUT_MAX, raw)) + 0.0) if finite else OUTPUT_MIN
+        )
         self._pi_output = u
 
         # Anti-windup — only commit the new integral when it is useful:
@@ -463,7 +471,10 @@ class PIController:
         missing = sorted(_SNAPSHOT_KEYS - data.keys())
         if missing:
             raise ValueError(f"snapshot is missing keys {missing}.")
-        unknown = sorted(data.keys() - _SNAPSHOT_KEYS)
+        # key=repr: an unknown key set may mix types (e.g. a str and an int)
+        # that Python cannot compare with <, so sorted() alone can raise a
+        # bare TypeError instead of the documented ValueError.
+        unknown = sorted(data.keys() - _SNAPSHOT_KEYS, key=repr)
         if unknown:
             raise ValueError(f"snapshot has unknown keys {unknown}.")
 
@@ -475,12 +486,17 @@ class PIController:
             )
 
         fixed = data["fixed_output"]
-        fixed_output = None if fixed is None else _finite("fixed_output", fixed)
+        # _level, not _finite: raises with the caller's own value (e.g. a
+        # Fraction) in the message, matching what the fixed_output setter
+        # itself would raise — _finite alone would convert to float first
+        # and report the converted value instead.
+        fixed_output = None if fixed is None else _level("fixed_output", fixed)
 
         history = data["history"]
         if not isinstance(history, (list, tuple)):
             raise TypeError(
-                f"history must be a list, got {history!r} ({type(history).__name__})."
+                f"history must be a list or tuple, got {history!r} "
+                f"({type(history).__name__})."
             )
 
         controller = cls(

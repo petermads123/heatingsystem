@@ -206,6 +206,40 @@ rather than depending on `min`/`max`'s argument order; and every numeric setter,
 `update`'s `measured`/`setpoint`, now normalise `-0.0` to `+0.0`, so it no longer survives
 sign-preserved through `fixed_output` or anywhere else.
 
+Round 3's state-snapshot suite: `to_dict` returning exactly the eight documented keys as
+`json.dumps`-friendly built-in types, `mode` as its string value, `fixed_output` `None` when
+unset, and the returned dict and its `history` list holding no reference back into the
+controller or vice versa; `from_dict(to_dict())` reproducing a controller's settings,
+`integral`, `history`, `duty_cycle`, `is_history_full` and `fixed_output` exactly — mid-hold
+and released, a full floor-heating window (proving the restored deque's `maxlen`, not just
+its length), and a restore followed by `reset()` — with `pi_output` `None` until the next
+`update`, and the same holding through a `json.dumps`/`json.loads` round trip; every
+`from_dict` failure naming the offending key — a missing key reported before an unknown one
+(missing checked first, and a wrong key case or trailing whitespace counting as missing, not
+a near miss), every value error identical in type and message to what the matching
+constructor keyword or setter raises (including `OverflowError` for a huge `int`), a
+history entry or the history container's shape naming `history[i]`, a history longer than
+`history_length` naming both counts, an `int` `fixed_output` of `0` read as a hold and not
+`None`, and any non-`Mapping` `data` — including the JSON text itself — raising `TypeError`
+naming it, while `MappingProxyType`, `OrderedDict` and `ChainMap` are all accepted;
+`history_length` read-only after construction, `sys.maxsize` accepted and round-tripping
+through JSON, one more raising `OverflowError`, and `bool` or any other non-`int` raising
+`TypeError` naming it, at construction and via `from_dict` alike; the `integral` property
+on the shared numeric-family contract, including `-0.0` read back positive and the previous
+value kept on every rejected assignment; the `update` finite guard flipping exactly at
+finiteness rather than at large-but-finite values (a huge but finite integral still takes
+the anti-windup hold, not the guard), in both an overflowing raw sum and an overflowing
+tentative integral, with the fixed-output command unaffected either way; and `-0.0` read
+back `+0.0` from every numeric setter, from a per-call `setpoint`, from a fixed-output
+command, and through a full `from_dict`/JSON round trip. Three production defects this
+suite found and the fixes it drove: `from_dict` sorting an unknown-key set of mixed,
+unorderable types (`sorted()` alone raised a bare `TypeError` instead of the documented
+`ValueError`) now sorts by `repr`; `from_dict`'s `fixed_output` range error used to report
+the value after conversion to `float` rather than the caller's own value (e.g. a `Fraction`)
+as the setter itself would — `from_dict` now runs the range check on the original value; and
+`update`'s output clamp now normalises `-0.0` explicitly with `+ 0.0`, rather than relying
+on `max(OUTPUT_MIN, ...)`'s argument order to return a positive zero by accident.
+
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file
 found anywhere else.

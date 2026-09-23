@@ -1,6 +1,6 @@
 # State snapshot and restore
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -20,8 +20,8 @@ conventional name `feat/fixed-output`.
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | in progress |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
+| 6 | Concept check | `/concept-check` | in `/build` | in progress |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -463,10 +463,109 @@ No edits to `STRUCTURE.md` were needed — it was already brought in sync during
 
 > Written in step 5: the dynamic half.
 
+Two `test-designer` subagents ran in parallel (subagents cannot spawn subagents in this
+run, so the orchestrator ran both directly and saved their combined output for this step to
+read): **input-space** and **contract**, each returning up to fifteen ranked cases plus any
+contradiction found between the code and its promises. The two lists overlapped heavily; the
+table below is the merged, deduplicated set, with every hand-computed number in it verified
+against the shipped code with the venv Python before being written into an assertion.
+
 | Intent | Test names | Result |
 |---|---|---|
+| T1 (C1) | `test_to_dict_values_are_json_builtins_of_the_promised_types`, `test_to_dict_and_from_dict_are_copies_with_no_shared_references` | pass |
+| T2 (C2) | `test_from_dict_mid_hold_restore_then_release_matches_original`, `test_from_dict_then_to_dict_reproduces_snapshot_exactly_and_through_json`, `test_from_dict_full_floor_window_caps_and_matches_original`, `test_from_dict_then_reset_clears_state_but_keeps_hold_settings_and_window` | pass |
+| T3 (C3) | `test_from_dict_then_to_dict_reproduces_snapshot_exactly_and_through_json` (JSON round trip), `test_negative_zero_reads_back_positive_from_every_setter_and_through_json` (JSON round trip), `test_history_length_sys_maxsize_is_accepted_one_over_overflows` (JSON round trip) | pass |
+| T4 (C4) | `test_from_dict_reports_missing_keys_before_unknown_and_sorted`, `test_from_dict_raises_identical_error_type_and_message_as_the_setter` (parametrized, 22 cases), `test_from_dict_history_length_boundary_exact_accepted_one_over_rejected`, `test_from_dict_history_entry_errors_name_the_offending_index`, `test_from_dict_history_container_type_errors_and_tuple_accepted` (parametrized, 9 shapes), `test_from_dict_rejects_non_mapping_data` (parametrized, 4 cases), `test_from_dict_accepts_any_mapping_type` (parametrized, 3 wrappers), `test_from_dict_fixed_output_int_zero_is_a_hold_not_none`, `test_from_dict_fixed_output_range_error_names_original_value`, `test_from_dict_unknown_keys_of_mixed_types_raises_value_error_not_type_error` | pass |
+| T5 (C5) | `test_history_length_is_read_only_after_construction`, `test_history_length_sys_maxsize_is_accepted_one_over_overflows`, `test_history_length_rejects_bool_and_non_int_naming_it` (parametrized, 9 types) | pass |
+| T6 (C6) | `test_integral_setter_matches_the_numeric_family_contract` | pass |
+| T7 (C7) | `test_update_overflowing_integral_holds_and_closes_without_raising`, `test_update_finite_guard_flips_exactly_at_finiteness_not_at_large_values` (parametrized, 3 cases), `test_update_nan_raw_sum_gives_closed_command_not_full`, `test_update_error_subtraction_overflow_triggers_guard_and_still_stores_setpoint`, `test_update_huge_but_finite_integral_takes_the_finite_path`, `test_update_non_finite_raw_with_hold_still_returns_fixed_level_both_modes`, `test_update_negative_gains_and_zero_error_gives_positively_signed_zero`, `test_negative_zero_reads_back_positive_from_every_setter_and_through_json` | pass |
 
-Edge cases considered and deliberately skipped, with reasons:
+Full suite: **597 passed** (525 before this round; 72 added, most via parametrization — 29
+new test functions). No existing test weakened or deleted.
+
+### Production defects found and fixed
+
+The briefs flagged three contradictions between `from_dict`'s code and its documented
+contract; each was confirmed against the shipped code, given a failing test, fixed with the
+smallest change that made the test pass, and re-verified:
+
+- **D1 — `from_dict` crashed instead of raising on a mixed-type unknown-key set.**
+  `sorted(data.keys() - _SNAPSHOT_KEYS)` raised a bare `TypeError` (`'<' not supported
+  between instances of 'str' and 'int'`) when the caller's unknown keys mixed types, e.g.
+  `{"extra": 0, 1: 0}`, instead of the documented `ValueError` naming them. Confirmed
+  failing, then fixed by sorting with `key=repr`, which orders any hashable value
+  regardless of type. Test: `test_from_dict_unknown_keys_of_mixed_types_raises_value_error_not_type_error`.
+- **D2 — `from_dict`'s `fixed_output` range error named the converted value, not the
+  caller's.** `from_dict` ran `_finite("fixed_output", fixed)` before handing the result to
+  the constructor, so an out-of-range value reported its *converted* form (`"got 1.5"`) in
+  the error rather than what the caller actually passed (`"got Fraction(3, 2)"`),
+  contradicting the docstring's promise that `from_dict` raises "exactly what a bad
+  assignment would". Confirmed failing, then fixed by calling `_level("fixed_output",
+  fixed)` directly in `from_dict` — the same range check the constructor's setter runs, but
+  now the one that raises, so it reports the caller's own value. Test:
+  `test_from_dict_fixed_output_range_error_names_original_value`.
+- **D3 — the `+0.0` clamp result depended on `max`'s argument order, not on an explicit
+  rule.** With negative `kp` and `ki` and a zero error (e.g. `kp=-0.3, ki=-0.015,
+  update(21.0)`), the raw PI sum is `-0.0`; the shipped code already returned a positively
+  signed command, but only because `max(OUTPUT_MIN, -0.0)` happens to return its first
+  (positive) argument when the two compare equal — the exact argument-order dependency
+  round 2's R2 asked this round to remove from the `nan`-clamp path, re-appearing on the
+  `-0.0` path. No test actually failed on the shipped code (verified directly with the
+  venv Python before writing the test), so this is not "bug found and fixed" in the usual
+  sense; it is recorded here because the finding is real and the fix is in production code.
+  Applied anyway, as a one-token hardening permitted under C7 ("`update` reads back
+  `+0.0`"): the clamp line now reads `(max(OUTPUT_MIN, min(OUTPUT_MAX, raw)) + 0.0) if
+  finite else OUTPUT_MIN`, so the sign no longer depends on `max`'s internal tie-breaking.
+  Test: `test_update_negative_gains_and_zero_error_gives_positively_signed_zero` (passes
+  before and after; it documents the guarantee going forward rather than catching a
+  regression).
+
+### Docstring wording (optional, fixed)
+
+Three trivial wording items the briefs flagged, all fixed:
+
+- The module docstring's `FLOOR_HEATING` description said "the last 24 samples"; the window
+  is `history_length`-configurable, so it now reads "the last `history_length` samples (24
+  by default, ...)".
+- `from_dict`'s history-shape error said "must be a list" though tuples are accepted too; it
+  now says "must be a list or tuple".
+- `update`'s `Returns:` said the integral "still advances with the usual anti-windup"
+  unconditionally, while its `Note:` says the integral is held on a non-finite raw sum;
+  `Returns:` now points at the `Note:` for that exception.
+
+### Edge cases considered and deliberately skipped, with reasons
+
+- **Purity/idempotency beyond what is already exercised.** `to_dict`/`from_dict` purity and
+  the copy semantics of both directions are covered by
+  `test_to_dict_and_from_dict_are_copies_with_no_shared_references`; a further round of the
+  same assertions (e.g. calling `to_dict` a third time, or `from_dict` on the same data
+  twice) would not exercise a different code path.
+- **`measured=-0.0` in `update`.** `measured` is not stored anywhere observable (only
+  `error` and downstream sums are), so there is no way to assert its sign survived; the
+  `-0.0` coverage is on `setpoint`, `kp`, `ki`, `integral` and `fixed_output` instead, where
+  the value is read back.
+- **Precedence between two simultaneously bad `from_dict` values.** Section 1 and the plan
+  do not promise an order beyond missing-before-unknown; testing e.g. a bad `kp` *and* a bad
+  `mode` together would pin down an accident of key-set iteration, not a contract.
+- **`from_dict` mode variants beyond the ones tested** (`"RADIATOR"`, a leading space, an
+  empty string, `None`, a bare `int`, `bytes`) — all correctly rejected on manual
+  verification, but they exercise the same two code paths (`HeatingMode(value)` and the
+  pre-check `isinstance(mode, (HeatingMode, str))`) that `test_from_dict_raises_identical_error_type_and_message_as_the_setter`
+  and the mode row of the pre-round-3 suite already cover; adding six more parametrize rows
+  would not add a new path.
+- **A `from_dict` history of fractional levels in floor-heating mode** (e.g. `[0.5, 0.25]`,
+  duty cycle `0.375`). This is accepted leniently — the range check only requires
+  `[OUTPUT_MIN, OUTPUT_MAX]`, not a value `_to_command` itself would ever emit in floor mode
+  — which is correct per C4 (the check is a range check, not a floor-heating-specific
+  invariant) but worth flagging as a candidate for a step 8 recommendation rather than a
+  test, since it is a design leniency, not a defect.
+- **An empty history with `history_length=1`.** Verified manually (`is_history_full` false,
+  restore accepted); it is the `history_length=3`/`history_length=1` boundary tests'
+  zero-entry case in miniature and adds no new path over
+  `test_from_dict_history_length_boundary_exact_accepted_one_over_rejected`.
+- **numpy scalar types.** `numpy` is not a project dependency; `_finite`'s docstring already
+  notes numpy scalars pass except `numpy.bool_`, matching round 2's testing scope, and this
+  round adds no numpy-specific path.
 
 ---
 

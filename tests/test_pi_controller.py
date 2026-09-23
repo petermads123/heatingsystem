@@ -1,10 +1,14 @@
 """Tests for the PIController and HeatingMode API."""
 
+import copy
+import json
 import math
 import re
 import sys
+from collections import ChainMap, OrderedDict, deque
 from decimal import Decimal
 from fractions import Fraction
+from types import MappingProxyType
 
 import pytest
 
@@ -1613,3 +1617,633 @@ def test_every_pre_round_1_constructor_case_still_raises_value_error_with_attrib
     for kwargs, attr in cases:
         with pytest.raises(ValueError, match=attr):
             hs.PIController(**kwargs)  # type: ignore[arg-type]  # attr varies per case
+
+
+# ===========================================================================
+# Round 3: state snapshot and restore (to_dict / from_dict, history_length,
+# integral, the update() finite guard and -0.0 normalisation)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# T1 (C1): to_dict is a snapshot of built-in, JSON-friendly types, and a copy
+# in both directions
+# ---------------------------------------------------------------------------
+
+
+def test_to_dict_values_are_json_builtins_of_the_promised_types() -> None:
+    ctrl = hs.PIController(
+        kp=1, mode=hs.HeatingMode.FLOOR_HEATING, history_length=3, fixed_output=1
+    )
+    ctrl.update(19.0)
+    ctrl.update(19.0)
+
+    snapshot = ctrl.to_dict()
+
+    assert set(snapshot) == {
+        "kp",
+        "ki",
+        "setpoint",
+        "mode",
+        "history_length",
+        "fixed_output",
+        "integral",
+        "history",
+    }
+    assert type(snapshot["mode"]) is str
+    assert snapshot["mode"] == "floor_heating"
+    assert type(snapshot["history_length"]) is int
+    assert type(snapshot["kp"]) is float
+    assert type(snapshot["fixed_output"]) is float
+    assert type(snapshot["history"]) is list
+    assert all(type(entry) is float for entry in snapshot["history"])
+    assert json.loads(json.dumps(snapshot)) == snapshot
+    assert hs.PIController().to_dict()["fixed_output"] is None
+
+
+def test_to_dict_and_from_dict_are_copies_with_no_shared_references() -> None:
+    ctrl = hs.PIController()
+    ctrl.update(20.5)
+
+    snapshot = ctrl.to_dict()
+    snapshot_history = snapshot["history"]
+    assert isinstance(snapshot_history, list)
+    snapshot_history.append(0.9)
+    snapshot["kp"] = 9.0
+    ctrl.update(20.5)
+
+    # Mutating the returned dict, or updating the controller afterwards,
+    # leaves the other alone.
+    assert ctrl.history == (pytest.approx(0.1575), pytest.approx(0.165))
+    assert ctrl.kp == pytest.approx(0.3)
+    assert snapshot_history == [pytest.approx(0.1575), 0.9]
+
+    data = ctrl.to_dict()
+    before = copy.deepcopy(data)
+    restored = hs.PIController.from_dict(data)
+    data_history = data["history"]
+    assert isinstance(data_history, list)
+    data_history.append(1.0)
+    data["kp"] = 99.0
+    assert restored.to_dict() == before
+
+    a, b = ctrl.to_dict(), ctrl.to_dict()
+    assert a == b
+    assert a is not b
+    assert a["history"] is not b["history"]
+
+
+# ---------------------------------------------------------------------------
+# T2/T3 (C2/C3): from_dict(to_dict()) round trip, including a JSON round
+# trip, matches the original in every setting and every piece of state
+# ---------------------------------------------------------------------------
+
+
+def test_from_dict_mid_hold_restore_then_release_matches_original() -> None:
+    ctrl = hs.PIController(fixed_output=0.2)
+    for _ in range(3):
+        ctrl.update(20.5)
+
+    snapshot = ctrl.to_dict()
+    assert snapshot == {
+        "kp": pytest.approx(0.3),
+        "ki": pytest.approx(0.015),
+        "setpoint": pytest.approx(21.0),
+        "mode": "radiator",
+        "history_length": 24,
+        "fixed_output": pytest.approx(0.2),
+        "integral": pytest.approx(1.5),
+        "history": [pytest.approx(0.2), pytest.approx(0.2), pytest.approx(0.2)],
+    }
+
+    restored = hs.PIController.from_dict(snapshot)
+    assert restored.fixed_output == pytest.approx(0.2)
+    assert restored.integral == pytest.approx(1.5)
+    assert restored.history == ctrl.history
+    assert restored.duty_cycle == ctrl.duty_cycle
+    assert restored.is_history_full == ctrl.is_history_full
+    assert restored.pi_output is None
+    assert ctrl.pi_output == pytest.approx(0.1725)
+
+    # Release the hold on both and take the next step: same command.
+    ctrl.fixed_output = None
+    restored.fixed_output = None
+    a = ctrl.update(20.5)
+    b = restored.update(20.5)
+    assert a == pytest.approx(b) == pytest.approx(0.18)
+    assert ctrl.pi_output == pytest.approx(restored.pi_output)
+    assert (
+        ctrl.history
+        == restored.history
+        == (
+            pytest.approx(0.2),
+            pytest.approx(0.2),
+            pytest.approx(0.2),
+            pytest.approx(0.18),
+        )
+    )
+    assert ctrl.integral == pytest.approx(2.0)
+
+
+def test_from_dict_then_to_dict_reproduces_snapshot_exactly_and_through_json() -> None:
+    ctrl = hs.PIController(
+        kp=0.4,
+        ki=0.02,
+        mode="floor_heating",
+        setpoint=22.5,
+        history_length=6,
+        fixed_output=0.3,
+    )
+    for _ in range(4):
+        ctrl.update(19.0)
+    snapshot = ctrl.to_dict()
+
+    restored = hs.PIController.from_dict(snapshot)
+    assert restored.to_dict() == snapshot
+
+    from_json = hs.PIController.from_dict(json.loads(json.dumps(snapshot)))
+    assert from_json.to_dict() == snapshot
+    assert from_json.history_length == 6
+    assert from_json.is_history_full is False
+    assert from_json.duty_cycle == ctrl.duty_cycle
+    assert from_json.mode is hs.HeatingMode.FLOOR_HEATING
+
+
+def test_from_dict_full_floor_window_caps_and_matches_original() -> None:
+    ctrl = hs.PIController(mode="floor_heating", history_length=4, fixed_output=0.25)
+    for _ in range(4):
+        ctrl.update(19.0)
+    restored = hs.PIController.from_dict(ctrl.to_dict())
+
+    assert restored.is_history_full is True
+    assert restored.duty_cycle == pytest.approx(0.25)
+
+    # Two more steps on each: the deque's maxlen, not just the count, was
+    # restored, so both twins wrap their window identically.
+    a = [ctrl.update(19.0) for _ in range(2)]
+    b = [restored.update(19.0) for _ in range(2)]
+    assert a == b == [0.0, 1.0]
+    assert len(ctrl.history) == 4
+    assert ctrl.history == restored.history == (0.0, 0.0, 0.0, 1.0)
+
+
+def test_from_dict_then_reset_clears_state_but_keeps_hold_settings_and_window() -> None:
+    ctrl = hs.PIController(
+        kp=0.4, mode="floor_heating", history_length=5, fixed_output=0.2
+    )
+    for _ in range(3):
+        ctrl.update(19.0)
+    restored = hs.PIController.from_dict(ctrl.to_dict())
+
+    restored.reset()
+    assert restored.integral == pytest.approx(0.0)
+    assert restored.history == ()
+    assert restored.pi_output is None
+    assert restored.fixed_output == pytest.approx(0.2)
+    assert restored.history_length == 5
+    assert restored.kp == pytest.approx(0.4)
+    # The original, from which the snapshot was taken, is untouched.
+    assert ctrl.integral == pytest.approx(6.0)
+    assert ctrl.history == (1.0, 0.0, 0.0)
+
+    restored.fixed_output = None
+    restored.mode = "radiator"
+    restored.kp = 0.3
+    assert restored.update(20.5) == pytest.approx(0.1575)
+
+
+# ---------------------------------------------------------------------------
+# T4 (C4): a missing, unknown or bad-value key raises, naming it, and
+# produces no controller
+# ---------------------------------------------------------------------------
+
+
+def test_from_dict_reports_missing_keys_before_unknown_and_sorted() -> None:
+    snapshot = hs.PIController().to_dict()
+
+    both = dict(snapshot)
+    del both["kp"]
+    del both["setpoint"]
+    both["extra"] = 1
+    with pytest.raises(ValueError, match=r"missing keys \['kp', 'setpoint'\]"):
+        hs.PIController.from_dict(both)
+
+    unknown_only = dict(snapshot)
+    unknown_only["extra"] = 1
+    with pytest.raises(ValueError, match=r"unknown keys \['extra'\]"):
+        hs.PIController.from_dict(unknown_only)
+
+    # Key case and trailing whitespace count as missing, not a near-miss.
+    cased = dict(snapshot)
+    del cased["kp"]
+    cased["KP"] = 0.3
+    with pytest.raises(ValueError, match=r"^snapshot is missing keys \['kp'\]\.$"):
+        hs.PIController.from_dict(cased)
+
+    with pytest.raises(ValueError, match=r"missing keys \[.*'fixed_output'.*\]"):
+        hs.PIController.from_dict({})
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "exc_type"),
+    [
+        ("kp", "0.3", TypeError),
+        ("kp", math.nan, ValueError),
+        ("kp", 10**400, OverflowError),
+        ("ki", True, TypeError),
+        ("setpoint", None, TypeError),
+        ("mode", "steam", ValueError),
+        ("mode", 1, ValueError),
+        ("history_length", True, TypeError),
+        ("history_length", 2.0, TypeError),
+        ("history_length", "24", TypeError),
+        ("history_length", None, TypeError),
+        ("history_length", 0, ValueError),
+        ("history_length", -1, ValueError),
+        ("history_length", sys.maxsize + 1, OverflowError),
+        ("fixed_output", 1.5, ValueError),
+        ("fixed_output", True, TypeError),
+        ("fixed_output", 10**400, OverflowError),
+        ("integral", math.nan, ValueError),
+        ("integral", "1", TypeError),
+        ("integral", True, TypeError),
+        ("integral", None, TypeError),
+        ("integral", 10**400, OverflowError),
+    ],
+)
+def test_from_dict_raises_identical_error_type_and_message_as_the_setter(
+    key: str, value: object, exc_type: type[Exception]
+) -> None:
+    snapshot = hs.PIController().to_dict()
+
+    with pytest.raises(exc_type) as from_dict_exc:
+        hs.PIController.from_dict({**snapshot, key: value})
+
+    with pytest.raises(exc_type) as setter_exc:
+        if key == "integral":
+            hs.PIController().integral = value  # type: ignore[assignment]  # deliberate misuse
+        else:
+            hs.PIController(**{key: value})  # type: ignore[arg-type]  # key varies per case
+
+    assert str(from_dict_exc.value) == str(setter_exc.value)
+    assert key in str(from_dict_exc.value)
+
+
+def test_from_dict_history_length_boundary_exact_accepted_one_over_rejected() -> None:
+    snapshot = hs.PIController(history_length=3).to_dict()
+
+    fits = hs.PIController.from_dict({**snapshot, "history": [0.1, 0.2, 0.3]})
+    assert fits.is_history_full is True
+    assert fits.duty_cycle == pytest.approx(0.2)
+
+    with pytest.raises(
+        ValueError, match=r"history has 4 entries but history_length is 3"
+    ):
+        hs.PIController.from_dict({**snapshot, "history": [0.1, 0.2, 0.3, 0.4]})
+
+    # A one-slot window either side of full.
+    one_slot = hs.PIController(history_length=1).to_dict()
+    assert hs.PIController.from_dict({**one_slot, "history": [0.5]}).is_history_full
+    with pytest.raises(ValueError, match="history_length is 1"):
+        hs.PIController.from_dict({**one_slot, "history": [0.5, 0.5]})
+
+
+def test_from_dict_history_entry_errors_name_the_offending_index() -> None:
+    snapshot = hs.PIController(history_length=5).to_dict()
+
+    def with_third(value: object) -> dict[str, object]:
+        return {**snapshot, "history": [0.1, 0.1, value]}
+
+    with pytest.raises(TypeError, match=r"history\[2\] must be a real number"):
+        hs.PIController.from_dict(with_third(True))
+    with pytest.raises(TypeError, match=r"history\[2\]"):
+        hs.PIController.from_dict(with_third("0.5"))
+    with pytest.raises(ValueError, match=r"history\[2\] must be in \[0.0, 1.0\]"):
+        hs.PIController.from_dict(with_third(1.5))
+    with pytest.raises(ValueError, match=r"history\[2\] must be in \[0.0, 1.0\]"):
+        hs.PIController.from_dict(with_third(-0.1))
+    with pytest.raises(ValueError, match=r"history\[2\] must be a finite number"):
+        hs.PIController.from_dict(with_third(math.nan))
+    with pytest.raises(OverflowError, match=r"history\[2\]"):
+        hs.PIController.from_dict(with_third(10**400))
+
+    # First entry, not third, for a two-entry list.
+    with pytest.raises(TypeError, match=r"history\[1\] must be a real number"):
+        hs.PIController.from_dict({**snapshot, "history": [0.5, True]})
+
+    # Accepted: int, Fraction and -0.0 all convert to an in-range float.
+    accepted = hs.PIController.from_dict(with_third(1))
+    assert accepted.history[2] == 1.0
+    assert hs.PIController.from_dict(with_third(Fraction(1, 2))).history[2] == 0.5
+    normalised = hs.PIController.from_dict(with_third(-0.0)).history[2]
+    assert normalised == 0.0
+    assert math.copysign(1.0, normalised) == 1.0
+
+
+@pytest.mark.parametrize(
+    "history",
+    ["0.5", b"\x00", {}, {0: 0.5}, {0.5}, range(1), 0.5, None, deque([0.5])],
+)
+def test_from_dict_history_container_type_errors_and_tuple_accepted(
+    history: object,
+) -> None:
+    snapshot = hs.PIController().to_dict()
+
+    with pytest.raises(TypeError, match="history must be a list or tuple"):
+        hs.PIController.from_dict({**snapshot, "history": history})
+
+    tupled = hs.PIController.from_dict({**snapshot, "history": (0.0, 1.0)})
+    assert tupled.to_dict()["history"] == [0.0, 1.0]
+
+
+@pytest.mark.parametrize("data", ["not a mapping", ["a", "list"], None, b"{}"])
+def test_from_dict_rejects_non_mapping_data(data: object) -> None:
+    with pytest.raises(TypeError, match="snapshot must be a mapping"):
+        hs.PIController.from_dict(data)  # type: ignore[arg-type]  # deliberate misuse
+
+
+@pytest.mark.parametrize("wrapper", [MappingProxyType, OrderedDict, ChainMap])
+def test_from_dict_accepts_any_mapping_type(wrapper: type) -> None:
+    snapshot = hs.PIController(kp=0.5).to_dict()
+    data = wrapper(snapshot) if wrapper is not ChainMap else ChainMap(snapshot)
+    restored = hs.PIController.from_dict(data)
+    assert restored.to_dict() == snapshot
+
+
+def test_from_dict_fixed_output_int_zero_is_a_hold_not_none() -> None:
+    snapshot = hs.PIController().to_dict()
+
+    zero_hold = hs.PIController.from_dict({**snapshot, "fixed_output": 0})
+    assert zero_hold.fixed_output == 0.0
+    assert zero_hold.fixed_output is not None
+    assert type(zero_hold.fixed_output) is float
+    assert zero_hold.update(0.0) == 0.0
+
+    one_hold = hs.PIController.from_dict({**snapshot, "fixed_output": 1})
+    assert one_hold.fixed_output == 1.0
+
+    with pytest.raises(TypeError, match="fixed_output"):
+        hs.PIController.from_dict({**snapshot, "fixed_output": False})
+
+
+def test_from_dict_fixed_output_range_error_names_original_value() -> None:
+    # Round 3 defect D2: from_dict used to convert fixed_output to float
+    # before the range check, so the message reported the converted value
+    # ("got 1.5") instead of the caller's own value, contradicting the
+    # docstring's promise of "exactly what a bad assignment would" raise.
+    snapshot = hs.PIController().to_dict()
+    value = Fraction(3, 2)
+
+    with pytest.raises(ValueError) as from_dict_exc:
+        hs.PIController.from_dict({**snapshot, "fixed_output": value})
+    with pytest.raises(ValueError) as setter_exc:
+        hs.PIController(fixed_output=value)  # type: ignore[arg-type]  # numbers.Real, not a float
+
+    assert str(from_dict_exc.value) == str(setter_exc.value)
+    assert "Fraction(3, 2)" in str(from_dict_exc.value)
+
+
+# ---------------------------------------------------------------------------
+# T5 (C5): history_length is validated once, at construction, read-only
+# afterwards
+# ---------------------------------------------------------------------------
+
+
+def test_history_length_is_read_only_after_construction() -> None:
+    ctrl = hs.PIController(history_length=3)
+    with pytest.raises(AttributeError):
+        ctrl.history_length = 5  # type: ignore[misc]  # deliberate misuse
+    assert ctrl.history_length == 3
+    for _ in range(4):
+        ctrl.update(19.0)
+    assert len(ctrl.history) == 3
+
+
+def test_history_length_sys_maxsize_is_accepted_one_over_overflows() -> None:
+    huge = hs.PIController(history_length=sys.maxsize)
+    assert huge.is_history_full is False
+
+    text = json.dumps(huge.to_dict())
+    restored = hs.PIController.from_dict(json.loads(text))
+    assert restored.history_length == sys.maxsize
+
+    with pytest.raises(OverflowError, match="history_length"):
+        hs.PIController(history_length=sys.maxsize + 1)
+
+    snapshot = hs.PIController(history_length=3).to_dict()
+    with pytest.raises(OverflowError, match="history_length"):
+        hs.PIController.from_dict({**snapshot, "history_length": sys.maxsize + 1})
+
+
+@pytest.mark.parametrize(
+    "value", [True, False, 1.0, 24.0, "24", None, Fraction(24, 1), Decimal("24"), [24]]
+)
+def test_history_length_rejects_bool_and_non_int_naming_it(value: object) -> None:
+    with pytest.raises(TypeError, match="history_length"):
+        hs.PIController(history_length=value)  # type: ignore[arg-type]  # deliberate misuse
+
+    snapshot = hs.PIController().to_dict()
+    with pytest.raises(TypeError, match="history_length"):
+        hs.PIController.from_dict({**snapshot, "history_length": value})
+
+
+# ---------------------------------------------------------------------------
+# T6 (C6): integral is a validating property on the numeric-family contract
+# ---------------------------------------------------------------------------
+
+
+def test_integral_setter_matches_the_numeric_family_contract() -> None:
+    ctrl = hs.PIController()
+    ctrl.integral = 2.5
+
+    ctrl.integral = -0.0
+    assert ctrl.integral == 0.0
+    assert math.copysign(1.0, ctrl.integral) == 1.0
+    ctrl.integral = 1
+    assert ctrl.integral == 1.0
+    assert type(ctrl.integral) is float
+    ctrl.integral = Fraction(3, 2)
+    assert ctrl.integral == 1.5
+
+    ctrl.integral = 2.5
+    bad_cases: list[tuple[object, type[Exception]]] = [
+        (True, TypeError),
+        ("0.0", TypeError),
+        (None, TypeError),
+        ([0.0], TypeError),
+        (math.nan, ValueError),
+        (math.inf, ValueError),
+        (-math.inf, ValueError),
+        (10**400, OverflowError),
+    ]
+    for value, exc_type in bad_cases:
+        with pytest.raises(exc_type, match="integral"):
+            ctrl.integral = value
+        assert ctrl.integral == 2.5
+
+    ctrl.update(20.0)
+    assert ctrl.integral != 2.5
+
+
+# ---------------------------------------------------------------------------
+# T7 (C7): the finite guard on update() and -0.0 normalisation
+# ---------------------------------------------------------------------------
+
+
+def test_update_overflowing_integral_holds_and_closes_without_raising() -> None:
+    ctrl = hs.PIController(ki=-0.015, setpoint=1e308)
+    ctrl.integral = 1e308
+
+    out = ctrl.update(0.0)
+
+    assert out == 0.0
+    assert ctrl.pi_output == 0.0
+    assert ctrl.integral == 1e308
+    assert ctrl.history == (0.0,)
+
+
+@pytest.mark.parametrize(
+    ("kp", "setpoint", "expected_command", "expected_pi_output", "expected_integral"),
+    [
+        (1e300, 1e8, 1.0, 1.0, 0.0),  # finite raw (1e308): the linear path
+        (1e300, 1e10, 0.0, 0.0, 0.0),  # raw overflows to +inf: the guard
+        (-1e300, 1e10, 0.0, 0.0, 0.0),  # raw overflows to -inf: the guard
+    ],
+)
+def test_update_finite_guard_flips_exactly_at_finiteness_not_at_large_values(
+    kp: float,
+    setpoint: float,
+    expected_command: float,
+    expected_pi_output: float,
+    expected_integral: float,
+) -> None:
+    ctrl = hs.PIController(kp=kp, ki=0.0, setpoint=setpoint)
+
+    out = ctrl.update(0.0)
+
+    assert out == pytest.approx(expected_command)
+    assert ctrl.pi_output == pytest.approx(expected_pi_output)
+    assert ctrl.integral == pytest.approx(expected_integral)
+
+
+def test_update_nan_raw_sum_gives_closed_command_not_full() -> None:
+    ctrl = hs.PIController(kp=1e300, ki=-1e300, setpoint=1e10)
+
+    out = ctrl.update(0.0)
+
+    assert out == 0.0
+    assert ctrl.pi_output == 0.0
+    assert not math.isnan(out)
+    assert not math.isnan(ctrl.pi_output)
+    assert ctrl.integral == 0.0
+    assert ctrl.history == (0.0,)
+
+
+def test_update_error_subtraction_overflow_triggers_guard_and_still_stores_setpoint() -> (
+    None
+):
+    ctrl = hs.PIController()
+
+    out = ctrl.update(-1e308, setpoint=1e308)
+
+    assert out == 0.0
+    assert ctrl.setpoint == 1e308
+    assert ctrl.pi_output == 0.0
+    assert ctrl.integral == 0.0
+    assert len(ctrl.history) == 1
+
+
+def test_update_huge_but_finite_integral_takes_the_finite_path() -> None:
+    # An anti-windup hold, not the finite guard: the sum is huge but finite.
+    ctrl = hs.PIController(kp=0.3, ki=1.0, setpoint=21.0)
+    ctrl.integral = 1e308
+
+    out = ctrl.update(20.0)
+
+    assert out == 1.0
+    assert ctrl.pi_output == 1.0
+    assert ctrl.integral == 1e308
+
+
+def test_update_non_finite_raw_with_hold_still_returns_fixed_level_both_modes() -> None:
+    radiator = hs.PIController(kp=1e300, ki=0.0, setpoint=1e10, fixed_output=0.3)
+    out = radiator.update(0.0)
+    assert out == 0.3
+    assert radiator.pi_output == 0.0
+    assert radiator.integral == 0.0
+
+    extreme = hs.PIController(
+        mode="floor_heating", kp=1e300, ki=0.0, setpoint=1e10, fixed_output=0.3
+    )
+    twin = hs.PIController(mode="floor_heating", fixed_output=0.3)
+    extreme_commands = [extreme.update(0.0) for _ in range(8)]
+    twin_commands = [twin.update(20.5) for _ in range(8)]
+
+    assert extreme_commands == twin_commands
+    assert extreme.pi_output == 0.0
+    assert extreme.integral == 0.0
+
+
+def test_update_negative_gains_and_zero_error_gives_positively_signed_zero() -> None:
+    # Round 3 defect D3: the raw sum is -0.0 here (negative kp and ki, zero
+    # error). It already read back as +0.0 in the shipped code, but only
+    # because max(OUTPUT_MIN, -0.0) happens to return its first (positive)
+    # argument -- the same argument-order accident R2 asked this round to
+    # remove. update() now normalises the clamp result explicitly.
+    ctrl = hs.PIController(kp=-0.3, ki=-0.015)
+
+    cmd = ctrl.update(21.0)
+
+    assert cmd == 0.0
+    assert math.copysign(1.0, cmd) == 1.0
+    assert ctrl.pi_output is not None
+    assert math.copysign(1.0, ctrl.pi_output) == 1.0
+    assert ctrl.integral == 0.0
+
+
+def test_negative_zero_reads_back_positive_from_every_setter_and_through_json() -> None:
+    for attr in ("kp", "ki", "setpoint", "integral", "fixed_output"):
+        ctrl = hs.PIController()
+        setattr(ctrl, attr, -0.0)
+        assert math.copysign(1.0, getattr(ctrl, attr)) == 1.0
+
+    ctrl = hs.PIController()
+    ctrl.update(20.0, setpoint=-0.0)
+    assert math.copysign(1.0, ctrl.setpoint) == 1.0
+
+    held = hs.PIController(fixed_output=-0.0)
+    cmd = held.update(20.5)
+    assert math.copysign(1.0, cmd) == 1.0
+    assert math.copysign(1.0, held.history[0]) == 1.0
+
+    text = (
+        '{"kp": -0.0, "ki": 0.015, "setpoint": 21.0, "mode": "radiator", '
+        '"history_length": 24, "fixed_output": -0.0, "integral": -0.0, '
+        '"history": [-0.0]}'
+    )
+    restored = hs.PIController.from_dict(json.loads(text))
+    assert math.copysign(1.0, restored.kp) == 1.0
+    assert restored.fixed_output is not None
+    assert math.copysign(1.0, restored.fixed_output) == 1.0
+    assert math.copysign(1.0, restored.integral) == 1.0
+    assert math.copysign(1.0, restored.history[0]) == 1.0
+
+    dumped = json.dumps(hs.PIController(kp=-0.0, fixed_output=-0.0).to_dict())
+    assert "-0.0" not in dumped
+
+
+# ---------------------------------------------------------------------------
+# Round 3 production defect D1: an unknown-key set of mixed, unorderable
+# types (e.g. a str and an int) must not crash sorted() itself
+# ---------------------------------------------------------------------------
+
+
+def test_from_dict_unknown_keys_of_mixed_types_raises_value_error_not_type_error() -> (
+    None
+):
+    snapshot = hs.PIController().to_dict()
+
+    with pytest.raises(ValueError, match="unknown keys") as exc:
+        hs.PIController.from_dict({**snapshot, "extra": 0, 1: 0})  # type: ignore[dict-item]  # deliberate misuse
+
+    assert "'extra'" in str(exc.value)
+    assert "1" in str(exc.value)
