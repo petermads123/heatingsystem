@@ -1,6 +1,6 @@
 # Modulator: the actuator mapping as its own object
 
-<!-- claude-plan step=1 status=active -->
+<!-- claude-plan step=2 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,8 +16,8 @@ conventional name `feat/fixed-output`.
 
 | # | Step | Skill | Runs | Status |
 |---|---|---|---|---|
-| 1 | Conceptualize | `/conceptualize` | with the user | in progress |
-| 2 | Plan | `/plan` | with the user | pending |
+| 1 | Conceptualize | `/conceptualize` | with the user | done |
+| 2 | Plan | `/plan` | with the user | in progress |
 | 3 | Implement | `/implement` | in `/build` | pending |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
@@ -100,37 +100,94 @@ What is already on the branch that this round must not break:
 
 ## 1. Concept
 
-> Written in step 1, agreed with the user before step 2 starts. Prose, not code. Steps 3
-> to 7 run without the user, and the one thing that stops them is a finding that would
-> change this section — so what is not decided here is decided by a halt.
-
 ### What this is
+
+The actuator side of `PIController` becomes its own object, a **modulator**: it takes a
+demand level in the actuator range and turns it into a command for its mode, owning the
+mode, the window length, the command history, the duty cycle, the window-full flag, the
+fixed-output hold, and a reset that clears the window. `PIController` composes one and
+keeps every existing property by delegating to it, so a caller who never touches the
+modulator sees no change at all. The modulator is a public class importable from the
+package root, because reuse by a future model is the point of the split.
+
+The numeric-contract helpers move into one private module that both objects use, with the
+contract's prose stated once and every setter referring to it; the mode coercion becomes
+one shared helper; the history gets one loader that `to_dict`/`from_dict` use instead of
+reaching into the deque. `update` and `reset` write the integral field directly while the
+public `integral` setter still validates external writes. The four floor-heating tests
+that pin the exact firing schedule move to the modulator's own test file, where the
+schedule is the thing under test; the controller's test file keeps the count-and-bound
+assertions that prove convergence.
+
+Decisions taken in step 1: the modulator is not reachable from a controller instance and
+cannot be injected into the constructor, since both would widen the public surface and
+neither is needed for the split. The snapshot format is untouched: the same eight flat
+keys, produced by the controller flattening its own state and the modulator's, and pinned
+by a test with a literal round-3-shaped dict. `pi_output` stays on the controller, since
+it is the PI demand. Where the new class lives, and whether STRUCTURE.md's per-subpackage
+split rule then applies, is step 2's call.
+
+The user was told, and accepted, that this round delivers no new behaviour: it is a
+structural refactor for a second model that does not exist yet, kept strictly to the
+split.
 
 ### Why it is worth building
 
+Nothing in the mode mapping, the duty-cycle window or the fixed-output hold is specific to
+a PI controller. The second model the repo plans for would otherwise copy them or go
+without a price-spike override. The override made the seam visible: it sits exactly where
+"demand level" becomes "actuator command". The carried-in constraints are the debt three
+rounds of lenses found: the snapshot's two lines that reach into the deque, the mode
+message written twice, the numeric contract's prose in seven places, `reset()` enumerated
+by hand, and the control law depending on the public `integral` setter never tightening.
+
 ### Inputs and outputs
+
+- **Modulator, in:** a mode (enum or its string), a window length, an optional fixed
+  level, all under the existing validation contract; then per step a demand level in
+  `[OUTPUT_MIN, OUTPUT_MAX]`.
+- **Modulator, out:** a command (the level itself for a radiator, `0.0`/`1.0` for floor
+  heating), appended to its history; `history`, `duty_cycle`, `is_history_full`,
+  `history_length`, `mode`, `fixed_output` readable as today; a reset clearing the window.
+- **`PIController`:** every constructor argument, property, method and package export
+  keeps its signature, type and behaviour. `to_dict` and `from_dict` keep the eight-key
+  flat format.
 
 ### How it connects to the rest of the repo
 
-Which existing modules it calls, which call it, what it does not touch.
+- Changes `src/heatingsystem/pi_controller/pi_controller.py` (the controller delegates),
+  adds the modulator's module and the private helpers module (locations chosen in step 2),
+  re-exports the modulator from `src/heatingsystem/__init__.py`, adds the modulator's test
+  file under `tests/`, moves four tests out of `tests/test_pi_controller.py`, and updates
+  `STRUCTURE.md` (following its Growth rule if a subpackage is added) and the README (one
+  sentence naming the modulator as reusable).
+- `test.py` is untouched.
+- A future model composes the modulator the way `PIController` does.
 
 ### Explicitly out of scope
 
-### Acceptance criteria
+- Any new modulation behaviour: hysteresis, minimum on-time, pulse spreading.
+- A second model.
+- Any change to the snapshot format, to `PIController`'s signatures, or to the PI
+  arithmetic and anti-windup.
+- Exposing the modulator instance from a controller, or injecting one into it.
+- Schema versioning.
 
-> Numbered, observable, and phrased so that step 6 can mark each one met or not met.
-> These are the contract. Step 2 plans against them, step 5 tests them, step 6 audits
-> against them. If a criterion cannot be observed from outside the code, rewrite it.
+### Acceptance criteria
 
 | # | The finished feature... |
 |---|---|
-| A1 | |
-| A2 | |
+| D1 | A modulator class, importable from the package root, maps a demand level to a command with the same results as today: radiator pass-through, floor-heating duty-cycle modulation reading the window before appending, and a fixed level replacing the demand; it owns `mode`, `history_length`, `fixed_output`, `history`, `duty_cycle`, `is_history_full` and a reset, with the same validation contract on its settings. |
+| D2 | `PIController`'s public surface keeps every signature and behaviour: the whole pre-round test suite passes unchanged, except the four schedule tests that move. |
+| D3 | `to_dict` produces exactly what round 3 produced for the same state, and a literal snapshot written before this round restores identically. |
+| D4 | After `reset()`, `to_dict()` equals that of a fresh controller built with the same settings, for a controller that has run and held and for a restored one. |
+| D5 | The numeric-contract helpers, the mode coercion and the history loader each exist once, in one private module or one place, used by both the controller and the modulator; the contract's prose is stated once. |
+| D6 | `update()` and `reset()` write the integral field directly; the `integral` setter still validates external writes; every twin-integral and hand-computed test passes exactly. |
+| D7 | The modulator's test file owns the exact firing-schedule tests; the controller's test file keeps count-and-bound assertions for floor heating; no other existing test is weakened or deleted. |
 
 ### Open questions
 
-> Must be empty before step 2 begins. An unanswered question here is a decision being
-> made by accident later — and nobody is watching when it happens.
+None.
 
 ---
 
