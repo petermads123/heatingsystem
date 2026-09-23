@@ -1,6 +1,6 @@
 # State snapshot and restore
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -22,8 +22,8 @@ conventional name `feat/fixed-output`.
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | in progress |
-| 8 | Recommend | `/recommend` | with the user | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
+| 8 | Recommend | `/recommend` | with the user | in progress |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
 
@@ -694,10 +694,40 @@ Work proceeds to step 7.
 
 ## 7. Ship log
 
+> Written in step 7. Gates re-confirmed on the whole tree; this round's own commits
+> reviewed for things that should not be there.
+
+All four gates re-run clean: `ruff check .` → `All checks passed!`; `ruff format --check .`
+→ `40 files already formatted`; `mypy` → `Success: no issues found in 13 source files`;
+`pytest` → `597 passed in 6.73s`. Also re-run per this repo's convention:
+`python -m heatingsystem.pi_controller.pi_controller` → clean exit 0, only the expected
+`sys.modules` `RuntimeWarning`, output covering every case documented in section 4/6;
+`MPLBACKEND=Agg python test.py` → clean exit 0, `simulation.png` written (git-ignored, not
+committed).
+
+Steps 1 to 6 in the Progress table are all `done`; section 6's criteria table has all seven
+criteria (C1–C7) marked `Yes` with evidence, no unmet row; section 5's intent table has a
+test group against every intent (T1–T7).
+
+Diff review of this round's own commits (`git log fdc7bff..HEAD`, `git diff
+fdc7bff..HEAD --stat`): five files changed (`README.md`, `STRUCTURE.md`, this plan file,
+`src/heatingsystem/pi_controller/pi_controller.py`, `tests/test_pi_controller.py`), purely
+additive on the test file (`git diff fdc7bff..HEAD -- tests/test_pi_controller.py | grep
+'^-' | grep -v '^---'` → zero lines — no existing test modified or deleted, confirming
+section 6's own check independently). No stray file: `git status --porcelain --ignored`
+shows only the usual ignored build/cache directories and `simulation.png`, nothing
+unexpected staged or committed. No debug prints, no commented-out code, no `.skip-gate`
+file, no secrets or `.env` files found. No private helper name (`_finite`,
+`_window_length`, `_level`, `_history_length`, `_integral`, `_SNAPSHOT_KEYS`, etc.) appears
+in `STRUCTURE.md` (grepped, zero hits). Every step from 1 through 6 left its own commit
+naming the round file — `c6c23cf` (Concept), `af4af8e`/`0de576c` (Plan), `7f09d2d` (Plan
+accepted), `f1fa004` (Implement), `17a10bd` (Verify), `1749415` (Test), `8624d18` (Concept
+check) — none missing.
+
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits | `c6c23cf` Concept: State snapshot and restore (round 3); `af4af8e` Plan: State snapshot and restore (round 3); `0de576c` Plan: apply the plan-critic's nine findings (round 3); `7f09d2d` Plan accepted: State snapshot and restore (round 3); `f1fa004` Add state snapshot and restore to PIController; `17a10bd` Verify: State snapshot and restore (round 3); `1749415` Test: State snapshot and restore (round 3); `8624d18` Concept check: State snapshot and restore (round 3) |
+| Pushed to | `origin/claude/festive-maxwell-xft6pj` |
 
 ---
 
