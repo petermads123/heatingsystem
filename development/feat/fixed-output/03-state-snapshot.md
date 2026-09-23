@@ -1,6 +1,6 @@
 # State snapshot and restore
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,8 +19,8 @@ conventional name `feat/fixed-output`.
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | in progress |
-| 5 | Test | `/test` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
+| 5 | Test | `/test` | in `/build` | in progress |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -421,12 +421,41 @@ the code character for character; no signature changed from what is written ther
 
 | Check | Result |
 |---|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
+| `ruff check .` | `All checks passed!` — first run, no fixes needed |
+| `ruff format --check .` | `40 files already formatted` — first run, no fixes needed |
+| `mypy` | `Success: no issues found in 13 source files` — first run, no fixes needed |
+| `pytest` | `525 passed in 6.48s` — the full suite, unchanged from before this round; no test file touched |
+| Plan completeness | every signature in the Public API table exists as written (see table below) |
+| `STRUCTURE.md` | in sync, checked by hand (see below); no edit needed |
+| `python -m heatingsystem.pi_controller.pi_controller` | ran clean, exit 0; expected `RuntimeWarning` about the module already being in `sys.modules` (the re-export); output covers every case documented below |
+
+### Plan completeness — Public API table (section 2) vs. code
+
+| Signature | Result |
+|---|---|
+| `PIController.to_dict(self) -> dict[str, object]` | Present, exact signature and behaviour (`pi_controller.py:399`). |
+| `PIController.from_dict(cls, data: Mapping[str, object]) -> Self` (classmethod) | Present, exact signature and behaviour, including missing/unknown-key ordering, `history[i]` naming, and the non-mapping `TypeError` (`pi_controller.py:427`). |
+| `PIController.history_length -> int` (read-only) | Present; no setter defined, so assignment raises `AttributeError` as intended (`pi_controller.py:602`). |
+| `PIController.integral -> float` / setter | Present, on the `_finite` contract, naming `integral` (`pi_controller.py:612`). |
+| `PIController(...)` constructor | Signature unchanged; `history_length` now routed through `_window_length` (`pi_controller.py:244`, `263`). |
+| `PIController.update(measured, setpoint=None) -> float` | Signature unchanged; the `finite` guard added exactly as planned — `u = ... if finite else OUTPUT_MIN`, the three-branch anti-windup chain wrapped in `if finite:`, fixed-output path unaffected (`pi_controller.py:287-386`). |
+| `main() -> None` | Showcase gained the save/JSON-round-trip/restore/matching-next-command case and the missing-key `ValueError` demo, placed after the floor-heating run and before the `mode` reassignment, on a fresh controller (`pi_controller.py:770-965`). |
+
+No **Missing**, no **Deviation**, no **Unplanned** entries. Two implementer choices already recorded in section 3 (the showcase's own `cold_measurement` binding, and the explicit `for`/`append` loop over a comprehension in `from_dict`) are showcase-only and loop-shape choices respectively; neither changes a signature or adds public surface, so nothing further to record here.
+
+### STRUCTURE.md audit (by hand — subagents cannot spawn subagents in this run)
+
+Checked every row against the code directly rather than running the `structure-auditor` subagent:
+
+- **Both `__init__.py` sections** (`src/heatingsystem/__init__.py`, `src/heatingsystem/pi_controller/__init__.py`): STRUCTURE.md lists the same four exports (`HeatingMode`, `PIController`, `OUTPUT_MIN`, `OUTPUT_MAX`) from the same source; both files on disk export exactly those four and nothing else, matching the plan's "no new public names at package level."
+- **The four new controller rows** — `to_dict`, `from_dict`, `history_length`, `integral` — are present in the table (lines 104–105, 99–100 of STRUCTURE.md) and match the code's signatures, docstrings and raised errors, including `from_dict`'s missing/unknown-key wording, the `history[i]` naming and the non-mapping `TypeError`.
+- **The constructor row** now reads "`history_length` is validated by the same numeric-family contract... and stored as a read-only property" and drops the old "`integral` is a plain public attribute" line — matches `_window_length` and the new `integral` property.
+- **The `update` row** documents the finite guard (`OUTPUT_MIN` demand, `pi_output` `0.0`, integral held) and that a set `fixed_output` is unaffected — matches the `if finite:` code.
+- **The test-file paragraph** for `tests/test_pi_controller.py` carries a "Round 3 decides the two arithmetic quirks..." paragraph describing the non-finite-raw and `-0.0` decisions — this is a description of what round 5 (Test) will still need to add tests for; it accurately describes the round 3 code decision itself, which is the part step 4 can verify. No stale "considered and left alone" wording remains anywhere in the file — both quirk paragraphs were already rewritten as decided behaviour.
+- **`main()` row**: describes the new showcase section (state snapshot round trip, released hold surviving) — matches the code.
+- No other module's rows changed; `test.py`, the hooks and their tests are untouched by this round, and STRUCTURE.md's rows for them are unaffected.
+
+No edits to `STRUCTURE.md` were needed — it was already brought in sync during step 3 (implement) and this step confirms that by hand rather than repeats the work.
 
 ---
 
