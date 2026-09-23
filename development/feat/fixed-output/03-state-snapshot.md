@@ -1,6 +1,6 @@
 # State snapshot and restore
 
-<!-- claude-plan step=1 status=active -->
+<!-- claude-plan step=2 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,8 +16,8 @@ conventional name `feat/fixed-output`.
 
 | # | Step | Skill | Runs | Status |
 |---|---|---|---|---|
-| 1 | Conceptualize | `/conceptualize` | with the user | in progress |
-| 2 | Plan | `/plan` | with the user | pending |
+| 1 | Conceptualize | `/conceptualize` | with the user | done |
+| 2 | Plan | `/plan` | with the user | in progress |
 | 3 | Implement | `/implement` | in `/build` | pending |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
@@ -83,37 +83,99 @@ What is already on the branch that this round must not break:
 
 ## 1. Concept
 
-> Written in step 1, agreed with the user before step 2 starts. Prose, not code. Steps 3
-> to 7 run without the user, and the one thing that stops them is a finding that would
-> change this section — so what is not decided here is decided by a halt.
-
 ### What this is
+
+`PIController` can hand back its complete state as a plain dictionary of JSON-friendly
+values, and can be rebuilt from such a dictionary. The snapshot holds every setting and
+every piece of running state: the gains, the setpoint, the mode as its string value, the
+window length, the fixed-output hold, the integral, and the command history oldest first.
+The caller stores it wherever suits them, in a file or on a Home Assistant entity, and
+hands it back after a restart. Restore goes through the same validating setters as every
+other write, so a bad snapshot raises the same errors as a bad assignment and produces no
+controller. The PI demand is not in the snapshot: it is derived, and reads `None` after a
+restore until the next `update`, exactly as after `reset()`.
+
+The snapshot includes the settings and not only the running state, so a round trip gives
+back exactly the controller there was; a caller who has changed gains in code sets them
+after restoring. Restore builds a new controller rather than loading into an existing one,
+which keeps one path. The format is a dictionary rather than a JSON string, so the caller
+chooses the serialiser. The format is strict: a missing key, an unknown key, or a history
+longer than the window is an error, because a snapshot that half-applies is worse than one
+that refuses. `integral` becomes a validating property like the other attributes, because
+restore now writes it. There is no format version key, per the user's steer to keep the
+package simple.
+
+Two items folded in from round 2's recommendations: `history_length` gets the round 2
+validation contract and a read-only getter; and the float edge cases are decided once: a
+raw PI sum that is not finite, reachable only with extreme finite inputs, maps to the
+closed command rather than depending on `min`/`max` argument order, and `-0.0` reads back
+as `+0.0` from every numeric setter and from `update`.
 
 ### Why it is worth building
 
+AppDaemon recreates the app on every Home Assistant restart and on every code reload, and
+the controller lives in process memory. Today that means a fresh controller: the integral
+starts from zero, the duty-cycle window is empty for the next two hours, and a
+`fixed_output` hold set for a price spike is silently gone, so the valve opens at full
+demand while prices are high. With a snapshot the caller saves the state after each update
+and restores it on startup, and the restart is invisible to the room.
+
 ### Inputs and outputs
+
+- **Snapshot, out:** a `dict` with exactly these keys: `kp`, `ki`, `setpoint` (floats),
+  `mode` (the enum's string value), `history_length` (int), `fixed_output` (float or
+  `None`), `integral` (float), `history` (a list of floats, oldest first). Every value is a
+  built-in type `json.dumps` accepts. The dict and its list are fresh objects.
+- **Restore, in:** such a dict. Each setting is applied through its validating setter;
+  `integral` through its new setter; `history` is checked to be a list of finite numbers in
+  the actuator range no longer than `history_length`; `history_length` through its new
+  check. A missing or unknown key raises `ValueError` naming it; a bad value raises what the
+  setter raises, naming the key. On any failure no controller is produced.
+- **Restore, out:** a new `PIController` equal to the original in every setting and in
+  `integral`, `history`, `duty_cycle`, `is_history_full` and `fixed_output`, with
+  `pi_output` `None`.
+- **`history_length`, in and out:** an `int` of at least 1; `bool` or a non-`int` raises
+  `TypeError` naming it, below 1 `ValueError`; readable back.
+- **`integral`, in and out:** a finite real number under the round 2 contract, readable
+  back as `float`.
 
 ### How it connects to the rest of the repo
 
-Which existing modules it calls, which call it, what it does not touch.
+- Changes `src/heatingsystem/pi_controller/pi_controller.py` (`PIController`, its showcase
+  `main`), `tests/test_pi_controller.py`, `STRUCTURE.md` and the README usage section (a
+  save-and-restore example).
+- The two package `__init__.py` files are untouched: no new public names at package
+  level.
+- `test.py` is untouched.
+- Existing tests that write `integral` as a plain attribute keep working, since the property
+  accepts every value they assign; the two STRUCTURE.md paragraphs describing the `-0.0`
+  and `nan`-raw quirks as "left alone" are rewritten because this round decides them.
 
 ### Explicitly out of scope
 
-### Acceptance criteria
+- Any storage or I/O: files, Home Assistant entities, AppDaemon APIs.
+- Periodic or automatic snapshots; the caller decides when to save.
+- Schema versioning or migration of old snapshots.
+- Loading a snapshot into an existing instance.
+- Anything on the Home Assistant side, including converting entity states.
 
-> Numbered, observable, and phrased so that step 6 can mark each one met or not met.
-> These are the contract. Step 2 plans against them, step 5 tests them, step 6 audits
-> against them. If a criterion cannot be observed from outside the code, rewrite it.
+### Acceptance criteria
 
 | # | The finished feature... |
 |---|---|
-| A1 | |
-| A2 | |
+| C1 | The snapshot is a dictionary of built-in types that `json.dumps` accepts, holding `kp`, `ki`, `setpoint`, `mode` (string), `history_length`, `fixed_output`, `integral` and `history` (a list, oldest first); it is a copy, so changing either it or the controller afterwards leaves the other alone. |
+| C2 | Restoring from a snapshot yields a controller whose settings, `integral`, `history`, `duty_cycle`, `is_history_full` and `fixed_output` equal the original's, and whose next `update` on the same measurement returns the same command the original would have; `pi_output` is `None` until then. |
+| C3 | A snapshot passed through `json.dumps` and `json.loads` restores identically to C2. |
+| C4 | A snapshot with a missing key, an unknown key, a value the matching setter rejects, a non-finite integral, a history entry outside the actuator range, or a history longer than `history_length` raises `TypeError` or `ValueError` naming the key, and no controller is produced. |
+| C5 | `history_length` is readable back; a `bool` or non-`int` raises `TypeError` naming it and a value below 1 raises `ValueError`, at construction and in restore. |
+| C6 | `integral` is a validating property: a non-number raises `TypeError`, a non-finite value `ValueError`, both naming it, previous value kept. |
+| C7 | A non-finite raw PI sum yields the closed command and `pi_output` of `0.0` with the integral held; `-0.0` given to any numeric setter or to `update` reads back as `+0.0`. |
 
 ### Open questions
 
-> Must be empty before step 2 begins. An unanswered question here is a decision being
-> made by accident later — and nobody is watching when it happens.
+None. Decisions taken in step 1 without asking, because one reading was clearly right for
+a simple package: the snapshot carries settings as well as state; restore builds a new
+instance; the format is a strict dict with no version key; `pi_output` is not in it.
 
 ---
 
