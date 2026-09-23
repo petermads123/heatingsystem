@@ -763,12 +763,29 @@ found for this step to act on.
 
 ## 8. Recommendations
 
-> Written in step 8. Follow-up work this change makes possible or desirable. Not bugs —
-> a bug found here goes back through `/build` before the pull request.
+Three `brainstormer` lenses read the finished round in parallel (`user`, `maintainer`,
+`integrator`); their lists are merged and ranked below by value to the product. The build
+halted on nothing and section 3 records only the mypy narrowing the plan sanctioned, so the
+orchestrator's own angle added nothing. No lens found a bug. This is the last planned round
+before the pull request, so the list is weighted towards what should land before review
+and what can wait for a later branch. One integrator item is not a recommendation but an
+input to step 9: the pull request body should carry a "shape of the package after round 4"
+paragraph naming the seven decisions a reviewer or Copilot will otherwise read as defects
+(the actuator names defined in `modulator.py` and re-exported for compatibility; the
+package-internal `_to_dict`/`_from_dict`/`_load_history` calls; the frozen eight-key
+format pinned in both directions; the changed multi-fault order in `from_dict`; the
+build-then-swap restore; a standalone modulator having no persistence; `command`
+re-validating a `u` the controller already clamped).
 
 | # | Recommendation | Why it helps | Effort | Decision |
 |---|---|---|---|---|
-| R1 | | | | |
+| R1 | README: a five-line block showing `hs.Modulator` used on its own (construct, `command`, `duty_cycle`, a hold, `reset`), lifted from its showcase, and the floor-heating sentence corrected to say the duty cycle converges to within about one slot of the demand, not exactly. | The README names the class in one sentence and shows nothing, and the only worked composition is the controller's private field. The convergence claim is what a caller sizing a small window will read as a bug. User and integrator lenses. Package-shaped prose. | small | |
+| R2 | Docstrings: each delegating `PIController` member refers to `Modulator`'s instead of copying it; the modulator's snapshot pair says "package-internal, for any model in this package that composes a modulator" instead of "called only by `PIController`", with the composition recipe written once in the modulator module's docstring; the two over-claims step 5 recorded are reworded (a raise from the modulator leaves the integral, demand and history untouched, but a passed setpoint is already stored; convergence is quantised to the window); and `from_dict` says the key reported first for several faults is unspecified. | The split regrew the docstring duplication rounds 1 and 2 removed one level up, and the snapshot pair's docstring currently forbids the composition section 1 promises. Maintainer and integrator lenses. | small | |
+| R3 | Make the re-export seams explicit: the package root imports `HeatingMode`, `OUTPUT_MIN` and `OUTPUT_MAX` from `heatingsystem.modulator` rather than through the controller, and `pi_controller.py` declares `__all__` for the three names it passes through. | The root's import graph still says the actuator concepts belong to the PI controller, and a pass-through import that a refactor stops using would be deleted by the lint hook's `ruff --fix`, breaking the compatibility re-export at package import. Identity across all five paths is already pinned by tests. Integrator lens. | small | |
+| R4 | Make `update()` transactional for the per-call setpoint too: validate it into a local, compute from the local, and write the field after `command` returns; then let the raise test pass a setpoint. | Closes the one documented over-claim by construction instead of by rewording, on the same rationale as round 3's direct integral write. Observable only when the modulator raises, which the shipped one never does for an in-range demand. Maintainer lens. | small, a behaviour change on an unreachable path | |
+| R5 | Give `window_length` a `name` parameter like the other two helpers, and stop the private module's docstring naming its callers. | The shared module hard-codes one caller's attribute name; a second model with a differently named window gets errors naming the wrong attribute. Maintainer lens. | small | |
+| R6 | Regroup `tests/test_pi_controller.py` by subject instead of by round, collapse the per-type validation matrix that now lives in three files to one representative case per class in the two class files, and prune STRUCTURE.md's test narrative into a one-paragraph map; do not apply STRUCTURE.md's per-subpackage split until a third subpackage arrives, since the stop gate and the auditor read only the root file. | The controller test file is a four-round changelog and STRUCTURE.md's test section is its mirror; the identity tests make the duplicate matrices safe to retire, but only as a deliberate round under the "never delete a case" rule. Maintainer lens. | medium | |
+| R7 | Promote the modulator's snapshot pair to public `to_dict`/`from_dict` with its four keys, leaving the controller's eight-key format untouched. | The first thing a second model or a manual-mode floor zone needs after `command` is to survive a reload, and today that means calling a private method. Bodies and tests exist; it is a rename. User lens, against the plan-gate decision to keep it private; the concept said the user could make it public later. | small | |
 
 Decisions: `deferred`, `rejected`, or `next round` — a new numbered file in this folder,
 taken back through steps 1 to 7 on the same branch.
