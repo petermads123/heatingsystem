@@ -77,7 +77,7 @@ radiator.fixed_output = None  # release the override; update() resumes the PI re
 # of built-in types, which json.dumps accepts directly. Store it however suits you —
 # a file, a Home Assistant entity attribute — and hand it back to from_dict() on
 # startup to rebuild an equivalent controller. A missing, unknown or invalid key
-# raises ValueError or TypeError naming it, and no controller is produced.
+# raises ValueError, TypeError or OverflowError naming it, and no controller is produced.
 state = radiator.to_dict()
 radiator_restored = hs.PIController.from_dict(state)
 ```
