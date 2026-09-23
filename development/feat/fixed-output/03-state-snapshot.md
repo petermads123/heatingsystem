@@ -1,6 +1,6 @@
 # State snapshot and restore
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 | Field | Value |
 |---|---|
@@ -21,8 +21,8 @@ conventional name `feat/fixed-output`.
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
-| 6 | Concept check | `/concept-check` | in `/build` | in progress |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
+| 7 | Ship | `/ship` | in `/build` | in progress |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -574,11 +574,90 @@ Three trivial wording items the briefs flagged, all fixed:
 > Written in step 6, against section 1 — not against section 2. The question is whether
 > the thing built is the thing agreed, not whether it matches the plan.
 
+All four gates re-run clean on the current tree: `ruff check .` → `All checks passed!`;
+`ruff format --check .` → `40 files already formatted`; `mypy` → `Success: no issues found
+in 13 source files`; `pytest` → `597 passed in 6.67s` (matches step 5's log exactly, 0
+failed). `python -m heatingsystem.pi_controller.pi_controller` ran clean, exit 0, only the
+expected `sys.modules` `RuntimeWarning`.
+
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| C1 | Yes | `to_dict()` returns exactly the eight documented keys as JSON-friendly built-ins — confirmed in the showcase output: `{"kp": 0.3, "ki": 0.015, "setpoint": 21.0, "mode": "radiator", "history_length": 24, "fixed_output": 0.2, "integral": 6.0, "history": [0.2, 0.2]}` (`pi_controller.py:407-433`). `test_to_dict_values_are_json_builtins_of_the_promised_types` checks the key set and every value's built-in type; `test_to_dict_and_from_dict_are_copies_with_no_shared_references` mutates a returned dict's `history` list and a key, then updates the source controller, and asserts neither side moved the other — both directions, live-read at `tests/test_pi_controller.py:1663-1691`. |
+| C2 | Yes | `test_from_dict_mid_hold_restore_then_release_matches_original`, `test_from_dict_full_floor_window_caps_and_matches_original` and `test_from_dict_then_reset_clears_state_but_keeps_hold_settings_and_window` restore a controller mid-hold, with a full floor-heating window (proving the restored deque's `maxlen`, not just its current length) and check every setting plus `integral`, `history`, `duty_cycle`, `is_history_full`, `fixed_output` equal, the next command on the same measurement equal, and `pi_output is None` until then. Showcase confirms live: `next command (saved) : 0.2000` / `next command (restored): 0.2000`. `PIController.from_dict` at `pi_controller.py:436-522`. |
+| C3 | Yes | `test_from_dict_then_to_dict_reproduces_snapshot_exactly_and_through_json` round-trips a non-default controller through `json.dumps`/`json.loads` and asserts the re-restored `to_dict()` equals the original snapshot, including an empty window and a `fixed_output` of `None`. Showcase demonstrates the same round trip live (`text = json.dumps(snapshot)`, `restored = PIController.from_dict(json.loads(text))`, both next commands equal `0.2000`). |
+| C4 | Yes, under the gate's reading | Every case — missing key, extra key, a value the matching setter rejects, a non-finite `integral`, a history entry outside the actuator range, a history longer than `history_length` — raises `TypeError`/`ValueError` naming the key: `test_from_dict_reports_missing_keys_before_unknown_and_sorted`, `test_from_dict_raises_identical_error_type_and_message_as_the_setter` (22 parametrized cases), `test_from_dict_history_length_boundary_exact_accepted_one_over_rejected`, `test_from_dict_history_entry_errors_name_the_offending_index`. Per the reading recorded at this round's plan gate ("`TypeError` or `ValueError`" means "what the matching setter raises"), a huge `int` for `history_length` raises `OverflowError` naming it — exercised by `("history_length", sys.maxsize + 1, OverflowError)` inside `test_from_dict_raises_identical_error_type_and_message_as_the_setter`'s parametrize list (`tests/test_pi_controller.py:1862`) and by `test_history_length_sys_maxsize_is_accepted_one_over_overflows`. No controller is produced on any failure (`from_dict` raises before any `cls(...)` call completes, or via the constructor's own setters, which store nothing on the instance being discarded). |
+| C5 | Yes | `history_length` reads back at construction and after restore (`test_history_length_sys_maxsize_is_accepted_one_over_overflows`, JSON round trip included); `test_history_length_rejects_bool_and_non_int_naming_it` parametrizes `True`, `False`, `1.0`, `24.0`, `"24"`, `None`, `Fraction(24, 1)`, `Decimal("24")`, `[24]` and checks `TypeError` naming `history_length` at both construction and via `from_dict`; `test_history_length_is_read_only_after_construction` confirms assignment raises `AttributeError` and the window is unchanged. `_window_length` at `pi_controller.py:94-121`. |
+| C6 | Yes | `test_integral_setter_matches_the_numeric_family_contract`: a non-number (`"0.0"`, `None`, `[0.0]`, `True`) raises `TypeError`, a non-finite value (`nan`, `inf`, `-inf`) raises `ValueError`, both naming `integral`, and `ctrl.integral` is unchanged (`== 2.5`) after every rejected assignment; `10**400` raises `OverflowError` naming it. `integral` property at `pi_controller.py:628-648`. |
+| C7 | Yes | Non-finite raw sum → closed command and `pi_output == 0.0` with the integral held: `test_update_nan_raw_sum_gives_closed_command_not_full`, `test_update_finite_guard_flips_exactly_at_finiteness_not_at_large_values`, `test_update_overflowing_integral_holds_and_closes_without_raising`, `test_update_error_subtraction_overflow_triggers_guard_and_still_stores_setpoint`. Under the gate's reading of C7 against round 1's A2 (the guard defines the PI *demand* only; the fixed level still wins), `test_update_non_finite_raw_with_hold_still_returns_fixed_level_both_modes` confirms the command stays the fixed level (`0.3`) in both modes while `pi_output` reads `0.0`. `-0.0` given to any numeric setter, to `update`'s per-call `setpoint`, and through a `from_dict`/JSON round trip reads back `+0.0`: `test_negative_zero_reads_back_positive_from_every_setter_and_through_json`, `test_update_negative_gains_and_zero_error_gives_positively_signed_zero`. Guard at `pi_controller.py:347-379`; `-0.0` normalisation in `_finite` (`pi_controller.py:91`) and the clamp line (`pi_controller.py:354-356`). |
 
-Drift found, and what was done about it:
+Drift found, and what was done about it: none. Every criterion is met with direct,
+checkable evidence, read against the two gate decisions recorded in this round's plan
+(the finite guard defines the PI demand only, so a hold still wins on the non-finite
+path; C4's "`TypeError` or `ValueError`" covers the matching setter's `OverflowError`
+too). No criterion needed the code changed at this step.
+
+**Out of scope, checked against `git diff fdc7bff..HEAD` and the code — none was built:**
+
+- **Any storage or I/O** — `to_dict`/`from_dict` touch no filesystem, network or Home
+  Assistant API; confirmed by reading both methods in full (`pi_controller.py:407-522`)
+  and by `git diff fdc7bff..HEAD --stat`, which touches no new module.
+- **Periodic or automatic snapshots** — nothing calls `to_dict` except the caller (the
+  showcase, and the tests); no timer, no hook into `update`.
+- **Schema versioning or migration** — `_SNAPSHOT_KEYS` is a fixed frozenset with no
+  version field; `from_dict` refuses an unknown key rather than tolerating or migrating
+  one, exactly as section 1 decided.
+- **Loading a snapshot into an existing instance** — `from_dict` is a `@classmethod`
+  returning `cls(...)`; no method mutates `self` from a snapshot in place.
+- **Anything on the Home Assistant side** — no HA/AppDaemon reference anywhere in the
+  diff; the module docstring and README block describe the caller's responsibility
+  without implementing any of it.
+
+**Step 5's three defect fixes and three docstring fixes, checked against scope:** D1
+(sorting a mixed-type unknown-key set by `repr`) and D2 (`from_dict`'s `fixed_output`
+range error reporting the caller's original value) are bug fixes inside `from_dict`'s
+own documented contract (C4), not new behaviour. D3 (`update`'s clamp normalising
+`-0.0` explicitly rather than relying on `max`'s argument order) is C7's own
+"`-0.0` reads back `+0.0`" clause, not an addition beyond it. The three docstring wording
+fixes (the `FLOOR_HEATING` window size, `from_dict`'s "list or tuple" wording, `update`'s
+`Returns:` pointing at its `Note:`) change no signature or behaviour. None of the six
+exceeds section 1.
+
+**Connections and surface** — `git diff fdc7bff..HEAD -- src/heatingsystem/__init__.py
+src/heatingsystem/pi_controller/__init__.py` is empty: both re-export tables are
+byte-identical to round 2's, confirming "no new public names at package level." `test.py`
+is untouched (not in the diff's file list). The only new public surface is exactly what
+section 1 and the Public API table name: `to_dict`, `from_dict`, `history_length`,
+`integral` (now settable). README gained the one block the plan specified (`state =
+radiator.to_dict()`, `radiator_restored = hs.PIController.from_dict(state)`, a comment on
+storing it and that `json.dumps` accepts it) — confirmed via `git diff fdc7bff..HEAD --
+README.md`.
+
+**Showcase** — `python -m heatingsystem.pi_controller.pi_controller` runs clean and reads
+as a worked example of the agreed feature: a fresh controller holds `fixed_output=0.2`,
+takes two steps, and `to_dict()`/`json.dumps`/`from_dict(json.loads(...))` round-trip it;
+`restored fixed_output : 0.2` and the two identical next-command lines (`0.2000` /
+`0.2000`) are exactly the "a restart is invisible to the room" case section 1 gives as the
+reason to build this. The missing-key `ValueError` demo (`Bad snapshot -> ValueError:
+snapshot is missing keys [...]`) shows the strict-format guarantee as a worked example
+rather than only as an assertion.
+
+**Structure** — no `structure-auditor` subagent is available inside this subagent (this
+environment cannot spawn subagents from inside a subagent, as every earlier round's step 4
+and step 6 record, and as this round's own step 4 records again); audited by hand instead.
+Checked every row STRUCTURE.md names for this round against the code: the constructor row
+(`STRUCTURE.md:93`, matches the class docstring's `Args`/`Raises`), the `integral` row
+(`:99`), `history_length` (`:100`), `pi_output`'s "or `from_dict()`" addition (`:101`),
+`update`'s row describing the finite guard (`:102`), `to_dict` (`:104`) and `from_dict`
+(`:105`) — every one matches the shipped code's current signature, defaults and raised
+errors character for character (spot-checked against `pi_controller.py` line by line
+above). Both `__init__.py` export tables (`STRUCTURE.md:64-76`) still list exactly
+`HeatingMode`, `PIController`, `OUTPUT_MIN`, `OUTPUT_MAX`, matching the untouched files.
+The test-file paragraph (`STRUCTURE.md:202-240`) rewrites the two former "quirk" paragraphs
+as decided behaviour (no "considered and left alone" wording remains for either the
+non-finite raw or the `-0.0` case — grepped, no hits) and names every T1–T7 test group
+actually present. No private name (`_finite`, `_window_length`, `_level`, `_history_length`,
+`_integral`, `_pi_output`, `_fixed_output`, `_to_command`, `_SNAPSHOT_KEYS`) appears in it.
+No edit was needed.
 
 ### Earlier rounds still hold
 
@@ -589,6 +668,27 @@ Drift found, and what was done about it:
 
 | Round | # | Criterion | Still met | Evidence |
 |---|---|---|---|---|
+| 1 | A1 | Unfixed controller: same commands, integral, history as before this change | Yes, on the finite path — superseded by C7 on the non-finite path, per this round's gate decision | `test_fixed_output_defaults_to_none_and_unfixed_sequence_unchanged` (round 1's own test, unmodified) still passes; the showcase's radiator warm-up sequence (`command=0.9450, 0.8325, 0.6495, 0.4245, 0.2505, 0.0360`) matches every earlier round's recorded output exactly. The finite guard (`pi_controller.py:347-379`) only changes behaviour when `raw` or the tentative integral is non-finite — unreachable with the ordinary inputs A1 describes; on the finite path the only textual change is `+ 0.0` on the clamp result, a no-op for every already-positive value A1's sequences produce. On the non-finite path, this round's own C7 explicitly redefines the result (closed command, integral held), which the plan gate recorded as superseding A1 there — not a regression, a decided extension. |
+| 1 | A2 | Fixed level (construction or later): radiator `update` returns exactly that level, appended to history, readable back — including when the raw PI sum is non-finite underneath | Yes | `test_fixed_output_radiator_returns_level_regardless_of_error` and `test_fixed_output_accepts_boundaries_at_construction_and_setter` (round 1's, unmodified) pass. The non-finite case this round adds is directly covered: `test_update_non_finite_raw_with_hold_still_returns_fixed_level_both_modes` sets `kp=1e300` (a raw sum of `+inf`) with `fixed_output=0.3` and asserts the command is exactly `0.3` in both radiator and floor-heating mode — the substitution `level = u if self._fixed_output is None else self._fixed_output` (`pi_controller.py:385`) still runs after the finite guard, unchanged from round 1's plan and round 2's confirmation. |
+| 1 | A3 | Floor-heating, level strictly in `(0, 1)`: binary output, duty cycle converges to the level | Yes | `test_fixed_output_floor_quarter_level_converges_to_exact_fraction` and the other floor-mode T3 tests (round 1's, unmodified) pass; `_to_command` (`pi_controller.py:741-783`) is untouched by this round's diff. |
+| 1 | A4 | While fixed: inputs still validated, passed setpoint stored, integral advances exactly as unfixed | Yes | The twin-integral tests (`test_fixed_output_integral_matches_unfixed_twin_across_regimes` and siblings, round 1's, unmodified) still pass — the finite guard sits ahead of the anti-windup block and applies identically whether or not `fixed_output` is set (the guard tests `raw`/`new_integral`, computed before the `level` substitution), so a fixed and an unfixed twin fed the same measurements still commit the same integral. `test_fixed_output_update_stores_setpoint_and_advances_integral` (round 1's) still passes. |
+| 1 | A5 | Non-finite or out-of-range level raises `ValueError` at construction and afterwards, previous setting unchanged | Yes | `test_fixed_output_rejects_non_finite_and_out_of_range` and `test_fixed_output_failed_set_leaves_previous_value` (round 1's, unmodified) still pass; the `fixed_output` setter still raises `ValueError` for the non-finite/out-of-range case via `_level` (`pi_controller.py:711-735`), now also normalising `-0.0` to `+0.0` on success per this round's C7 — a decided addition, not a change to the `ValueError` contract A5 describes. |
+| 1 | A6 | Clearing the override: next `update` returns the PI result again; `reset()` leaves the override set | Yes | `test_fixed_output_release_returns_twin_command_and_keeps_both_in_history`, `test_fixed_output_floor_release_duty_cycle_recovers_over_one_window` and `test_fixed_output_reset_leaves_override_set` (round 1's, unmodified) all pass; `reset()` (`pi_controller.py:396-405`) still leaves `fixed_output` alone, now also resetting `pi_output` to `None` as round 2 added — unaffected by this round. |
+| 2 | B1 | Non-finite value to `kp`/`ki`/`setpoint`/`fixed_output` raises `ValueError` naming the attribute, previous value unchanged | Yes | `test_numeric_setters_reject_non_finite_naming_attribute_and_keep_previous` and `test_fixed_output_rejects_non_finite_and_out_of_range` (round 2's/round 1's, unmodified) pass; `_finite` (`pi_controller.py:56-91`) is unchanged in its `ValueError` branch — this round only added the `+ 0.0` return and the `_window_length`/`_level` helpers built on top of it. |
+| 2 | B2 | Non-numeric or `bool` value to `kp`/`ki`/`setpoint`/`fixed_output`, or to `update`'s `measured`/`setpoint`, raises `TypeError` naming the attribute, previous value unchanged | Yes | `test_numeric_setters_reject_non_real_types_naming_attribute_and_type`, `test_update_measured_rejects_non_numeric_and_bool_naming_measured` (round 2's, unmodified) pass; `_finite`'s `TypeError` branch (`pi_controller.py:81-84`) is byte-identical to round 2's. |
+| 2 | B3 | `mode` accepts a `HeatingMode` or its string value and stores the enum; anything else raises `ValueError` naming the attribute, previous mode unchanged | Yes | `test_mode_string_is_stored_as_enum_member_not_str` and siblings (round 2's, unmodified) pass; the `mode` setter (`pi_controller.py:533-550`) is untouched by this round. |
+| 2 | B4 | An `update` call that raises leaves `setpoint`, `integral`, `history` and `pi_output` exactly as they were | Yes | `test_update_failed_call_leaves_every_piece_of_state_untouched` (round 2's, unmodified) passes; `measured = _finite("measured", measured)` still runs first in `update` (`pi_controller.py:327`), before the finite guard or anything else is touched. |
+| 2 | B5 | After each successful `update`, `pi_output` equals that step's clamped PI result; while fixed it still reports the PI result, not the fixed level; `None` before the first update and after `reset()` | Yes, under the redefinition C7 records | `test_pi_output_reports_pi_demand_not_fixed_level_while_fixed` (round 2's, unmodified) passes for the finite case it exercises. This round redefines what "clamped PI result" means on the non-finite path (`pi_output` now reads `0.0` rather than whatever `max`/`min` happened to return for a `nan`), which is C7's own decision, stated at this round's plan gate as one of the two readings the user's earlier acceptance covers; `test_update_nan_raw_sum_gives_closed_command_not_full` and `test_update_non_finite_raw_with_hold_still_returns_fixed_level_both_modes` both assert `pi_output == 0.0` and the *fixed* command staying at its level (not the PI result) — exactly what B5's "reports the PI result, not the fixed level" already required, now defined for the non-finite case too. `self._pi_output = u` (`pi_controller.py:357`) still runs unconditionally, right after the (now guarded) clamp. |
+| 2 | B6 | `OUTPUT_MIN`/`OUTPUT_MAX` importable from the package root and equal the module's values | Yes | `test_output_constants_at_package_root_are_the_module_objects` (round 2's, unmodified) passes; `git diff fdc7bff..HEAD -- src/heatingsystem/__init__.py src/heatingsystem/pi_controller/__init__.py` is empty. |
+| 2 | B7 | Every input that raised at construction before round 2 raises the same error class now, naming the attribute; round 1's six criteria still hold | Yes | `test_every_pre_round_1_constructor_case_still_raises_value_error_with_attribute` and `test_constructor_and_setter_raise_identical_error_for_same_value` (round 2's, unmodified) pass; round 1's A1–A6 are re-confirmed in the rows above. `history_length` gaining `TypeError`/`OverflowError` branches this round is new, additive surface (R1, folded in per round 1/2's own recommendation), not a change to any pre-existing case's error class. |
+
+No round 1 or round 2 test was modified or deleted by this round: `git diff
+fdc7bff..HEAD -- tests/test_pi_controller.py | grep -E '^-' | grep -v '^---'` has zero
+output — the diff is purely additive, no existing line touched. `pytest -k
+"fixed_output or numeric_setters or mode_ or output_constants"` → all pass, confirming
+rounds 1 and 2's own test groups by name.
+
+Work proceeds to step 7.
 
 ---
 
