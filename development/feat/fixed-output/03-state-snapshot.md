@@ -181,46 +181,156 @@ instance; the format is a strict dict with no version key; `pi_output` is not in
 
 ## 2. Plan
 
-> Written in step 2, accepted by the user before step 3 starts. Concrete enough that
-> step 3 is transcription, not invention.
-
 ### Approach
 
-One paragraph on the chosen approach, and one on what was rejected and why.
+**Chosen — two methods on the controller, one more private check, two guarded lines.**
+`to_dict()` returns a fresh dict of the eight keys, reading each through the public
+properties and copying the history into a list. `from_dict()` is a classmethod that first
+checks the key set (missing or unknown keys raise `ValueError` naming them), then narrows
+and validates every value with the helpers the setters already use (`_finite` for the
+numbers, a new `_window_length` for `history_length`, the enum for `mode`), constructs a
+controller through the normal constructor so every setter runs again, assigns `integral`
+through its new property, and extends the history after checking each entry is a finite
+number in the actuator range and the list is no longer than the window. `history_length`
+gets the private check and a read-only property backed by an `int` field, since
+`deque.maxlen` is typed optional. `integral` becomes a property on `_finite`. In `_finite`,
+`return number + 0.0` normalises `-0.0`. In `update`, the clamp and the anti-windup chain
+are guarded by one boolean, "the raw sum and the tentative integral are both finite":
+when it is false the command is `OUTPUT_MIN` and the integral is held.
+
+**Rejected — a typed snapshot class** (a `TypedDict` or dataclass): documents the keys for
+a type checker, but `json.loads` hands back a plain dict anyway, and it adds a public name
+and a STRUCTURE.md row to a package the user wants kept simple. The keys are documented in
+the two methods' docstrings instead. **Rejected — a JSON string in and out**: ties the
+package to one serialiser; the caller may prefer YAML or an entity attribute dict.
+**Rejected — restore into an existing instance**: section 1 rules it out; one path.
 
 ### Modules
 
 | Path | New or changed | Purpose |
 |---|---|---|
+| `src/heatingsystem/pi_controller/pi_controller.py` | changed | `_window_length` helper; `history_length` and `integral` properties; `to_dict`/`from_dict`; the `-0.0` normalisation in `_finite`; the finite guard in `update`; docstrings; showcase |
+| `tests/test_pi_controller.py` | changed | New section for T1–T7 |
+| `STRUCTURE.md` | changed | New rows, the constructor row, the `update` row, the test-file paragraph, and the two quirk paragraphs rewritten as decided behaviour |
+| `README.md` | changed | A save-and-restore example in the usage section |
+
+No new module and no change to either `__init__.py`.
 
 ### Public API
 
-> Every public class and function, with its full signature as it will be written.
-> `Covers` links back to the acceptance criteria above.
-
 | Signature | Module | Purpose | Covers |
 |---|---|---|---|
+| `PIController.to_dict(self) -> dict[str, object]` | `pi_controller.py` | The snapshot: a fresh dict with exactly the keys `kp`, `ki`, `setpoint`, `mode` (the enum's `.value`), `history_length`, `fixed_output`, `integral`, `history` (a new `list[float]`, oldest first). Every value is a built-in `json.dumps` accepts. | C1 |
+| `PIController.from_dict(cls, data: Mapping[str, object]) -> Self` (classmethod) | `pi_controller.py` | Rebuild a controller from a snapshot. Raises `ValueError` naming the keys for a missing or unknown key; for each value, whatever the matching setter or check raises, naming the key; `TypeError` if `history` is not a list or tuple; `ValueError` naming `history` if it is longer than `history_length`, and naming `history[i]` for an entry that is non-finite or outside `[OUTPUT_MIN, OUTPUT_MAX]`. No controller exists on failure. `pi_output` is `None` on the result. | C2, C3, C4, C5 |
+| `PIController.history_length -> int` (read-only) | `pi_controller.py` | The window length given at construction. | C5 |
+| `PIController.integral -> float` / setter `(value: float) -> None` | `pi_controller.py` | The integral accumulator, now a validating property on the round 2 contract, naming `integral`. | C6 |
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | `pi_controller.py` | Unchanged signature. `history_length` now goes through `_window_length`: `TypeError` naming it for a `bool` or non-`int`, `ValueError` below 1. | C5 |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | `pi_controller.py` | Unchanged signature. If the raw PI sum or the tentative integral is not finite, the demand is `OUTPUT_MIN`, `pi_output` is `0.0`, and the integral is held. Otherwise as before. | C7 |
+| `main() -> None` | `pi_controller.py` | Showcase gains a save, JSON round trip, restore and a matching next command. | — (showcase) |
+
+`_finite` (private) also changes: `-0.0` comes back as `+0.0`. `reset()`, `fixed_output`,
+`pi_output`, `history`, `duty_cycle`, `is_history_full` are unchanged.
 
 ### Implementation guide
 
-Ordered. Each entry small enough to finish and check.
-
-1.
-2.
+1. In `_finite`, change the last line to `return number + 0.0` and add one sentence to its
+   docstring: a negative zero is returned as positive zero.
+2. Add a private module-level helper `_window_length(value: object) -> int` below
+   `_finite`: `if isinstance(value, bool) or not isinstance(value, int): raise TypeError(f"history_length must be an int, got {value!r} ({type(value).__name__}).")`;
+   `if value < 1: raise ValueError(f"history_length must be >= 1, got {value}.")` (the
+   existing message); `return value`. Google docstring with `Raises:`.
+3. Add class-level annotations `_history_length: int` and `_integral: float` beside the
+   existing ones. In the constructor replace the inline `history_length < 1` check with
+   `self._history_length = _window_length(history_length)`, build the deque with
+   `maxlen=self._history_length`, and replace `self.integral: float = 0.0` with
+   `self.integral = 0.0` (through the setter). Keep the constructor order otherwise.
+4. Add the `history_length` read-only property (returns `self._history_length`) and the
+   `integral` property pair (getter returns `self._integral`; setter stores
+   `_finite("integral", value)`) under *Properties*, after `setpoint`. Update
+   `is_history_full` to compare against `self._history_length`.
+5. In `update`, after computing `new_integral` and `raw`, add
+   `finite = math.isfinite(raw) and math.isfinite(new_integral)`. Change the clamp line to
+   `u = max(OUTPUT_MIN, min(OUTPUT_MAX, raw)) if finite else OUTPUT_MIN`. Wrap the
+   three-branch anti-windup chain in `if finite:` (indent it; a comment says a non-finite
+   sum holds the integral and closes the valve). Nothing else in `update` changes; the
+   `_pi_output = u` line and the substitution stay where they are. Update the docstring.
+6. Add `to_dict` under *Public interface* after `reset`: build and return the dict
+   literally in key order `kp, ki, setpoint, mode, history_length, fixed_output, integral,
+   history`, with `self.mode.value` and `list(self._history)`. Docstring lists the keys and
+   says the result is JSON-serialisable and a copy.
+7. Add `from_dict` as a `@classmethod` right after `to_dict`, `from typing import Mapping, Self`
+   (`Mapping` from `collections.abc`). Body, in order:
+   - `expected = frozenset({...eight keys...})` as a module-level constant `_SNAPSHOT_KEYS`;
+     `missing = sorted(expected - data.keys())`, `unknown = sorted(data.keys() - expected)`;
+     raise `ValueError(f"snapshot is missing keys {missing}.")` / `ValueError(f"snapshot has unknown keys {unknown}.")`
+     (missing checked first).
+   - `mode = data["mode"]`; `if not isinstance(mode, (HeatingMode, str)): raise ValueError(f"mode must be a HeatingMode or one of {[m.value for m in HeatingMode]}, got {mode!r}.")`
+     (the setter's own message shape).
+   - `fixed = data["fixed_output"]`; `fixed_output = None if fixed is None else _finite("fixed_output", fixed)`.
+   - `history = data["history"]`; `if not isinstance(history, (list, tuple)): raise TypeError(f"history must be a list, got {history!r} ({type(history).__name__}).")`.
+   - `controller = cls(kp=_finite("kp", data["kp"]), ki=_finite("ki", data["ki"]), mode=mode, setpoint=_finite("setpoint", data["setpoint"]), history_length=_window_length(data["history_length"]), fixed_output=fixed_output)`
+     — the constructor's setters validate again, including the `fixed_output` range.
+   - `controller.integral = _finite("integral", data["integral"])`.
+   - `if len(history) > controller.history_length: raise ValueError(f"history has {len(history)} entries but history_length is {controller.history_length}.")`.
+   - For `i, entry in enumerate(history)`: `level = _finite(f"history[{i}]", entry)`; if
+     `level < OUTPUT_MIN or level > OUTPUT_MAX`: `raise ValueError(f"history[{i}] must be in [{OUTPUT_MIN}, {OUTPUT_MAX}], got {entry!r}.")`;
+     collect into a local list; only after the loop `controller._history.extend(levels)`,
+     so a failure part-way leaves nothing (the controller is discarded anyway).
+   - `return controller`. `pi_output` is `None` because the constructor set it so.
+   Docstring: the keys, the errors, that the result's `pi_output` is `None`.
+8. Class docstring: mention `to_dict`/`from_dict` in one sentence and add
+   `history_length`'s `TypeError` to `Raises:`.
+9. Showcase: after the `reset()` demonstration on the radiator controller, add a case in
+   showcase form: run two updates, `snapshot = ctrl_rad.to_dict()`, `text = json.dumps(snapshot)`,
+   `restored = PIController.from_dict(json.loads(text))`, then `next_original = ctrl_rad.update(measured=cold_temp)`
+   and `next_restored = restored.update(measured=cold_temp)`, printing the JSON text and
+   both commands. `import json` at the top. Add one `ValueError` demo for a snapshot with a
+   missing key (`bad_snapshot = {"kp": 0.3}` on its own line).
+10. `STRUCTURE.md`: add rows for `to_dict`, `from_dict`, `history_length`, `integral`;
+    rewrite the constructor row ("`history_length` must be at least 1, checked inline" and
+    "`integral` is a plain public attribute"); rewrite the `update` row for the finite
+    guard; the `main()` row; the test-file paragraph; and replace the two "considered and
+    left alone" quirk paragraphs with the decided behaviour.
+11. README: a short block after the fixed-output block: `state = radiator.to_dict()`,
+    a comment that the caller stores it (a file, an entity attribute) and restores with
+    `hs.PIController.from_dict(state)` on startup, and that `json.dumps` accepts it.
+12. Run `ruff check .`, `ruff format --check .`, `mypy`,
+    `python -m heatingsystem.pi_controller.pi_controller`, and `pytest`; every existing
+    test is expected to pass unchanged (existing writes to `ctrl.integral` assign finite
+    floats, which the setter accepts).
 
 ### Test intents
 
-> High-level: what a test must prove, not how it is written. Step 5 turns each of these
-> into concrete cases, including the edge cases.
-
 | # | Must prove | Covers |
 |---|---|---|
-| T1 | | |
+| T1 | `to_dict` on a controller with non-default settings, a hold, a built-up integral and a partly filled window returns a dict with exactly the eight keys and the expected values (`mode` as its string, `history` as a list oldest first, `fixed_output` `None` when unset), `json.dumps` accepts it, and mutating the returned dict or its list, or updating the controller afterwards, leaves the other unchanged. | C1 |
+| T2 | `from_dict(to_dict())` gives a controller equal in every setting and in `integral`, `history`, `duty_cycle`, `is_history_full`, `fixed_output`, with `pi_output` `None`; and for a sequence of measurements the restored controller's commands equal the original's exactly, in both modes, fixed and unfixed, with a full and a partly filled window. | C2 |
+| T3 | The same as T2 after `json.dumps` and `json.loads`, including a controller whose window is empty and one whose `fixed_output` is `None`. | C3 |
+| T4 | Each of: a missing key, an extra key, a `kp` of `"0.3"`, a `mode` of `"steam"`, a `fixed_output` of `1.5`, an `integral` of `nan`, a `history` that is not a list, a history entry of `1.5` and of `nan`, and a history one longer than `history_length` raises `TypeError` or `ValueError` whose message names the key (with index for entries), and the original controller is untouched; missing keys are reported before unknown ones. | C4 |
+| T5 | `history_length` reads back at construction and after restore; `True`, `2.0`, `"24"` and `None` raise `TypeError` naming it and `0`/`-1` `ValueError`, at construction and via `from_dict`. | C5 |
+| T6 | `integral` reads back as `float` after assignment of an `int`; `nan`/`inf` raise `ValueError` and `"1"`/`True`/`None` `TypeError`, naming `integral`, previous value kept; `update` still advances it. | C6 |
+| T7 | With finite inputs that make the raw sum non-finite (`setpoint=-1e308`, `measured=1e308`, `ki=0.0`), `update` returns `0.0` in radiator mode and appends it, `pi_output` is `0.0`, and `integral` is unchanged; the same when only the tentative integral is non-finite (`ki=0.0`, `integral` near `1e308` and an error that overflows the sum while `kp * error` stays finite); `-0.0` assigned to `kp`, `ki`, `setpoint`, `integral`, `fixed_output` and passed as `measured` reads back with a positive sign; every existing twin-integral and hand-computed test still passes. | C7 |
 
 ### Risks
 
-What could make this harder than it looks, and what the build should do if it does —
-including whether it should halt.
+- **The anti-windup block changes shape.** Wrapping it in `if finite:` must not alter any
+  finite-path result; round 1's exact twin-integral tests and round 2's hand computations
+  are the guard. If any of them fails after the change, that is an implementation slip to
+  fix once; if it fails the same way again, **halt**.
+- **Existing tests that assign `integral`.** They assign finite floats and keep passing;
+  if any assigns something the setter rejects, that test is documenting a state the
+  concept now forbids, and the build should say so and halt rather than weaken it.
+- **mypy on `Self` and `Mapping[str, object]`.** `Self` is in `typing` since 3.11; the
+  classmethod returns `cls(...)`, which mypy accepts. Every value read from `data` is
+  narrowed by a helper before use, so no cast or `Any` is needed; if mypy still objects to
+  the `mode` branch, `isinstance` narrowing to `HeatingMode | str` is what it needs.
+- **`from_dict` on a `dict` from `json.loads`** hands back `int` for whole-number floats
+  (`"kp": 1` for `1.0`) and `float` for the rest; `_finite` converts, so the round trip is
+  exact for every float `json` can represent. `-0.0` survives JSON as `-0.0` and is
+  normalised on the way in.
+- **Halting line.** A case where the snapshot's key set must grow to satisfy a criterion
+  (for example a criterion that turns out to need `pi_output`) would amend section 1:
+  **halt**.
 
 ---
 
