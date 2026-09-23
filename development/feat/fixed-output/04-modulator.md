@@ -1,6 +1,6 @@
 # Modulator: the actuator mapping as its own object
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -22,8 +22,8 @@ conventional name `feat/fixed-output`.
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | in progress |
-| 8 | Recommend | `/recommend` | with the user | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
+| 8 | Recommend | `/recommend` | with the user | in progress |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
 
@@ -726,10 +726,38 @@ Drift found, and what was done about it: none. No new modulation behaviour was a
 
 ## 7. Ship log
 
+All four gates hold on the whole tree: `ruff check .` → `All checks passed!`;
+`ruff format --check .` → `46 files already formatted`; `mypy` → `Success: no issues found in
+18 source files`; `pytest` → `713 passed in 7.34s`. The three module showcases
+(`python -m heatingsystem.pi_controller.pi_controller`, `python -m
+heatingsystem.modulator.modulator`, `python -m heatingsystem._validation`) and
+`MPLBACKEND=Agg python test.py` all ran clean, exit code 0, matching the step 4 log. The stop
+gate's own checks were re-run directly: `structure_problems`, `missing_init_files` and
+`stray_test_files` each returned `[]`.
+
+Diff review of everything this round committed (`git diff 4a8f601..HEAD`, the commit before
+this round's first, `4a8f601` "README restore guidance; close round 3; open round 4", up to
+`de653f2`): 11 files touched, no stray file, no debug print (`main()`'s prints are the
+required showcases), no commented-out code (every added comment is a section header or an
+explanatory note), no secret or credential, no `.claude/.skip-gate`, no `__pycache__` or
+`simulation.png` tracked (both remain correctly gitignored), no private (`_`-prefixed) name
+in any `STRUCTURE.md` table. The only test deletions in `tests/test_pi_controller.py` are
+the 6 lines the plan's guide step 6 and section 6's D7 evidence already name — the exact-slot
+assertions in the four schedule tests (`on_steps == [...]`, `outs == [1.0, 0.0, ...]`,
+`outs[0] == 1.0` with its neighbouring `all(out == 0.0 ...)`, `outs[1] == 0.0`) — nothing else
+in that file, or in any other test file, was weakened or removed; every other change to the
+test suite is an addition (`tests/test_modulator.py`, `tests/test_validation.py`, new tests
+in `tests/test_pi_controller.py`). No step of this round committed nothing: each of the eight
+commits below names the round file or the work it produced. The two documentation-wording
+findings step 5 logged (the `update` docstring's over-broad phrasing, `_to_command`'s
+"converges to level" claim) were correctly left as step 8 candidates rather than fixed here —
+neither is a stray artifact and both are already recorded with reasoning; nothing further
+found for this step to act on.
+
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits | `2c19574` Concept: Modulator (round 4) · `bba6ee6` Plan: Modulator (round 4) · `1d71906` Plan: apply the plan-critic's ten findings (round 4) · `2be7ab5` Plan accepted: Modulator (round 4) · `adade0b` Split the actuator mapping into a reusable Modulator class · `b124d5a` Verify: Modulator (round 4) · `1781739` Test: modulator split (round 4, step 5) · `de653f2` Concept check: Modulator (round 4) |
+| Pushed to | `claude/festive-maxwell-xft6pj` |
 
 ---
 
