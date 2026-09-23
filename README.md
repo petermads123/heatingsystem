@@ -88,6 +88,10 @@ except (TypeError, ValueError, OverflowError):
     radiator = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
 ```
 
+The actuator mapping behind `update()` — the mode, the rolling history window, the duty
+cycle and the `fixed_output` hold — lives in its own `hs.Modulator` class, reusable by any
+future model that drives the same actuator range without reimplementing it.
+
 A few things to know when the snapshot meets your own configuration on the next startup:
 
 - **Your configuration wins.** The snapshot carries the settings it was saved with. Restore

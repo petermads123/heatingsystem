@@ -34,12 +34,19 @@ one line per subpackage in this file, and move per-subpackage detail into
 when Claude works in that subpackage. Split rather than delete — there is no length limit
 here, but everything in this file is in context every session.
 
+The package now has two subpackages (`modulator/`, `pi_controller/`) plus the private
+`_validation.py` module at its root, but the per-subpackage split described above has
+deliberately not been applied yet — doing it inside an unattended build changes what the
+stop gate and the session brief see, which is not a change to make mid-round. It is
+recorded as a step 8 recommendation for this feature.
+
 ## Tree
 
 ```
 src/                    everything installable; nothing outside it is packaged
   heatingsystem/        the package: heating-system models
-    pi_controller/      subpackage: the discrete-time PI controller
+    modulator/         subpackage: the actuator mapping (mode, window, duty cycle, hold)
+    pi_controller/     subpackage: the discrete-time PI controller
 tests/                  pytest suite, one test_<module>.py per module
 test.py                 closed-loop simulation and plot of the controller (matplotlib)
 development/            one folder per branch, one file per round: the pipeline's state
@@ -63,6 +70,7 @@ Every new model subpackage is re-exported from here.
 | Export | From |
 |---|---|
 | `HeatingMode` | `heatingsystem.pi_controller` |
+| `Modulator` | `heatingsystem.modulator` |
 | `PIController` | `heatingsystem.pi_controller` |
 | `OUTPUT_MIN` | `heatingsystem.pi_controller` |
 | `OUTPUT_MAX` | `heatingsystem.pi_controller` |
@@ -71,11 +79,72 @@ Every package directory under `src/`, including every subpackage added later, ne
 these. The stop gate blocks on a directory of modules without it: it is not a package, so
 it will not install.
 
+### `src/heatingsystem/_validation.py`
+
+Private module: the numeric contract behind every validating setting on `Modulator` and
+`PIController`, stated once so it does not drift between the two classes' docstrings. Not a
+subpackage — a single module at the package root, imported by both `modulator.py` and
+`pi_controller.py` as `from heatingsystem import _validation`, so a helper name can never be
+shadowed by a local or a parameter (`finite`/`level` are called as `_validation.finite`/
+`_validation.level`, never imported by name).
+
+| Signature | Description |
+|---|---|
+| `finite(name: str, value: object) -> float` | Validate a finite real number (`bool` excluded), representable as a `float`; `-0.0` normalised to `+0.0`. Raises `TypeError` naming `name` for a non-numeric or `bool` value, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. |
+| `window_length(value: object) -> int` | Validate a rolling-window length: an `int` (`bool` excluded) of at least 1 and at most `sys.maxsize`. Raises `TypeError` naming `history_length` for `bool` or a non-`int`, `ValueError` below 1, `OverflowError` above what a `deque`'s `maxlen` can hold. |
+| `level(name: str, value: object, lower: float, upper: float) -> float` | Builds on `finite`, adding an inclusive `[lower, upper]` range check — the bounds are parameters rather than imported constants, so this module has no dependency on `modulator.py`. Raises the same `TypeError`/`OverflowError` as `finite`, plus `ValueError` naming `name` for a value outside `[lower, upper]`. |
+| `snapshot_mapping(data: object, keys: frozenset[str]) -> Mapping[str, object]` | Validate a snapshot as a `Mapping` with exactly `keys`; missing keys reported before unknown ones (both sorted, unknown by `repr` since a mixed-type key set may not compare with `<`). Raises `TypeError` for a non-mapping naming its type, `ValueError` naming the missing or unknown keys. Returns `data` unchanged. |
+| `main() -> None` | Showcase: one accepted value and one refusal per helper. |
+
+Runnable standalone: `python -m heatingsystem._validation`.
+
+### `src/heatingsystem/modulator/__init__.py`
+
+Subpackage entry point. Re-exports `Modulator`, `HeatingMode`, `OUTPUT_MIN` and
+`OUTPUT_MAX` from `modulator.py`, so the package root can import from the subpackage
+without naming the module.
+
+### `src/heatingsystem/modulator/modulator.py`
+
+The actuator mapping as its own reusable object: owns the heating mode, the rolling
+command-history window, the duty cycle and the fixed-output hold, and maps a demand level
+to a mode-specific command. Nothing here is PI-specific — `PIController` composes one
+rather than implementing the mapping itself, and any future model driving the same
+actuator range can reuse it the same way. `HeatingMode`, `OUTPUT_MIN` and `OUTPUT_MAX` live
+here (moved from `pi_controller.py`, same objects, still re-exported from every import
+path a caller used before).
+
+| Signature | Description |
+|---|---|
+| `OUTPUT_MIN: float = 0.0` | Lower clamp of the actuator range. |
+| `OUTPUT_MAX: float = 1.0` | Upper clamp of the actuator range. |
+| `HeatingMode(StrEnum)` | `RADIATOR` (continuous output in `[0, 1]`) or `FLOOR_HEATING` (binary on/off from duty-cycle modulation over the rolling window). |
+| `Modulator(mode: HeatingMode \| str = HeatingMode.RADIATOR, *, history_length: int = 24, fixed_output: float \| None = None)` | The actuator mapping. `mode` and `fixed_output` are assigned through their validating properties, so a bad value raises the same error at construction as later; `history_length` is validated by the same numeric-family contract as `PIController`'s and stored as a read-only property; the window cannot be resized afterwards. |
+| `Modulator.command(level: float) -> float` | Map a demand level to this step's command: the fixed level replaces `level` when `fixed_output` is set; radiator mode passes the target through; floor-heating mode duty-cycle-modulates it, reading the window before appending. Appends the command to `history` and returns it. Raises `TypeError` naming `level` for a non-numeric or `bool` value, `ValueError` for a non-finite or out-of-range one, `OverflowError` for one too large to represent as a `float`. |
+| `Modulator.reset() -> None` | Clear the history window. `mode`, `history_length` and `fixed_output` are left unchanged. |
+| `Modulator.mode -> HeatingMode` (settable) | Actuator mode. Setter accepts a `HeatingMode` or its string value via a shared coercion helper; anything else raises `ValueError` naming `mode` and listing the valid values, previous mode unchanged. |
+| `Modulator.history_length -> int` | Read-only. The rolling command-window length given at construction; sized once, not resizable — a restore builds a new modulator instead. |
+| `Modulator.fixed_output -> float \| None` (settable) | The current output override in `[OUTPUT_MIN, OUTPUT_MAX]`, or `None` when the demand level is in control. The setter raises `TypeError` naming `fixed_output` for a non-numeric or `bool` value, `ValueError` for a non-finite or out-of-range value, `OverflowError` for one too large to represent as a `float`; the previous setting is unchanged on any failure, and a valid value is stored as `float`. |
+| `Modulator.history -> tuple[float, ...]` | The last `history_length` commands, oldest first. |
+| `Modulator.duty_cycle -> float` | Mean of `history`; `0.0` while it is empty. |
+| `Modulator.is_history_full -> bool` | Whether `history_length` commands have been issued. |
+| `main() -> None` | Showcase: a radiator pass-through, a floor-heating run to a converged duty cycle, a `fixed_output` override, and a reset. |
+
+Two private helpers exist alongside the class and are not listed here per this file's
+convention: `_heating_mode`, the mode coercion shared by the setter and `_from_dict`; and a
+private four-key snapshot pair (`_to_dict`/`_from_dict`, plus `_load_history`) called only
+by `PIController.to_dict`/`from_dict` — not a second public wire format, since nothing in
+the feature asks for one.
+
+Runnable standalone: `python -m heatingsystem.modulator.modulator`, once the package is
+installed (`pip install -e ".[dev]"`).
+
 ### `src/heatingsystem/pi_controller/__init__.py`
 
 Subpackage entry point. Re-exports `HeatingMode`, `PIController`, `OUTPUT_MIN` and
-`OUTPUT_MAX` from `pi_controller.py`, so the package root can import from the subpackage
-without naming the module.
+`OUTPUT_MAX` from `pi_controller.py` — `HeatingMode`, `OUTPUT_MIN` and `OUTPUT_MAX` are
+themselves imported into `pi_controller.py` from `heatingsystem.modulator.modulator`, so
+this re-export and the objects it names are unchanged for any caller.
 
 ### `src/heatingsystem/pi_controller/pi_controller.py`
 
@@ -83,29 +152,29 @@ A discrete-time proportional-integral controller that regulates room temperature
 modulating a heating actuator. It is driven externally (Home Assistant / AppDaemon on a
 fixed 5-minute poll) and holds no timing of its own. Anti-windup is conditional
 integration: the integral only advances while the raw output is inside `[0, 1]`, or when
-integrating would pull a saturated output back toward it.
+integrating would pull a saturated output back toward it. The actuator mapping — the mode,
+the rolling history window, the duty cycle and the fixed-output hold — is owned by a
+composed `Modulator` (`heatingsystem.modulator.modulator`); the properties below delegate
+to it, and the modulator instance itself is not exposed.
 
 | Signature | Description |
 |---|---|
-| `OUTPUT_MIN: float = 0.0` | Lower clamp of the actuator range. |
-| `OUTPUT_MAX: float = 1.0` | Upper clamp of the actuator range. |
-| `HeatingMode(StrEnum)` | `RADIATOR` (continuous output in `[0, 1]`) or `FLOOR_HEATING` (binary on/off from duty-cycle modulation over the rolling window). |
-| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | The controller. Every setting — `kp`, `ki`, `mode`, `setpoint`, `fixed_output`, `integral` — is assigned through its validating property, so a bad value raises the same error at construction as later. `history_length` is validated by the same numeric-family contract (`TypeError` naming it for `bool` or a non-`int`, `ValueError` below 1, `OverflowError` above what a `deque`'s `maxlen` can hold) and stored as a read-only property; the window cannot be resized afterwards. |
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | The controller. Builds its `Modulator` first (`mode`, `history_length`), then assigns `kp`, `ki`, `setpoint` through their validating properties, then `fixed_output` last through its delegating setter — the same validation order as before the split. Every setting — `kp`, `ki`, `mode`, `setpoint`, `fixed_output`, `integral` — raises the same error at construction as later assignment would. |
 | `PIController.kp -> float` (settable) | Proportional gain. Setter: a finite real number; `bool` rejected. Raises `TypeError` naming `kp` for a non-numeric or `bool` value, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. Previous value unchanged on failure. |
 | `PIController.ki -> float` (settable) | Integral gain. Same setter contract as `kp`, naming `ki`. |
 | `PIController.setpoint -> float` (settable) | Target temperature in °C. Same setter contract as `kp`, naming `setpoint`; also the path a per-call `setpoint` of `update` assigns through. |
-| `PIController.mode -> HeatingMode` (settable) | Actuator mode. Setter accepts a `HeatingMode` or its string value via `HeatingMode(value)`; anything else raises `ValueError` naming `mode` and listing the valid values, previous mode unchanged. |
-| `PIController.fixed_output -> float \| None` | Property, settable. The current output override in `[OUTPUT_MIN, OUTPUT_MAX]`, or `None` when the PI loop is in control. The setter raises `TypeError` naming `fixed_output` for a non-numeric or `bool` value, `ValueError` for a non-finite or out-of-range value, and `OverflowError` for one too large to represent as a `float`; the previous setting is unchanged on any failure, and a valid value is stored as `float`. |
-| `PIController.integral -> float` (settable) | The integral accumulator. Same numeric-family setter contract as `kp`, naming `integral`; previous value unchanged on failure. Writable so a restore can put it back exactly. |
-| `PIController.history_length -> int` | Read-only. The rolling command-window length given at construction; sized once, not resizable — a restore builds a new controller instead. |
+| `PIController.mode -> HeatingMode` (settable) | Actuator mode. Delegates to the composed `Modulator`; same setter contract and message as before the split. |
+| `PIController.fixed_output -> float \| None` | Property, settable. Delegates to the composed `Modulator`; same setter contract and messages as before the split. |
+| `PIController.integral -> float` (settable) | The integral accumulator. Same numeric-family setter contract as `kp`, naming `integral`; previous value unchanged on failure. Writable so a restore can put it back exactly; `update` and `reset` write the private field directly rather than through this setter, so the control law does not depend on it never tightening. |
+| `PIController.history_length -> int` | Read-only. Delegates to the composed `Modulator`. |
 | `PIController.pi_output -> float \| None` | Read-only. The clamped PI result of the last `update`, in `[OUTPUT_MIN, OUTPUT_MAX]`. Reports the PI demand even while `fixed_output` holds the actuator at a different level. `None` before the first `update` and again after `reset()` or `from_dict()`. |
-| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). `measured` is validated first; a passed `setpoint` is then assigned through its setter, so a call that raises stores nothing. Records `pi_output` from the clamped PI result. If the raw PI sum or the tentative integral is not finite (reachable only with extreme finite inputs, e.g. `kp * -inf`), the PI demand is `OUTPUT_MIN`, `pi_output` reads `0.0`, and the integral is held rather than advanced; while `fixed_output` is set, the command is unaffected, since the fixed level replaces the demand regardless. Otherwise, while `fixed_output` is set, the command is derived from it instead of the PI result, though the PI calculation and integral still run underneath, and the command is still recorded in `history`. Raises `TypeError` for a non-numeric or `bool` `measured`/`setpoint`, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. |
-| `PIController.reset() -> None` | Zero the integral, clear the rolling history and set `pi_output` back to `None`. Leaves `fixed_output` and every setting unchanged. |
-| `PIController.to_dict() -> dict[str, object]` | A snapshot of every setting and every piece of running state — `kp`, `ki`, `setpoint`, `mode` (as its string value), `history_length`, `fixed_output`, `integral`, `history` (a list, oldest first) — as built-in types `json.dumps` accepts. A fresh dict and a fresh list each call; mutating either, or updating the controller afterwards, leaves the other unchanged. `pi_output` is derived, not included. |
-| `PIController.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuilds a controller from a `to_dict()`-shaped mapping, each value applied through the same validating setter or check a direct assignment would use. A missing or unknown key raises `ValueError` naming the keys (missing checked first); a bad value raises what the matching setter or check raises, naming the key (`history[i]` for an entry, `OverflowError` for a huge `int`); a `history` longer than `history_length` raises `ValueError`; a non-mapping `data` (e.g. the JSON text instead of the loaded object) raises `TypeError`. On any failure no controller is produced. The result equals the source in every setting and in `integral`, `history`, `duty_cycle`, `is_history_full` and `fixed_output`; `pi_output` is `None`, as on any fresh controller. |
-| `PIController.history -> tuple[float, ...]` | The last `history_length` commands, oldest first. |
-| `PIController.duty_cycle -> float` | Mean of `history`; `0.0` while it is empty. |
-| `PIController.is_history_full -> bool` | Whether `history_length` commands have been issued. |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). `measured` is validated first; a passed `setpoint` is then assigned through its setter, so a call that raises stores nothing. The new integral and the PI demand `u` are computed into locals; the demand is then handed to the composed `Modulator`'s `command`, which raises before any controller state is written (`ValueError`/`TypeError`/`OverflowError` propagate unchanged and leave `integral`/`pi_output` untouched); only then are `integral` and `pi_output` written. If the raw PI sum or the tentative integral is not finite (reachable only with extreme finite inputs, e.g. `kp * -inf`), the PI demand is `OUTPUT_MIN`, `pi_output` reads `0.0`, and the integral is held rather than advanced; while `fixed_output` is set, the command is unaffected, since the fixed level replaces the demand regardless inside the modulator. Raises `TypeError` for a non-numeric or `bool` `measured`/`setpoint`, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. |
+| `PIController.reset() -> None` | Zero the integral, reset the composed `Modulator` (clearing its history window) and set `pi_output` back to `None`. Leaves `fixed_output` and every setting unchanged. |
+| `PIController.to_dict() -> dict[str, object]` | A snapshot of every setting and every piece of running state — `kp`, `ki`, `setpoint`, `mode` (as its string value), `history_length`, `fixed_output`, `integral`, `history` (a list, oldest first) — as built-in types `json.dumps` accepts, merging the controller's own four keys with the modulator's private four-key snapshot into this frozen eight-key order. A fresh dict and a fresh list each call; mutating either, or updating the controller afterwards, leaves the other unchanged. `pi_output` is derived, not included. |
+| `PIController.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuilds a controller from a `to_dict()`-shaped mapping, each value applied through the same validating setter or check a direct assignment would use — the four modulator-owned keys are checked by building a `Modulator` first, then the four controller-owned keys. A missing or unknown key raises `ValueError` naming the keys (missing checked first); a bad value raises what the matching setter or check raises, naming the key (`history[i]` for an entry, `OverflowError` for a huge `int`); a `history` longer than `history_length` raises `ValueError`; a non-mapping `data` (e.g. the JSON text instead of the loaded object) raises `TypeError`. On any failure no controller is produced. The result equals the source in every setting and in `integral`, `history`, `duty_cycle`, `is_history_full` and `fixed_output`; `pi_output` is `None`, as on any fresh controller. |
+| `PIController.history -> tuple[float, ...]` | Read-only. Delegates to the composed `Modulator`; the last `history_length` commands, oldest first. |
+| `PIController.duty_cycle -> float` | Read-only. Delegates to the composed `Modulator`; mean of `history`, `0.0` while it is empty. |
+| `PIController.is_history_full -> bool` | Read-only. Delegates to the composed `Modulator`; whether `history_length` commands have been issued. |
 | `main() -> None` | Showcase: the enum, a radiator warm-up, a setpoint override, a `fixed_output` override (now also printing `pi_output`) and release, a reset, a floor-heating run to a converged duty cycle, a state snapshot round trip through `to_dict`/`from_dict` (including a JSON round trip) with the released hold surviving, a `mode` reassignment, and the `ValueError`/`TypeError` demonstrations including an invalid snapshot. |
 
 Runnable standalone: `python -m heatingsystem.pi_controller.pi_controller`, once the

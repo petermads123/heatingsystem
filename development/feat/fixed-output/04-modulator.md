@@ -1,6 +1,6 @@
 # Modulator: the actuator mapping as its own object
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,8 +18,8 @@ conventional name `feat/fixed-output`.
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | in progress |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
+| 4 | Verify | `/verify` | in `/build` | in progress |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -439,6 +439,25 @@ Findings from the `plan-critic` read, verdict *accept with changes*; all ten app
 
 > Written in step 3. Only deviations from the plan above, each with its reason. "Built as
 > planned" is a complete and good entry.
+
+Built as planned, with one addition mypy required: `_heating_mode`'s call to `HeatingMode(value)`
+takes `value: object` per the guide's signature, but `HeatingMode.__call__`'s stub expects a
+narrower type, so the call carries `# type: ignore[arg-type]` with a reason (the same shape
+the conventions already use elsewhere in the package) — `HeatingMode()` itself validates any
+object at runtime and raises `ValueError` for anything invalid, so no behaviour changed.
+
+`tests/` was not touched in this step, per the pipeline's separation of production code
+(step 3) from the test suite (step 5): the four schedule tests still live in
+`tests/test_pi_controller.py` unchanged, and `tests/test_modulator.py` does not exist yet.
+`STRUCTURE.md`'s Tests section is correspondingly left as it was; its test-file paragraphs
+and the new `tests/test_modulator.py` section are step 5's to write, in the same commit
+that creates the file.
+
+All 597 pre-existing tests pass unchanged against the delegating controller, confirming the
+split changed no behaviour: `ruff check .`, `ruff format --check .` and `mypy` are clean;
+`python -m heatingsystem.pi_controller.pi_controller`, `python -m
+heatingsystem.modulator.modulator` and `python -m heatingsystem._validation` all run
+standalone; `MPLBACKEND=Agg python test.py` still produces `simulation.png`.
 
 ---
 

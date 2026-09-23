@@ -5,17 +5,11 @@ controller designed to regulate room temperature by modulating a heating actuato
 The controller is driven externally (e.g. by Home Assistant / AppDaemon on a fixed
 5-minute polling interval) and contains no internal timing or scheduling logic.
 
-Two heating modes are supported via :class:`HeatingMode`:
-
-* ``RADIATOR`` — continuous output in [0, 1] (e.g. a thermostatic valve).
-* ``FLOOR_HEATING`` — binary on/off signal derived from duty-cycle modulation over
-  a rolling window of the last ``history_length`` samples (24 by default,
-  24 × 5 min = 2 h).
-
-Module-level output clamp constants:
-
-* ``OUTPUT_MIN = 0.0``
-* ``OUTPUT_MAX = 1.0``
+The actuator side — the mode, the rolling history window, the duty cycle and the
+fixed-output hold — is owned by a :class:`~heatingsystem.modulator.modulator.Modulator`,
+which the controller composes and delegates to; see that module for the mode
+mapping itself. This module re-exports :class:`~heatingsystem.modulator.modulator.HeatingMode`,
+``OUTPUT_MIN`` and ``OUTPUT_MAX`` from there so existing imports keep working.
 
 A controller's output can also be pinned to a fixed level via
 :attr:`PIController.fixed_output`, overriding the PI result while the PI
@@ -24,18 +18,16 @@ calculation, including the integral, keeps running underneath it.
 
 import json
 import math
-import numbers
-import sys
-from collections import deque
 from collections.abc import Mapping
-from enum import StrEnum
 from typing import Self
 
-# ---------------------------------------------------------------------------
-# Module-level output clamp constants — the actuator range is always [0, 1].
-# ---------------------------------------------------------------------------
-OUTPUT_MIN: float = 0.0
-OUTPUT_MAX: float = 1.0
+from heatingsystem import _validation
+from heatingsystem.modulator.modulator import (
+    OUTPUT_MAX,
+    OUTPUT_MIN,
+    HeatingMode,
+    Modulator,
+)
 
 # The exact key set a snapshot from to_dict() must have for from_dict() to
 # accept it; a missing or extra key is refused rather than partially applied.
@@ -53,133 +45,27 @@ _SNAPSHOT_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _finite(name: str, value: object) -> float:
-    """Validate a value as a finite real number and return it as a float.
-
-    The shared numeric contract behind every validating setting on
-    :class:`PIController`: a real number (``bool`` excluded), finite, and
-    representable as a ``float``.
-
-    Args:
-        name: The attribute or parameter name, used in the error messages.
-        value: The value to validate.
-
-    Returns:
-        ``value`` converted to ``float``. A negative zero is returned as
-        positive zero.
-
-    Raises:
-        TypeError: If ``value`` is a ``bool`` or not an
-            :class:`numbers.Real` (an ``int``, ``float``, ``Fraction`` and
-            most numpy scalar types pass — ``numpy.bool_`` does not, for the
-            same reason a plain ``bool`` does not; a ``Decimal`` does not
-            either).
-        ValueError: If ``value`` is not finite (``nan`` or ``inf``).
-        OverflowError: If ``value`` is too large to represent as a float
-            (e.g. an ``int`` such as ``10**400``).
-    """
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise TypeError(
-            f"{name} must be a real number, got {value!r} ({type(value).__name__})."
-        )
-    try:
-        number = float(value)
-    except OverflowError as exc:
-        raise OverflowError(f"{name} is too large to represent as a float.") from exc
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite number, got {value!r}.")
-    return number + 0.0
-
-
-def _window_length(value: object) -> int:
-    """Validate a rolling-window length.
-
-    The shared contract behind :attr:`PIController.history_length`: an
-    ``int`` (``bool`` excluded) of at least 1, small enough for a
-    :class:`collections.deque`'s ``maxlen``.
-
-    Args:
-        value: The value to validate.
-
-    Returns:
-        ``value``, unchanged.
-
-    Raises:
-        TypeError: If ``value`` is a ``bool`` or not an ``int``.
-        ValueError: If ``value`` is less than 1.
-        OverflowError: If ``value`` is too large for a ``deque``'s
-            ``maxlen`` to hold.
-    """
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(
-            f"history_length must be an int, got {value!r} ({type(value).__name__})."
-        )
-    if value < 1:
-        raise ValueError(f"history_length must be >= 1, got {value}.")
-    if value > sys.maxsize:
-        raise OverflowError(f"history_length is too large, got {value}.")
-    return value
-
-
-def _level(name: str, value: object) -> float:
-    """Validate a value as a finite level in the actuator range.
-
-    Builds on :func:`_finite`, adding the ``[OUTPUT_MIN, OUTPUT_MAX]`` range
-    check shared by :attr:`PIController.fixed_output` and by each entry of
-    a restored :attr:`PIController.history`.
-
-    Args:
-        name: The attribute or parameter name, used in the error message.
-        value: The value to validate.
-
-    Returns:
-        ``value`` converted to ``float``.
-
-    Raises:
-        TypeError: If ``value`` is a ``bool`` or not a real number.
-        ValueError: If ``value`` is not finite, or lies outside
-            ``[OUTPUT_MIN, OUTPUT_MAX]``.
-        OverflowError: If ``value`` is too large to represent as a float.
-    """
-    level = _finite(name, value)
-    if level < OUTPUT_MIN or level > OUTPUT_MAX:
-        raise ValueError(
-            f"{name} must be in [{OUTPUT_MIN}, {OUTPUT_MAX}], got {value!r}."
-        )
-    return level
-
-
-class HeatingMode(StrEnum):
-    """Heating actuator mode.
-
-    Selects how the demand level (the PI output, or the fixed output when
-    one is set) is translated into an actuator command.
-
-    Attributes:
-        RADIATOR: Continuous modulation — the demand level is forwarded
-            directly to the valve driver.
-        FLOOR_HEATING: Binary on/off derived from duty-cycle modulation
-            over a rolling window of ``history_length`` samples (the
-            default 24 is 2 hours at 5-minute polling).
-    """
-
-    RADIATOR = "radiator"
-    FLOOR_HEATING = "floor_heating"
-
-
 class PIController:
     """Discrete-time PI controller for residential heating.
 
     Every setting — ``kp``, ``ki``, ``mode``, ``setpoint``, ``fixed_output``
     and ``integral`` — is a validating property: assigning it, at
     construction or afterwards, raises on a bad value and leaves the
-    previous value unchanged. ``history_length`` is validated at
+    previous value unchanged. See :mod:`heatingsystem._validation` for the
+    numeric contract behind them. ``history_length`` is validated at
     construction and exposed as a read-only property; the window itself
     cannot be resized afterwards.
 
+    The actuator mapping — the mode, the rolling history window, the duty
+    cycle and the fixed-output hold — is owned by a composed
+    :class:`~heatingsystem.modulator.modulator.Modulator`, reachable only
+    through this controller's own properties and methods; the modulator
+    instance itself is not exposed.
+
     The controller is stateful: it accumulates an integral term across
-    successive :meth:`update` calls and maintains a rolling window of
-    past actuator commands for duty-cycle estimation (floor heating).
+    successive :meth:`update` calls, and its modulator maintains a rolling
+    window of past actuator commands for duty-cycle estimation (floor
+    heating).
 
     Anti-windup is implemented via *conditional integration*: the integral
     is only advanced when the raw PI output is inside the valid output
@@ -239,9 +125,9 @@ class PIController:
     _kp: float
     _ki: float
     _setpoint: float
-    _mode: HeatingMode
-    _history_length: int
     _integral: float
+    _pi_output: float | None
+    _modulator: Modulator
 
     def __init__(
         self,
@@ -260,27 +146,20 @@ class PIController:
         setting is assigned through its validating property, so
         construction raises exactly what later assignment would.
         """
-        self.mode = mode
-
-        self._history_length = _window_length(history_length)
+        self._modulator = Modulator(mode, history_length=history_length)
 
         self.kp = kp
         self.ki = ki
         self.setpoint = setpoint
 
         # Integral accumulator, reset to zero on construction and via reset().
-        self.integral = 0.0
-
-        # Rolling window of past actuator commands.
-        # history_length samples of history for duty-cycle tracking (the
-        # default 24 is 2 h at 5-min intervals).
-        self._history: deque[float] = deque(maxlen=self._history_length)
+        self._integral = 0.0
 
         # Clamped PI result of the last update(); None before the first step.
-        self._pi_output: float | None = None
+        self._pi_output = None
 
-        # Fixed output override — None means the PI loop is in control.
-        self._fixed_output: float | None = None
+        # Fixed output override — delegated to the modulator, assigned last
+        # to keep the original constructor's validation order.
         self.fixed_output = fixed_output
 
     # ------------------------------------------------------------------
@@ -326,7 +205,7 @@ class PIController:
             :attr:`fixed_output` is set the command is unaffected, since
             the fixed level replaces the demand regardless.
         """
-        measured = _finite("measured", measured)
+        measured = _validation.finite("measured", measured)
 
         # --- Optional setpoint update ---
         if setpoint is not None:
@@ -340,13 +219,13 @@ class PIController:
         # We tentatively integrate first, compute the raw output, then decide
         # whether to commit the new integral value.  This prevents the integral
         # from winding up when the actuator is saturated.
-        new_integral: float = self.integral + error
+        new_integral: float = self._integral + error
         raw: float = self.kp * error + self.ki * new_integral
 
         # Reachable only with extreme finite inputs: a non-finite raw sum or
         # tentative integral (kp * -inf, an overflowing integral, ...) closes
         # the valve and holds the integral rather than propagating nan/inf.
-        finite: bool = math.isfinite(raw) and math.isfinite(new_integral)
+        is_finite: bool = math.isfinite(raw) and math.isfinite(new_integral)
 
         # Clamp raw output to the actuator's physical range. `+ 0.0`
         # normalises a -0.0 clamp result explicitly, rather than relying on
@@ -354,9 +233,8 @@ class PIController:
         # tied with -0.0 -- the same argument-order accident R2 asked this
         # round to remove.
         u: float = (
-            (max(OUTPUT_MIN, min(OUTPUT_MAX, raw)) + 0.0) if finite else OUTPUT_MIN
+            (max(OUTPUT_MIN, min(OUTPUT_MAX, raw)) + 0.0) if is_finite else OUTPUT_MIN
         )
-        self._pi_output = u
 
         # Anti-windup — only commit the new integral when it is useful:
         #   * Not saturated at all  → always safe to integrate.
@@ -367,43 +245,43 @@ class PIController:
         #     error > 0, i.e. measurement is falling and integration will
         #     push the output back up toward the valid range.
         #   Otherwise: hold the old integral to avoid making windup worse.
-        if finite:
+        next_integral = self._integral
+        if is_finite:
             if OUTPUT_MIN < raw < OUTPUT_MAX:
                 # Inside the linear region — unrestricted integration.
-                self.integral = new_integral
+                next_integral = new_integral
             elif raw >= OUTPUT_MAX and error < 0:
                 # Saturated high but cooling trend: allow integration to wind down.
-                self.integral = new_integral
+                next_integral = new_integral
             elif raw <= OUTPUT_MIN and error > 0:
                 # Saturated low but warming trend: allow integration to wind up.
-                self.integral = new_integral
+                next_integral = new_integral
             # else: output is saturated and error would deepen windup — hold.
         # When raw/new_integral is not finite, the integral is held above.
 
         # --- Map demand level to actuator command ---
-        # While fixed_output is set, it replaces the PI result u as the
-        # demand level handed to _to_command; the PI computation and
-        # anti-windup above are unaffected either way.
-        level: float = u if self._fixed_output is None else self._fixed_output
-        # _to_command reads self._history (the trailing window) BEFORE we
-        # append the new command, so duty_cycle reflects only past samples.
-        command: float = self._to_command(level)
+        # The modulator reads its own history window (for floor heating's
+        # duty cycle) before appending this step's command, and applies
+        # fixed_output itself when one is set; the PI computation and
+        # anti-windup above are unaffected either way. Computed into a
+        # local before any state is written, so a raise here leaves the
+        # controller's own state untouched.
+        command = self._modulator.command(u)
 
-        # Append AFTER _to_command so this step's command is not included
-        # in its own duty-cycle calculation.
-        self._history.append(command)
+        self._integral = next_integral
+        self._pi_output = u
 
         return command
 
     def reset(self) -> None:
         """Reset the controller state to initial values.
 
-        Clears the integral accumulator, the history window, and
-        :attr:`pi_output`.  The gains, mode, setpoint, and
+        Clears the integral accumulator, the modulator's history window,
+        and :attr:`pi_output`.  The gains, mode, setpoint, and
         :attr:`fixed_output` are left unchanged.
         """
-        self.integral = 0.0
-        self._history.clear()
+        self._integral = 0.0
+        self._modulator.reset()
         self._pi_output = None
 
     def to_dict(self) -> dict[str, object]:
@@ -423,15 +301,16 @@ class PIController:
             are copies: changing either afterwards, or updating the
             controller, leaves the other unchanged.
         """
+        modulator_state = self._modulator._to_dict()
         return {
             "kp": self.kp,
             "ki": self.ki,
             "setpoint": self.setpoint,
-            "mode": self.mode.value,
-            "history_length": self.history_length,
-            "fixed_output": self.fixed_output,
+            "mode": modulator_state["mode"],
+            "history_length": modulator_state["history_length"],
+            "fixed_output": modulator_state["fixed_output"],
             "integral": self.integral,
-            "history": list(self._history),
+            "history": modulator_state["history"],
         }
 
     @classmethod
@@ -467,59 +346,22 @@ class PIController:
             OverflowError: If a numeric value is too large to represent as
                 a float, naming the key.
         """
-        if not isinstance(data, Mapping):
-            raise TypeError(f"snapshot must be a mapping, got {type(data).__name__}.")
+        data = _validation.snapshot_mapping(data, _SNAPSHOT_KEYS)
 
-        missing = sorted(_SNAPSHOT_KEYS - data.keys())
-        if missing:
-            raise ValueError(f"snapshot is missing keys {missing}.")
-        # key=repr: an unknown key set may mix types (e.g. a str and an int)
-        # that Python cannot compare with <, so sorted() alone can raise a
-        # bare TypeError instead of the documented ValueError.
-        unknown = sorted(data.keys() - _SNAPSHOT_KEYS, key=repr)
-        if unknown:
-            raise ValueError(f"snapshot has unknown keys {unknown}.")
-
-        mode = data["mode"]
-        if not isinstance(mode, (HeatingMode, str)):
-            valid = [m.value for m in HeatingMode]
-            raise ValueError(
-                f"mode must be a HeatingMode or one of {valid}, got {mode!r}."
-            )
-
-        fixed = data["fixed_output"]
-        # _level, not _finite: raises with the caller's own value (e.g. a
-        # Fraction) in the message, matching what the fixed_output setter
-        # itself would raise — _finite alone would convert to float first
-        # and report the converted value instead.
-        fixed_output = None if fixed is None else _level("fixed_output", fixed)
-
-        history = data["history"]
-        if not isinstance(history, (list, tuple)):
-            raise TypeError(
-                f"history must be a list or tuple, got {history!r} "
-                f"({type(history).__name__})."
-            )
+        modulator = Modulator._from_dict(
+            {k: data[k] for k in ("mode", "history_length", "fixed_output", "history")}
+        )
 
         controller = cls(
-            kp=_finite("kp", data["kp"]),
-            ki=_finite("ki", data["ki"]),
-            mode=mode,
-            setpoint=_finite("setpoint", data["setpoint"]),
-            history_length=_window_length(data["history_length"]),
-            fixed_output=fixed_output,
+            kp=_validation.finite("kp", data["kp"]),
+            ki=_validation.finite("ki", data["ki"]),
+            mode=modulator.mode,
+            setpoint=_validation.finite("setpoint", data["setpoint"]),
+            history_length=modulator.history_length,
+            fixed_output=modulator.fixed_output,
         )
-        controller.integral = _finite("integral", data["integral"])
-
-        if len(history) > controller.history_length:
-            raise ValueError(
-                f"history has {len(history)} entries but history_length is "
-                f"{controller.history_length}."
-            )
-        levels: list[float] = []
-        for i, entry in enumerate(history):
-            levels.append(_level(f"history[{i}]", entry))
-        controller._history.extend(levels)
+        controller.integral = _validation.finite("integral", data["integral"])
+        controller._modulator = modulator
 
         return controller
 
@@ -530,7 +372,7 @@ class PIController:
     @property
     def mode(self) -> HeatingMode:
         """The heating actuator mode."""
-        return self._mode
+        return self._modulator.mode
 
     @mode.setter
     def mode(self, value: HeatingMode | str) -> None:
@@ -543,13 +385,7 @@ class PIController:
             ValueError: If ``value`` is not a valid :class:`HeatingMode`
                 member or value. The previous mode is left unchanged.
         """
-        try:
-            self._mode = HeatingMode(value)
-        except ValueError as exc:
-            valid = [m.value for m in HeatingMode]
-            raise ValueError(
-                f"mode must be a HeatingMode or one of {valid}, got {value!r}."
-            ) from exc
+        self._modulator.mode = value
 
     @property
     def kp(self) -> float:
@@ -565,13 +401,15 @@ class PIController:
 
         Raises:
             TypeError: If ``value`` is not a real number, ``bool``
-                included. The previous gain is left unchanged.
+                included. See :mod:`heatingsystem._validation` for the
+                full numeric contract. The previous gain is left
+                unchanged.
             ValueError: If ``value`` is not finite. The previous gain is
                 left unchanged.
             OverflowError: If ``value`` is too large to represent as a
                 float. The previous gain is left unchanged.
         """
-        self._kp = _finite("kp", value)
+        self._kp = _validation.finite("kp", value)
 
     @property
     def ki(self) -> float:
@@ -587,13 +425,15 @@ class PIController:
 
         Raises:
             TypeError: If ``value`` is not a real number, ``bool``
-                included. The previous gain is left unchanged.
+                included. See :mod:`heatingsystem._validation` for the
+                full numeric contract. The previous gain is left
+                unchanged.
             ValueError: If ``value`` is not finite. The previous gain is
                 left unchanged.
             OverflowError: If ``value`` is too large to represent as a
                 float. The previous gain is left unchanged.
         """
-        self._ki = _finite("ki", value)
+        self._ki = _validation.finite("ki", value)
 
     @property
     def setpoint(self) -> float:
@@ -609,13 +449,15 @@ class PIController:
 
         Raises:
             TypeError: If ``value`` is not a real number, ``bool``
-                included. The previous setpoint is left unchanged.
+                included. See :mod:`heatingsystem._validation` for the
+                full numeric contract. The previous setpoint is left
+                unchanged.
             ValueError: If ``value`` is not finite. The previous setpoint
                 is left unchanged.
             OverflowError: If ``value`` is too large to represent as a
                 float. The previous setpoint is left unchanged.
         """
-        self._setpoint = _finite("setpoint", value)
+        self._setpoint = _validation.finite("setpoint", value)
 
     @property
     def history_length(self) -> int:
@@ -625,7 +467,7 @@ class PIController:
         restore through :meth:`from_dict` builds a new controller rather
         than resizing this one.
         """
-        return self._history_length
+        return self._modulator.history_length
 
     @property
     def integral(self) -> float:
@@ -641,13 +483,15 @@ class PIController:
 
         Raises:
             TypeError: If ``value`` is not a real number, ``bool``
-                included. The previous value is left unchanged.
+                included. See :mod:`heatingsystem._validation` for the
+                full numeric contract. The previous value is left
+                unchanged.
             ValueError: If ``value`` is not finite. The previous value is
                 left unchanged.
             OverflowError: If ``value`` is too large to represent as a
                 float. The previous value is left unchanged.
         """
-        self._integral = _finite("integral", value)
+        self._integral = _validation.finite("integral", value)
 
     @property
     def history(self) -> tuple[float, ...]:
@@ -656,24 +500,17 @@ class PIController:
         Returns:
             A tuple of past actuator commands in chronological order.
         """
-        return tuple(self._history)
+        return self._modulator.history
 
     @property
     def duty_cycle(self) -> float:
         """Mean of the current history window (fraction of ON-time).
 
-        Used by :meth:`_to_command` in floor-heating mode to decide
-        whether the current slot should be ON or OFF so that the
-        long-run ON fraction converges to the target demand level.
-
         Returns:
             The mean of the history window, or ``0.0`` when the window
             is empty.
         """
-        # Guard against ZeroDivisionError on an empty deque.
-        if not self._history:
-            return 0.0
-        return sum(self._history) / len(self._history)
+        return self._modulator.duty_cycle
 
     @property
     def is_history_full(self) -> bool:
@@ -683,7 +520,7 @@ class PIController:
             ``True`` once :attr:`history` contains ``history_length``
             samples; ``False`` during the initial warm-up period.
         """
-        return len(self._history) == self._history_length
+        return self._modulator.is_history_full
 
     @property
     def pi_output(self) -> float | None:
@@ -708,7 +545,7 @@ class PIController:
             The fixed actuator level in [``OUTPUT_MIN``, ``OUTPUT_MAX``], or
             ``None`` when the PI loop is in control.
         """
-        return self._fixed_output
+        return self._modulator.fixed_output
 
     @fixed_output.setter
     def fixed_output(self, value: float | None) -> None:
@@ -731,58 +568,7 @@ class PIController:
             OverflowError: If ``value`` is too large to represent as a
                 float. The previous setting is left unchanged.
         """
-        if value is None:
-            self._fixed_output = None
-            return
-        self._fixed_output = _level("fixed_output", value)
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    def _to_command(self, level: float) -> float:
-        """Map a demand level to a mode-specific actuator command.
-
-        ``level`` is the demand level (the PI output, or the fixed output
-        when one is set).  For ``RADIATOR`` mode it is forwarded unchanged
-        (already in [0, 1]).  For ``FLOOR_HEATING`` mode a binary signal is
-        derived using duty-cycle modulation:
-
-        * If ``level`` is at or below ``OUTPUT_MIN`` the slot is always OFF.
-        * If ``level`` is at or above ``OUTPUT_MAX`` the slot is always ON.
-        * Otherwise the slot is ON when the realised duty cycle so far
-          (mean of the trailing window) is below the target ``level``.  Over
-          many cycles this causes the ON-fraction to converge to ``level``,
-          which is why a long window (the default 24 samples is 2 h at
-          5-min intervals) is needed for good modulation fidelity.
-
-        This method is called BEFORE the new command is appended to the
-        history, so :attr:`duty_cycle` reflects only past samples.
-
-        Args:
-            level: Demand level in [``OUTPUT_MIN``, ``OUTPUT_MAX``] — the PI
-                output, or the fixed output when one is set.
-
-        Returns:
-            The actuator command: a float in [0.0, 1.0] for ``RADIATOR``
-            mode, or exactly 0.0 or 1.0 for ``FLOOR_HEATING`` mode.
-        """
-        if self.mode is HeatingMode.RADIATOR:
-            # Continuous modulation — pass through directly.
-            return level
-
-        # --- FLOOR_HEATING: duty-cycle modulation ---
-        if level <= OUTPUT_MIN:
-            # No demand — keep the floor off.
-            return 0.0
-        if level >= OUTPUT_MAX:
-            # Full demand — keep the floor on.
-            return 1.0
-
-        # Fire this slot when the realised duty so far is below target level.
-        # Over a full window the ON-fraction will converge to level, spreading
-        # heat pulses evenly rather than bunching them at the start of the window.
-        return 1.0 if self.duty_cycle < level else 0.0
+        self._modulator.fixed_output = value
 
 
 def main() -> None:
