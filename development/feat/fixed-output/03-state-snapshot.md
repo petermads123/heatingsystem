@@ -733,12 +733,23 @@ check) — none missing.
 
 ## 8. Recommendations
 
-> Written in step 8. Follow-up work this change makes possible or desirable. Not bugs —
-> a bug found here goes back through `/build` before the pull request.
+Three `brainstormer` lenses read the finished round in parallel (`user`, `maintainer`,
+`integrator`); their lists are merged and ranked below by value to the product. The build
+halted on nothing and section 3 records only showcase-level notes, so the orchestrator's
+own angle added nothing. No lens found a bug. Two cosmetic items were fixed under
+`/small-change` before this list was written rather than listed: the README's restore
+comment named two error classes and omitted `OverflowError`, and three docstrings still
+described a fixed 24-sample window. Round 4 (the modulator split, with the schedule tests
+and the numeric-contract prose) is already decided; several items below are constraints on
+it rather than new work, and say so.
 
 | # | Recommendation | Why it helps | Effort | Decision |
 |---|---|---|---|---|
-| R1 | | | | |
+| R1 | Constraints for round 4, from all three lenses: the eight-key flat snapshot is a frozen wire format, pinned by a test that a literal round-3-shaped dict still restores; the history gets one private loader that `to_dict`/`from_dict` use instead of reaching into the deque, with the entry rule written there (a level in the actuator range, not a command the current mode would emit, so a restored floor history may hold fractional entries just as a mid-run mode switch already produces); `mode` coercion becomes one helper shared by the setter and `from_dict`; `_level` moves with the other helpers; `reset()` is pinned by rule (after `reset()`, `to_dict()` equals a fresh controller's with the same settings) rather than by attribute list, since round 4 splits it across two objects. | Round 4 moves exactly half the snapshot's keys and the two lines that touch the deque directly. Without these, the natural refactor nests or renames keys and every snapshot already stored on a Home Assistant entity fails on the first restart after the upgrade, which is the outage this round exists to prevent. | small, inside round 4 | |
+| R2 | Document the restore idiom in the README: settings come from the caller's config and are applied after `from_dict`, so config wins; a shrunk `history_length` is the one setting that cannot be re-applied, so the caller slices the stored history first; caller metadata goes in an envelope around the dict, not in it, since extra keys are refused; a snapshot older than the caller's tolerance is restored and then `reset()`, which keeps the settings and the hold and discards the integral and window; and the restore example gains the fallback every caller writes (a bad or absent snapshot builds a fresh controller). Also correct the older "reset on controller restart" comment, which this round superseded. | The first startup works; the second, where the stored settings and the caller's config disagree, is where a caller who changed the window from 24 to 12 gets a refusal from a snapshot that was fine yesterday. Package-shaped prose (a dict merge), not HA glue. Two lenses. | small | |
+| R3 | Have `update()` and `reset()` write the private integral field directly and keep the `integral` setter for external writes. | The control law now depends on the public validation contract never tightening: the finite guard exists partly so the setter cannot raise mid-step. Any later rule on the setter (a range, a rescale on `ki` change) silently changes the arithmetic. The guard already establishes finiteness, so the setter's re-check on every tick buys nothing. Maintainer lens; a behaviour-neutral refactor. | small, best inside round 4 which reworks that block | |
+| R4 | A `__repr__` built from `to_dict()`. | The first thing a caller logs after a restore is the controller, which today prints as an object address. The value list already exists in `to_dict`. User lens. | small | |
+| R5 | A restart in the closed-loop simulation: snapshot mid-hold, rebuild with `from_dict`, and overlay the trajectory a fresh controller would have produced. | Section 1's justification is a closed-loop claim the repo's only closed loop never exercises; the picture shows the two-hour warm-up a naive restart costs. Touches the same two `test.py` signatures as round 2's deferred R6, so the two should land together if either is picked up. Integrator lens. | medium | |
 
 Decisions: `deferred`, `rejected`, or `next round` — a new numbered file in this folder,
 taken back through steps 1 to 7 on the same branch.
