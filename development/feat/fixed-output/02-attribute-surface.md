@@ -1,6 +1,6 @@
 # Attribute surface: validated settings, PI demand, range constants
 
-<!-- claude-plan step=8 status=active -->
+<!-- claude-plan step=8 status=done -->
 
 | Field | Value |
 |---|---|
@@ -23,7 +23,7 @@ conventional name `feat/fixed-output`.
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
 | 7 | Ship | `/ship` | in `/build` | done |
-| 8 | Recommend | `/recommend` | with the user | in progress |
+| 8 | Recommend | `/recommend` | with the user | done |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
 
@@ -885,18 +885,22 @@ re-proposed; several items below are best folded into them and say so.
 
 | # | Recommendation | Why it helps | Effort | Decision |
 |---|---|---|---|---|
-| R1 | Bring `history_length` under this round's contract (`TypeError` naming the attribute for `bool` or a non-`int`, `ValueError` below 1) and expose it as a read-only property. | The one constructor input still outside the rule: `history_length=True` silently builds a one-slot window, `"24"` raises a bare comparison error. Nothing downstream can read the window size, and round 3's restore needs it to rebuild the deque. All three lenses asked for it; best folded into round 3's concept. | small | |
-| R2 | Decide the float edge semantics once, in the helper this round built: a non-finite raw PI sum maps to a defined command (closed is the safe side), and `-0.0` is normalised to `+0.0`. | `pi_output`'s promised range currently holds for a `nan` raw only by accident of `min`/`max` argument order, and round 4 will move that line. A `nan` can enter through `integral`, which round 3 starts writing from a restore. Maintainer lens; the step 5 designers had skipped both as out of scope. Best folded into round 3, which is where `integral` becomes written state. | small | |
-| R3 | A way to take a step with no measurement (sensor `unavailable`): re-issue the previous command or the fixed level, append it to `history`, leave the integral alone. | A Home Assistant sensor drops out routinely. Today the caller can only skip the tick, which leaves a hole in the duty-cycle window, or feed a stale reading, which winds the integral on old data. The concept never decided this input; it needs a step 1 conversation. User lens. | medium | |
-| R4 | Decide what a mid-run `ki` change does to the accumulated integral: rescale so the I-term is continuous, or document that the caller should `reset()` after re-tuning. | Round 2 made the gains runtime-settable, which invites a dashboard slider; doubling `ki` today doubles the I-term instantly with no change in the room. User lens. | medium, small if documentation only | |
-| R5 | A reference AppDaemon app under `examples/`: read the sensor's string state, convert, call `update`, catch the three input errors together, write the command, publish `pi_output`, `fixed_output`, `duty_cycle`, `integral` and `mode` as attributes. | Every docstring names this caller and none exists, so each round designs an interface for code nobody has written. It would also define round 3's snapshot shape: what is persisted and what is published are nearly the same dict. Integrator lens. | medium | |
-| R6 | Record `pi_output` in the `test.py` simulation and draw it under the hold band; use `hs.OUTPUT_MIN`/`OUTPUT_MAX` there instead of literals. | The property was built for exactly this picture, the simulation already stages the scenario, and section 1 named it as the deferred connection. Changes two signatures in `test.py`. Integrator lens. | small | |
-| R7 | Move the room's first-order thermal model out of `test.py` into the package as its second model. | The README says the repo is for several models and the second already exists, untested and unimportable. Inside the package it becomes the plant every future controller and round 4's modulator is exercised against. Integrator lens. | medium | |
-| R8 | State the numeric contract's prose once and have the setters, `update` and the STRUCTURE.md rows refer to it; move the helper into a small private module round 4's modulator can import. | The contract now lives in seven docstrings and four STRUCTURE.md rows; round 1's R9 fixed this drift one level up and it has regrown. Maintainer lens; best carried into round 4, which needs the helper in a second module anyway. | small | |
-| R9 | Make the README usage block AppDaemon-shaped: string states converted with `float()`, the `unavailable` case, and that bad input raises `TypeError` or `ValueError`. | Every HA state is a string, and the new `TypeError` for a string measurement is the first thing an AppDaemon user will hit. Prose only, a `/small-change`. User lens. | small | |
+| R1 | Bring `history_length` under this round's contract (`TypeError` naming the attribute for `bool` or a non-`int`, `ValueError` below 1) and expose it as a read-only property. | The one constructor input still outside the rule: `history_length=True` silently builds a one-slot window, `"24"` raises a bare comparison error. Nothing downstream can read the window size, and round 3's restore needs it to rebuild the deque. All three lenses asked for it; best folded into round 3's concept. | small |fold into round 3 (the restore needs to read the window length; the type check is one line in the same helper) |
+| R2 | Decide the float edge semantics once, in the helper this round built: a non-finite raw PI sum maps to a defined command (closed is the safe side), and `-0.0` is normalised to `+0.0`. | `pi_output`'s promised range currently holds for a `nan` raw only by accident of `min`/`max` argument order, and round 4 will move that line. A `nan` can enter through `integral`, which round 3 starts writing from a restore. Maintainer lens; the step 5 designers had skipped both as out of scope. Best folded into round 3, which is where `integral` becomes written state. | small |fold into round 3 (the restore writes `integral`, so a non-finite raw sum becomes reachable) |
+| R3 | A way to take a step with no measurement (sensor `unavailable`): re-issue the previous command or the fixed level, append it to `history`, leave the integral alone. | A Home Assistant sensor drops out routinely. Today the caller can only skip the tick, which leaves a hole in the duty-cycle window, or feed a stale reading, which winds the integral on old data. The concept never decided this input; it needs a step 1 conversation. User lens. | medium |rejected: a missing sensor reading is Home Assistant's to handle; the controller assumes valid inputs arrive |
+| R4 | Decide what a mid-run `ki` change does to the accumulated integral: rescale so the I-term is continuous, or document that the caller should `reset()` after re-tuning. | Round 2 made the gains runtime-settable, which invites a dashboard slider; doubling `ki` today doubles the I-term instantly with no change in the room. User lens. | medium, small if documentation only |deferred |
+| R5 | A reference AppDaemon app under `examples/`: read the sensor's string state, convert, call `update`, catch the three input errors together, write the command, publish `pi_output`, `fixed_output`, `duty_cycle`, `integral` and `mode` as attributes. | Every docstring names this caller and none exists, so each round designs an interface for code nobody has written. It would also define round 3's snapshot shape: what is persisted and what is published are nearly the same dict. Integrator lens. | medium |rejected: the repo stays a simple package; the AppDaemon glue lives on the HA side |
+| R6 | Record `pi_output` in the `test.py` simulation and draw it under the hold band; use `hs.OUTPUT_MIN`/`OUTPUT_MAX` there instead of literals. | The property was built for exactly this picture, the simulation already stages the scenario, and section 1 named it as the deferred connection. Changes two signatures in `test.py`. Integrator lens. | small |deferred |
+| R7 | Move the room's first-order thermal model out of `test.py` into the package as its second model. | The README says the repo is for several models and the second already exists, untested and unimportable. Inside the package it becomes the plant every future controller and round 4's modulator is exercised against. Integrator lens. | medium |deferred |
+| R8 | State the numeric contract's prose once and have the setters, `update` and the STRUCTURE.md rows refer to it; move the helper into a small private module round 4's modulator can import. | The contract now lives in seven docstrings and four STRUCTURE.md rows; round 1's R9 fixed this drift one level up and it has regrown. Maintainer lens; best carried into round 4, which needs the helper in a second module anyway. | small |fold into round 4 |
+| R9 | Make the README usage block AppDaemon-shaped: string states converted with `float()`, the `unavailable` case, and that bad input raises `TypeError` or `ValueError`. | Every HA state is a string, and the new `TypeError` for a string measurement is the first thing an AppDaemon user will hit. Prose only, a `/small-change`. User lens. | small |rejected: the README stays package-shaped; string conversion is the caller's |
 
 Decisions: `deferred`, `rejected`, or `next round` — a new numbered file in this folder,
 taken back through steps 1 to 7 on the same branch.
+
+The user's steer at this gate: the repo stays a simple package that assumes valid inputs
+arrive; what Home Assistant delivers is Home Assistant's problem. Round 3 (state snapshot,
+from round 1's R3) opens next, carrying R1 and R2 above.
 
 ---
 
