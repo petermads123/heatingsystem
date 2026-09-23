@@ -1,6 +1,6 @@
 # Modulator: the actuator mapping as its own object
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,8 +19,8 @@ conventional name `feat/fixed-output`.
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | in progress |
-| 5 | Test | `/test` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
+| 5 | Test | `/test` | in `/build` | in progress |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -467,12 +467,117 @@ standalone; `MPLBACKEND=Agg python test.py` still produces `simulation.png`.
 
 | Check | Result |
 |---|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
+| `ruff check .` | `All checks passed!` |
+| `ruff format --check .` | `44 files already formatted` |
+| `mypy` | `Success: no issues found in 16 source files` |
+| `pytest` | `597 passed in 6.38s` — the whole suite, unchanged by this step |
+| Plan completeness | every signature in the Public API table exists as written (table below) |
+| `STRUCTURE.md` | in sync — see the structure audit below |
+| `python -m <package>.<module>` | all three ran clean (output below) |
+
+### Plan completeness — Public API table, row by row
+
+Read against `src/heatingsystem/modulator/modulator.py`, `src/heatingsystem/_validation.py`
+and `src/heatingsystem/pi_controller/pi_controller.py`, character by character.
+
+| Row | Result |
+|---|---|
+| `OUTPUT_MIN`, `OUTPUT_MAX`, `HeatingMode(StrEnum)` in `modulator.py` | Match — moved verbatim, docstrings included; the same objects re-exported from `heatingsystem`, `heatingsystem.modulator` and `heatingsystem.pi_controller` (confirmed with `is`). |
+| `Modulator(mode: HeatingMode \| str = HeatingMode.RADIATOR, *, history_length: int = 24, fixed_output: float \| None = None)` | Match. |
+| `Modulator.command(self, level: float) -> float` | Match — reads the window before appending, applies the hold, validates via `_validation.level("level", level, OUTPUT_MIN, OUTPUT_MAX)`. |
+| `Modulator.reset(self) -> None` | Match — clears the deque only. |
+| `Modulator.mode` getter/setter | Match — setter delegates to the shared `_heating_mode` coercion. |
+| `Modulator.history_length -> int` (read-only) | Match — no setter defined. |
+| `Modulator.fixed_output` getter/setter | Match. |
+| `Modulator.history`, `.duty_cycle`, `.is_history_full` | Match, bodies moved unchanged. |
+| `main() -> None` in `modulator.py` | Match — radiator pass-through, floor-heating convergence, a `fixed_output` hold, a reset; showcase form (inputs/call/output, named variables, fixed-set comment on `mode`). |
+| `PIController(kp, ki, mode, setpoint, *, history_length, fixed_output)` | Match — unchanged signature; builds the `Modulator` first, then `kp`/`ki`/`setpoint`, then `_integral`/`_pi_output` direct, `fixed_output` last — today's validation order preserved. |
+| `PIController.mode`, `.fixed_output`, `.history_length`, `.history`, `.duty_cycle`, `.is_history_full` | Match — each delegates to `self._modulator`. |
+| `PIController.update(measured, setpoint=None) -> float` | Match — unchanged signature; locals computed first (`next_integral`, `u`), then `command = self._modulator.command(u)`, then the two writes, so a raise from the modulator leaves `integral`/`pi_output` untouched (B4 by construction). |
+| `PIController.reset() -> None` | Match — unchanged signature and effect. Statement order in the body is `_integral = 0.0`, `_modulator.reset()`, `_pi_output = None`, a harmless reordering against the plan's prose order (`_integral`, `_pi_output`, `_modulator.reset()`); the three writes are independent of each other so behaviour is identical. Noted, not a deviation worth a plan edit. |
+| `PIController.to_dict()` / `from_dict()` | Match — eight keys in the frozen order `kp, ki, setpoint, mode, history_length, fixed_output, integral, history`; `to_dict` merges the controller's four with `self._modulator._to_dict()`; `from_dict` builds the modulator from its four keys first, then the controller. |
+| `PIController.kp`, `.ki`, `.setpoint`, `.integral`, `.pi_output` | Match — setters call `_validation.finite(...)`. |
+| `main() -> None` in `_validation.py` | Match, present; showcase form. Its Purpose column says "one accepted value and one refusal per helper", but the Risks section explicitly settles this at three cases (`finite` accepted, `level` refused, `snapshot_mapping` refused) rather than one pair per each of the four helpers — `window_length` is not separately showcased. Read as the Risks section governing over the Purpose column's looser phrasing; `.claude/rules/python.md` asks for "two or three cases" per module, not exhaustive per-function coverage, and three cases is what is built. Not a mismatch; flagged here as a pre-existing wording looseness in the plan itself, nothing to fix in code. |
+| `Modulator` re-exported from `heatingsystem` | Match — `heatingsystem/__init__.py` imports it and lists it in `__all__`, alphabetical. |
+
+No **Missing**, no **Deviation** needing a plan edit, no **Unplanned** public surface: every private helper
+(`_heating_mode`, `_to_command`, `_load_history`, `_to_dict`, `_from_dict`) is `_`-prefixed and correctly left
+out of `STRUCTURE.md`. The `# type: ignore[arg-type]` on `_heating_mode`'s `HeatingMode(value)` call and on
+`Modulator._from_dict`'s `mode=data["mode"]` both carry the narrowing code plus a same-line reason, as
+`.claude/rules/python.md` requires; judged compliant, nothing to fix.
+
+### Structure audit (by hand — subagents cannot spawn subagents here)
+
+- Tree: `modulator/` and `pi_controller/` both listed under `src/heatingsystem/`, matching disk.
+- New sections present, each headed by its literal repo-relative path so the stop gate's substring match
+  finds it: `src/heatingsystem/_validation.py`, `src/heatingsystem/modulator/__init__.py`,
+  `src/heatingsystem/modulator/modulator.py` — all three exist verbatim as section headers.
+- The controller's section is rewritten: constants/enum rows removed, delegation noted in the prose and in
+  each delegating property's row, `update`/`reset`/`to_dict`/`from_dict` rows describe the modulator split.
+- All three `__init__` export tables present and correct: package root (`HeatingMode`, `Modulator`,
+  `PIController`, `OUTPUT_MIN`, `OUTPUT_MAX`), `modulator/__init__.py` and `pi_controller/__init__.py`
+  prose both match their actual re-exports.
+- No private name (`_heating_mode`, `_to_command`, `_load_history`, `_to_dict`, `_from_dict`, `_finite`,
+  `_window_length`, `_level` — the last three no longer exist anywhere) appears in any signature table.
+- `tests/test_modulator.py` is correctly **absent** from both disk and `STRUCTURE.md`'s Tests section —
+  the plan's own step 3 implementation notes defer it to step 5, and `structure_problems()` confirms no
+  drift (see below).
+- Direct stop-gate cross-check: `structure_problems(Path("."))`, `missing_init_files(Path("."))` and
+  `stray_test_files(Path("."))` each returned `[]`.
+- README: one sentence added after the usage block naming `hs.Modulator` as reusable by a future model.
+
+### Module showcases
+
+```
+$ python -m heatingsystem.pi_controller.pi_controller
+<frozen runpy>:128: RuntimeWarning: 'heatingsystem.pi_controller.pi_controller' found in
+sys.modules after import of package 'heatingsystem.pi_controller', but prior to execution
+of 'heatingsystem.pi_controller.pi_controller'; this may result in unpredictable behaviour
+=== HeatingMode enum ===
+  HeatingMode.RADIATOR = 'radiator'
+  HeatingMode.FLOOR_HEATING = 'floor_heating'
+=== RADIATOR mode (5-step warm-up) ===
+  ... (unchanged from round 3) ...
+=== State snapshot and restore ===
+  snapshot JSON          : {"kp": 0.3, "ki": 0.015, "setpoint": 21.0, "mode": "radiator",
+  "history_length": 24, "fixed_output": 0.2, "integral": 6.0, "history": [0.2, 0.2]}
+  restored fixed_output  : 0.2
+  next command (saved)   : 0.2000
+  next command (restored): 0.2000
+  Bad snapshot            -> ValueError: snapshot is missing keys [...]
+All demonstrations completed successfully.
+Exit code: 0 (RuntimeWarning expected per .claude/rules/python.md)
+
+$ python -m heatingsystem.modulator.modulator
+<frozen runpy>:128: RuntimeWarning: ... (same expected warning, re-exported submodule)
+=== HeatingMode enum ===
+  HeatingMode.RADIATOR = 'radiator'
+  HeatingMode.FLOOR_HEATING = 'floor_heating'
+=== RADIATOR mode: pass-through ===
+  command(0.42) = 0.42  history=(0.42,)
+=== FLOOR_HEATING mode: duty-cycle convergence ===
+  demand=0.25  duty_cycle=0.250  history=(0.0, 0.0, 1.0, 0.0)
+=== fixed_output override ===
+  fixed_output=1.0  command(0.25) = 1.0
+  released and reset: fixed_output=None  history=()
+Exit code: 0
+
+$ python -m heatingsystem._validation
+<frozen runpy>:128: RuntimeWarning: ... (same expected warning)
+finite('kp', -0.0) = 0.0
+level('fixed_output', 1.5, 0.0, 1.0) -> ValueError: fixed_output must be in [0.0, 1.0], got 1.5.
+snapshot_mapping({'kp': 0.3}, frozenset({'ki', 'kp'})) -> ValueError: snapshot is missing keys ['ki'].
+Exit code: 0
+```
+
+Also run, though outside this step's required checklist, as a belt-and-suspenders check that the untouched
+`test.py` still works against the delegating controller: `MPLBACKEND=Agg python test.py` printed
+`Saved figure to simulation.png` and the file was written, exit code 0.
+
+### Nothing fixed here
+
+No mismatch, no ruff/mypy/pytest failure, no showcase defect. Nothing needed a code change at this step;
+the log above records what was checked and confirms each check's result.
 
 ---
 
