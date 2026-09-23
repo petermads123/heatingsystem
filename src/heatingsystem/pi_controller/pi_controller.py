@@ -159,7 +159,8 @@ class HeatingMode(StrEnum):
         RADIATOR: Continuous modulation — the demand level is forwarded
             directly to the valve driver.
         FLOOR_HEATING: Binary on/off derived from duty-cycle modulation
-            over a rolling 2-hour window (24 samples × 5 min).
+            over a rolling window of ``history_length`` samples (the
+            default 24 is 2 hours at 5-minute polling).
     """
 
     RADIATOR = "radiator"
@@ -271,7 +272,8 @@ class PIController:
         self.integral = 0.0
 
         # Rolling window of past actuator commands.
-        # maxlen=24 at 5-min intervals == 2 h of history for duty-cycle tracking.
+        # history_length samples of history for duty-cycle tracking (the
+        # default 24 is 2 h at 5-min intervals).
         self._history: deque[float] = deque(maxlen=self._history_length)
 
         # Clamped PI result of the last update(); None before the first step.
@@ -751,8 +753,8 @@ class PIController:
         * Otherwise the slot is ON when the realised duty cycle so far
           (mean of the trailing window) is below the target ``level``.  Over
           many cycles this causes the ON-fraction to converge to ``level``,
-          which is why a long window (24 samples = 2 h at 5-min intervals)
-          is needed for good modulation fidelity.
+          which is why a long window (the default 24 samples is 2 h at
+          5-min intervals) is needed for good modulation fidelity.
 
         This method is called BEFORE the new command is appended to the
         history, so :attr:`duty_cycle` reflects only past samples.
