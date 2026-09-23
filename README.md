@@ -61,7 +61,7 @@ command = floor.update(measured_temp)  # 0.0 (off) or 1.0 (on)
 print(f"Floor heating: {'ON' if command else 'OFF'}")
 print(f"Duty cycle over window: {floor.duty_cycle:.2f}")
 
-# --- Reset (e.g. on controller restart or setpoint change) ---
+# --- Reset (start the loop afresh while keeping every setting) ---
 radiator.reset()  # zeroes the integral accumulator and clears the history window
 
 # --- Fixed output override (e.g. hold the valve shut during a price spike) ---
@@ -80,7 +80,29 @@ radiator.fixed_output = None  # release the override; update() resumes the PI re
 # raises ValueError, TypeError or OverflowError naming it, and no controller is produced.
 state = radiator.to_dict()
 radiator_restored = hs.PIController.from_dict(state)
+
+# On startup: restore if a snapshot exists and is usable, otherwise start fresh.
+try:
+    radiator = hs.PIController.from_dict(state)
+except (TypeError, ValueError, OverflowError):
+    radiator = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
 ```
+
+A few things to know when the snapshot meets your own configuration on the next startup:
+
+- **Your configuration wins.** The snapshot carries the settings it was saved with. Restore
+  first, then assign `kp`, `ki`, `setpoint`, `mode` and `fixed_output` from your config;
+  the running state is kept and the settings are yours.
+- **A shrunk window needs the history trimmed first.** `history_length` is the one setting
+  that cannot be re-applied after restore, and a history longer than the window is
+  refused. If you changed it from 24 to 12, set `state["history_length"] = 12` and
+  `state["history"] = state["history"][-12:]` before calling `from_dict`.
+- **Keep your own metadata outside the dict.** An unknown key is refused, so store
+  something like `{"saved_at": ..., "controller": radiator.to_dict()}` rather than adding
+  keys to the snapshot itself.
+- **A stale snapshot is restored, then reset.** After a long outage the saved integral and
+  window describe a room that no longer exists. `from_dict` followed by `reset()` keeps the
+  settings and any hold and discards the running state.
 
 The PI loop keeps running underneath a hold: the integral goes on accumulating the error
 the room builds up, and the fixed commands are recorded in `history` like any others. So
