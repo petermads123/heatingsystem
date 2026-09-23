@@ -21,16 +21,35 @@ A controller's output can also be pinned to a fixed level via
 calculation, including the integral, keeps running underneath it.
 """
 
+import json
 import math
 import numbers
+import sys
 from collections import deque
+from collections.abc import Mapping
 from enum import StrEnum
+from typing import Self
 
 # ---------------------------------------------------------------------------
 # Module-level output clamp constants — the actuator range is always [0, 1].
 # ---------------------------------------------------------------------------
 OUTPUT_MIN: float = 0.0
 OUTPUT_MAX: float = 1.0
+
+# The exact key set a snapshot from to_dict() must have for from_dict() to
+# accept it; a missing or extra key is refused rather than partially applied.
+_SNAPSHOT_KEYS: frozenset[str] = frozenset(
+    {
+        "kp",
+        "ki",
+        "setpoint",
+        "mode",
+        "history_length",
+        "fixed_output",
+        "integral",
+        "history",
+    }
+)
 
 
 def _finite(name: str, value: object) -> float:
@@ -45,7 +64,8 @@ def _finite(name: str, value: object) -> float:
         value: The value to validate.
 
     Returns:
-        ``value`` converted to ``float``.
+        ``value`` converted to ``float``. A negative zero is returned as
+        positive zero.
 
     Raises:
         TypeError: If ``value`` is a ``bool`` or not an
@@ -67,7 +87,65 @@ def _finite(name: str, value: object) -> float:
         raise OverflowError(f"{name} is too large to represent as a float.") from exc
     if not math.isfinite(number):
         raise ValueError(f"{name} must be a finite number, got {value!r}.")
-    return number
+    return number + 0.0
+
+
+def _window_length(value: object) -> int:
+    """Validate a rolling-window length.
+
+    The shared contract behind :attr:`PIController.history_length`: an
+    ``int`` (``bool`` excluded) of at least 1, small enough for a
+    :class:`collections.deque`'s ``maxlen``.
+
+    Args:
+        value: The value to validate.
+
+    Returns:
+        ``value``, unchanged.
+
+    Raises:
+        TypeError: If ``value`` is a ``bool`` or not an ``int``.
+        ValueError: If ``value`` is less than 1.
+        OverflowError: If ``value`` is too large for a ``deque``'s
+            ``maxlen`` to hold.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(
+            f"history_length must be an int, got {value!r} ({type(value).__name__})."
+        )
+    if value < 1:
+        raise ValueError(f"history_length must be >= 1, got {value}.")
+    if value > sys.maxsize:
+        raise OverflowError(f"history_length is too large, got {value}.")
+    return value
+
+
+def _level(name: str, value: object) -> float:
+    """Validate a value as a finite level in the actuator range.
+
+    Builds on :func:`_finite`, adding the ``[OUTPUT_MIN, OUTPUT_MAX]`` range
+    check shared by :attr:`PIController.fixed_output` and by each entry of
+    a restored :attr:`PIController.history`.
+
+    Args:
+        name: The attribute or parameter name, used in the error message.
+        value: The value to validate.
+
+    Returns:
+        ``value`` converted to ``float``.
+
+    Raises:
+        TypeError: If ``value`` is a ``bool`` or not a real number.
+        ValueError: If ``value`` is not finite, or lies outside
+            ``[OUTPUT_MIN, OUTPUT_MAX]``.
+        OverflowError: If ``value`` is too large to represent as a float.
+    """
+    level = _finite(name, value)
+    if level < OUTPUT_MIN or level > OUTPUT_MAX:
+        raise ValueError(
+            f"{name} must be in [{OUTPUT_MIN}, {OUTPUT_MAX}], got {value!r}."
+        )
+    return level
 
 
 class HeatingMode(StrEnum):
@@ -90,11 +168,12 @@ class HeatingMode(StrEnum):
 class PIController:
     """Discrete-time PI controller for residential heating.
 
-    Every setting — ``kp``, ``ki``, ``mode``, ``setpoint`` and
-    ``fixed_output`` — is a validating property: assigning it, at
+    Every setting — ``kp``, ``ki``, ``mode``, ``setpoint``, ``fixed_output``
+    and ``integral`` — is a validating property: assigning it, at
     construction or afterwards, raises on a bad value and leaves the
-    previous value unchanged. ``integral`` remains a plain public
-    attribute.
+    previous value unchanged. ``history_length`` is validated at
+    construction and exposed as a read-only property; the window itself
+    cannot be resized afterwards.
 
     The controller is stateful: it accumulates an integral term across
     successive :meth:`update` calls and maintains a rolling window of
@@ -104,6 +183,11 @@ class PIController:
     is only advanced when the raw PI output is inside the valid output
     range, or when integration would pull a saturated output back toward
     the valid range.
+
+    The controller's complete state — every setting plus the running
+    state — can be captured with :meth:`to_dict` and rebuilt with
+    :meth:`from_dict`, for a caller (Home Assistant / AppDaemon) that
+    needs to persist a controller across a restart or a code reload.
 
     Args:
         kp: Proportional gain.  Default ``0.3``.  Must be a finite real
@@ -116,9 +200,9 @@ class PIController:
         setpoint: Initial temperature setpoint in °C.  Default ``21.0``.
             Same numeric contract as ``kp``.
         history_length: Length of the rolling command window used for
-            duty-cycle calculation in floor-heating mode.  Must be ≥ 1.
-            At 5-minute polling intervals, ``24`` equals 2 hours.
-            Default ``24``.
+            duty-cycle calculation in floor-heating mode.  Must be an
+            ``int`` of at least 1; ``bool`` is rejected.  At 5-minute
+            polling intervals, ``24`` equals 2 hours.  Default ``24``.
         fixed_output: Optional fixed actuator level in
             ``[OUTPUT_MIN, OUTPUT_MAX]``.  While set, :meth:`update`
             returns this level (mode-mapped) instead of the PI result.
@@ -130,6 +214,9 @@ class PIController:
     Raises:
         ValueError: If ``mode`` is not a valid :class:`HeatingMode` value.
         ValueError: If ``history_length`` is less than 1.
+        TypeError: If ``history_length`` is a ``bool`` or not an ``int``.
+        OverflowError: If ``history_length`` is too large for a rolling
+            window to hold.
         ValueError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output``
             are not finite numbers (e.g. ``nan``, ``inf``), or
             ``fixed_output`` is not ``None`` and lies outside
@@ -151,6 +238,8 @@ class PIController:
     _ki: float
     _setpoint: float
     _mode: HeatingMode
+    _history_length: int
+    _integral: float
 
     def __init__(
         self,
@@ -171,19 +260,18 @@ class PIController:
         """
         self.mode = mode
 
-        if history_length < 1:
-            raise ValueError(f"history_length must be >= 1, got {history_length}.")
+        self._history_length = _window_length(history_length)
 
         self.kp = kp
         self.ki = ki
         self.setpoint = setpoint
 
         # Integral accumulator, reset to zero on construction and via reset().
-        self.integral: float = 0.0
+        self.integral = 0.0
 
         # Rolling window of past actuator commands.
         # maxlen=24 at 5-min intervals == 2 h of history for duty-cycle tracking.
-        self._history: deque[float] = deque(maxlen=history_length)
+        self._history: deque[float] = deque(maxlen=self._history_length)
 
         # Clamped PI result of the last update(); None before the first step.
         self._pi_output: float | None = None
@@ -225,6 +313,14 @@ class PIController:
                 finite.
             OverflowError: If ``measured`` or the new ``setpoint`` is too
                 large to represent as a float.
+
+        Note:
+            Reachable only with extreme finite inputs: if the raw PI sum
+            or the tentative integral is not finite, the PI demand is
+            treated as ``OUTPUT_MIN`` (:attr:`pi_output` reads ``0.0``)
+            and the integral is held rather than advanced. While
+            :attr:`fixed_output` is set the command is unaffected, since
+            the fixed level replaces the demand regardless.
         """
         measured = _finite("measured", measured)
 
@@ -243,8 +339,13 @@ class PIController:
         new_integral: float = self.integral + error
         raw: float = self.kp * error + self.ki * new_integral
 
+        # Reachable only with extreme finite inputs: a non-finite raw sum or
+        # tentative integral (kp * -inf, an overflowing integral, ...) closes
+        # the valve and holds the integral rather than propagating nan/inf.
+        finite: bool = math.isfinite(raw) and math.isfinite(new_integral)
+
         # Clamp raw output to the actuator's physical range.
-        u: float = max(OUTPUT_MIN, min(OUTPUT_MAX, raw))
+        u: float = max(OUTPUT_MIN, min(OUTPUT_MAX, raw)) if finite else OUTPUT_MIN
         self._pi_output = u
 
         # Anti-windup — only commit the new integral when it is useful:
@@ -256,16 +357,18 @@ class PIController:
         #     error > 0, i.e. measurement is falling and integration will
         #     push the output back up toward the valid range.
         #   Otherwise: hold the old integral to avoid making windup worse.
-        if OUTPUT_MIN < raw < OUTPUT_MAX:
-            # Inside the linear region — unrestricted integration.
-            self.integral = new_integral
-        elif raw >= OUTPUT_MAX and error < 0:
-            # Saturated high but cooling trend: allow integration to wind down.
-            self.integral = new_integral
-        elif raw <= OUTPUT_MIN and error > 0:
-            # Saturated low but warming trend: allow integration to wind up.
-            self.integral = new_integral
-        # else: output is saturated and error would deepen the windup — hold.
+        if finite:
+            if OUTPUT_MIN < raw < OUTPUT_MAX:
+                # Inside the linear region — unrestricted integration.
+                self.integral = new_integral
+            elif raw >= OUTPUT_MAX and error < 0:
+                # Saturated high but cooling trend: allow integration to wind down.
+                self.integral = new_integral
+            elif raw <= OUTPUT_MIN and error > 0:
+                # Saturated low but warming trend: allow integration to wind up.
+                self.integral = new_integral
+            # else: output is saturated and error would deepen windup — hold.
+        # When raw/new_integral is not finite, the integral is held above.
 
         # --- Map demand level to actuator command ---
         # While fixed_output is set, it replaces the PI result u as the
@@ -292,6 +395,115 @@ class PIController:
         self.integral = 0.0
         self._history.clear()
         self._pi_output = None
+
+    def to_dict(self) -> dict[str, object]:
+        """Capture the controller's complete state as a snapshot.
+
+        Every setting and every piece of running state, as built-in types
+        ``json.dumps`` accepts: the gains, the setpoint, the mode as its
+        string value, the window length, the fixed-output hold, the
+        integral accumulator, and the command history oldest first. The PI
+        demand (:attr:`pi_output`) is derived, not stored, and is not part
+        of the snapshot.
+
+        Returns:
+            A fresh ``dict`` with exactly the keys ``kp``, ``ki``,
+            ``setpoint``, ``mode``, ``history_length``, ``fixed_output``,
+            ``integral`` and ``history``. The dict and its ``history`` list
+            are copies: changing either afterwards, or updating the
+            controller, leaves the other unchanged.
+        """
+        return {
+            "kp": self.kp,
+            "ki": self.ki,
+            "setpoint": self.setpoint,
+            "mode": self.mode.value,
+            "history_length": self.history_length,
+            "fixed_output": self.fixed_output,
+            "integral": self.integral,
+            "history": list(self._history),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object]) -> Self:
+        """Rebuild a controller from a snapshot produced by :meth:`to_dict`.
+
+        Every value is applied through the same validating setter or check
+        a direct assignment would go through, so a bad snapshot raises
+        exactly what a bad assignment would, naming the offending key, and
+        no controller is produced.
+
+        Args:
+            data: A mapping with exactly the keys ``to_dict`` produces:
+                ``kp``, ``ki``, ``setpoint``, ``mode``, ``history_length``,
+                ``fixed_output``, ``integral`` and ``history``.
+
+        Returns:
+            A new controller equal to the one ``to_dict`` was called on, in
+            every setting and in :attr:`integral`, :attr:`history`,
+            :attr:`duty_cycle`, :attr:`is_history_full` and
+            :attr:`fixed_output`. :attr:`pi_output` is ``None``, as it is
+            on any freshly constructed controller.
+
+        Raises:
+            TypeError: If ``data`` is not a ``Mapping``, naming it; if
+                ``history`` is not a list or tuple, naming it; or if a
+                value is not the type its setter or check requires, naming
+                the key (``history[i]`` for an entry).
+            ValueError: If a key is missing or unknown, naming the keys;
+                if ``mode`` is not a valid :class:`HeatingMode` value; if
+                ``history`` has more entries than ``history_length``; or if
+                a numeric value is out of range, naming the key.
+            OverflowError: If a numeric value is too large to represent as
+                a float, naming the key.
+        """
+        if not isinstance(data, Mapping):
+            raise TypeError(f"snapshot must be a mapping, got {type(data).__name__}.")
+
+        missing = sorted(_SNAPSHOT_KEYS - data.keys())
+        if missing:
+            raise ValueError(f"snapshot is missing keys {missing}.")
+        unknown = sorted(data.keys() - _SNAPSHOT_KEYS)
+        if unknown:
+            raise ValueError(f"snapshot has unknown keys {unknown}.")
+
+        mode = data["mode"]
+        if not isinstance(mode, (HeatingMode, str)):
+            valid = [m.value for m in HeatingMode]
+            raise ValueError(
+                f"mode must be a HeatingMode or one of {valid}, got {mode!r}."
+            )
+
+        fixed = data["fixed_output"]
+        fixed_output = None if fixed is None else _finite("fixed_output", fixed)
+
+        history = data["history"]
+        if not isinstance(history, (list, tuple)):
+            raise TypeError(
+                f"history must be a list, got {history!r} ({type(history).__name__})."
+            )
+
+        controller = cls(
+            kp=_finite("kp", data["kp"]),
+            ki=_finite("ki", data["ki"]),
+            mode=mode,
+            setpoint=_finite("setpoint", data["setpoint"]),
+            history_length=_window_length(data["history_length"]),
+            fixed_output=fixed_output,
+        )
+        controller.integral = _finite("integral", data["integral"])
+
+        if len(history) > controller.history_length:
+            raise ValueError(
+                f"history has {len(history)} entries but history_length is "
+                f"{controller.history_length}."
+            )
+        levels: list[float] = []
+        for i, entry in enumerate(history):
+            levels.append(_level(f"history[{i}]", entry))
+        controller._history.extend(levels)
+
+        return controller
 
     # ------------------------------------------------------------------
     # Properties
@@ -388,6 +600,38 @@ class PIController:
         self._setpoint = _finite("setpoint", value)
 
     @property
+    def history_length(self) -> int:
+        """The rolling command-window length given at construction.
+
+        Read-only: the window is sized once, at construction, and a
+        restore through :meth:`from_dict` builds a new controller rather
+        than resizing this one.
+        """
+        return self._history_length
+
+    @property
+    def integral(self) -> float:
+        """The integral accumulator."""
+        return self._integral
+
+    @integral.setter
+    def integral(self, value: float) -> None:
+        """Set the integral accumulator.
+
+        Args:
+            value: A finite real number. ``bool`` is rejected.
+
+        Raises:
+            TypeError: If ``value`` is not a real number, ``bool``
+                included. The previous value is left unchanged.
+            ValueError: If ``value`` is not finite. The previous value is
+                left unchanged.
+            OverflowError: If ``value`` is too large to represent as a
+                float. The previous value is left unchanged.
+        """
+        self._integral = _finite("integral", value)
+
+    @property
     def history(self) -> tuple[float, ...]:
         """Immutable snapshot of the command history, oldest to newest.
 
@@ -421,7 +665,7 @@ class PIController:
             ``True`` once :attr:`history` contains ``history_length``
             samples; ``False`` during the initial warm-up period.
         """
-        return len(self._history) == self._history.maxlen
+        return len(self._history) == self._history_length
 
     @property
     def pi_output(self) -> float | None:
@@ -472,13 +716,7 @@ class PIController:
         if value is None:
             self._fixed_output = None
             return
-        level = _finite("fixed_output", value)
-        if level < OUTPUT_MIN or level > OUTPUT_MAX:
-            raise ValueError(
-                f"fixed_output must be a finite number in "
-                f"[{OUTPUT_MIN}, {OUTPUT_MAX}] or None, got {value!r}."
-            )
-        self._fixed_output = level
+        self._fixed_output = _level("fixed_output", value)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -540,9 +778,11 @@ def main() -> None:
     :attr:`~PIController.duty_cycle`, :attr:`~PIController.is_history_full`
     and :attr:`~PIController.pi_output` properties, a :attr:`~PIController.mode`
     reassignment, and the effect of :meth:`~PIController.reset`.  It also
-    demonstrates the ``HeatingMode`` enum directly and shows that invalid
-    or non-numeric constructor and attribute values raise
-    :class:`ValueError` or :class:`TypeError`.
+    demonstrates the ``HeatingMode`` enum directly, a state snapshot round
+    trip through :meth:`~PIController.to_dict` and
+    :meth:`~PIController.from_dict` (including a JSON round trip), and shows
+    that invalid or non-numeric constructor and attribute values, and an
+    invalid snapshot, raise :class:`ValueError` or :class:`TypeError`.
     """
     print("=== HeatingMode enum ===")
     for hm in HeatingMode:
@@ -637,6 +877,35 @@ def main() -> None:
         ctrl_floor.update(measured=19.0)
     print(f"  is_history_full : {ctrl_floor.is_history_full}")
     print(f"  duty_cycle      : {ctrl_floor.duty_cycle:.3f}")
+
+    print("\n=== State snapshot and restore ===")
+    # A fresh controller, unrelated to ctrl_rad and ctrl_floor above, holding
+    # a fixed_output override -- the case a restart must not lose.
+    hold_level = 0.2  # None, or a level in [0, 1]
+    ctrl_saved = PIController(kp=0.3, ki=0.015, setpoint=21.0, fixed_output=hold_level)
+    cold_measurement = 18.0
+
+    ctrl_saved.update(measured=cold_measurement)
+    ctrl_saved.update(measured=cold_measurement)
+
+    snapshot = ctrl_saved.to_dict()
+    text = json.dumps(snapshot)
+    restored = PIController.from_dict(json.loads(text))
+
+    next_saved = ctrl_saved.update(measured=cold_measurement)
+    next_restored = restored.update(measured=cold_measurement)
+
+    print(f"  snapshot JSON          : {text}")
+    print(f"  restored fixed_output  : {restored.fixed_output}")
+    print(f"  next command (saved)   : {next_saved:.4f}")
+    print(f"  next command (restored): {next_restored:.4f}")
+
+    # A snapshot missing a required key raises ValueError naming it.
+    bad_snapshot = {"kp": 0.3}
+    try:
+        PIController.from_dict(bad_snapshot)
+    except ValueError as exc:
+        print(f"  Bad snapshot            -> ValueError: {exc}")
 
     # Demonstrate reassigning mode on an existing (just-reset) controller.
     print("\n  -- mode reassigned on the radiator controller --")

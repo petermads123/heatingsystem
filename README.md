@@ -71,6 +71,15 @@ radiator.fixed_output = 0.0  # update() now returns 0.0 regardless of measured_t
 output = radiator.update(measured_temp)
 print(radiator.pi_output)  # the PI demand the loop would have issued, unheld
 radiator.fixed_output = None  # release the override; update() resumes the PI result
+
+# --- State snapshot (e.g. survive a Home Assistant restart or AppDaemon reload) ---
+# to_dict() captures every setting and every piece of running state as a plain dict
+# of built-in types, which json.dumps accepts directly. Store it however suits you —
+# a file, a Home Assistant entity attribute — and hand it back to from_dict() on
+# startup to rebuild an equivalent controller. A missing, unknown or invalid key
+# raises ValueError or TypeError naming it, and no controller is produced.
+state = radiator.to_dict()
+radiator_restored = hs.PIController.from_dict(state)
 ```
 
 The PI loop keeps running underneath a hold: the integral goes on accumulating the error

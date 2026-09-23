@@ -1,6 +1,6 @@
 # State snapshot and restore
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,8 +18,8 @@ conventional name `feat/fixed-output`.
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | in progress |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
+| 4 | Verify | `/verify` | in `/build` | in progress |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -392,6 +392,26 @@ Findings from the `plan-critic` read, verdict *accept with changes*; all nine ap
 
 > Written in step 3. Only deviations from the plan above, each with its reason. "Built as
 > planned" is a complete and good entry.
+
+Built as planned, with two showcase-only choices the guide left open:
+
+- The state-snapshot showcase section binds its own `cold_measurement = 18.0` rather than
+  reusing the `cold_temp` variable from the earlier `fixed_output` demo, so the new section
+  reads as a self-contained worked example (per the showcase form's "named variable per
+  argument") without relying on a binding from an unrelated section two cases above it.
+  Same value, so no printed output elsewhere changes.
+- `from_dict`'s history loop is written as an explicit `for i, entry in enumerate(history):
+  levels.append(...)` exactly as the guide specifies, rather than a comprehension, so a
+  failure on entry `i` still leaves `levels` (and therefore the controller, which is
+  discarded on any exception) untouched at the point of failure.
+
+Every other step of the implementation guide (1–9, 10, 11) was followed as written,
+including the exact helper names (`_window_length`, `_level`), the `_SNAPSHOT_KEYS`
+module-level constant, the finite guard shaped as `if finite: ...` around the existing
+three-branch anti-windup chain with the clamp line's ternary, the `-0.0` normalisation
+added to `_finite`'s return, and the showcase placed after the floor-heating run and before
+the `mode` reassignment on a fresh controller. The Public API table in section 2 matches
+the code character for character; no signature changed from what is written there.
 
 ---
 
