@@ -43,8 +43,9 @@ _KEYS: frozenset[str] = frozenset({"mode", "history_length", "fixed_output", "hi
 class HeatingMode(StrEnum):
     """Heating actuator mode.
 
-    Selects how the demand level (the PI output, or the fixed output when
-    one is set) is translated into an actuator command.
+    Selects how the demand level (a PI controller's output, or any other
+    model's demand, or the fixed output when one is set) is translated
+    into an actuator command.
 
     Attributes:
         RADIATOR: Continuous modulation — the demand level is forwarded
@@ -115,12 +116,10 @@ class Modulator:
         TypeError: If ``history_length`` is a ``bool`` or not an ``int``.
         OverflowError: If ``history_length`` is too large for a rolling
             window to hold.
-        ValueError: If ``fixed_output`` is not a finite number (e.g.
-            ``nan``, ``inf``) or lies outside ``[OUTPUT_MIN, OUTPUT_MAX]``.
-        TypeError: If ``fixed_output`` is not a real number, ``bool``
-            included; the message names the attribute.
-        OverflowError: If ``fixed_output`` is too large to represent as a
-            ``float``; the message names the attribute.
+        TypeError, ValueError, OverflowError: See
+            :mod:`heatingsystem._validation` for the numeric contract
+            behind ``fixed_output`` (plus its range check); raised naming
+            the attribute.
     """
 
     _mode: HeatingMode
@@ -160,11 +159,12 @@ class Modulator:
     def command(self, level: float) -> float:
         """Map a demand level to this step's actuator command.
 
-        While :attr:`fixed_output` is set, it replaces ``level`` as the
-        target handed to the mode mapping. The window is read (for
-        floor-heating's duty cycle) BEFORE this step's command is
-        appended, so the command does not factor into its own
-        calculation.
+        ``level`` is validated first, even while :attr:`fixed_output` is
+        set — an invalid demand still raises, though the target the
+        validated demand feeds into is then replaced by the hold. The
+        window is read (for floor-heating's duty cycle) BEFORE this
+        step's command is appended, so the command does not factor into
+        its own calculation.
 
         Args:
             level: Demand level in ``[OUTPUT_MIN, OUTPUT_MAX]`` — the PI
@@ -253,14 +253,12 @@ class Modulator:
                 accepted and read back as a float.
 
         Raises:
-            TypeError: If ``value`` is not ``None`` and is not a real
-                number, ``bool`` included. The previous setting is left
-                unchanged.
-            ValueError: If ``value`` is not ``None`` and is not finite or
-                lies outside [``OUTPUT_MIN``, ``OUTPUT_MAX``]. The previous
-                setting is left unchanged.
-            OverflowError: If ``value`` is too large to represent as a
-                float. The previous setting is left unchanged.
+            TypeError, ValueError, OverflowError: See
+                :mod:`heatingsystem._validation` for the numeric contract:
+                raised naming ``fixed_output`` for a value that is not
+                ``None`` and fails it (including a value outside
+                [``OUTPUT_MIN``, ``OUTPUT_MAX``]); the previous setting is
+                left unchanged.
         """
         if value is None:
             self._fixed_output = None

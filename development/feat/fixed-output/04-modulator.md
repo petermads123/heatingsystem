@@ -1,6 +1,6 @@
 # Modulator: the actuator mapping as its own object
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -20,8 +20,8 @@ conventional name `feat/fixed-output`.
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | in progress |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
+| 6 | Concept check | `/concept-check` | in `/build` | in progress |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -585,10 +585,93 @@ the log above records what was checked and confirms each check's result.
 
 > Written in step 5: the dynamic half.
 
+Two `test-designer` briefs (`input-space`, `contract`) ran in parallel; the orchestrator
+saved their merged output to a scratchpad file and this step read it as their returns
+(subagents cannot spawn subagents in this environment). Every hand-computed number and
+every error message in both briefs was re-verified against the shipped code with the venv
+Python before being written into an assertion; all of them matched exactly except one
+self-contradiction in the brief's own phrasing, corrected below. `tests/test_modulator.py`
+and `tests/test_validation.py` were added per X3, so every module in `src/heatingsystem/`
+now has its own `test_<module>.py`. X1's docstring consolidation and X5's optional wording
+were applied to `pi_controller.py`, `modulator.py` and `_validation.py` — documentation
+only, no behaviour change; re-verified with `ruff check .`, `ruff format --check .` and
+`mypy` after each edit.
+
 | Intent | Test names | Result |
 |---|---|---|
+| T1 (D1, D7) | `tests/test_modulator.py`: `test_construction_defaults`, `test_mode_rejects_everything_except_valid_values`, `test_history_length_rejects_everything_except_a_positive_int`, `test_history_length_sys_maxsize_is_accepted`, `test_history_length_is_read_only`, `test_constructor_is_keyword_only_after_mode`, `test_fixed_output_rejects_bad_values_at_construction_and_setter`, `test_three_fault_construction_names_mode_first_two_fault_names_history_length`, `test_errors_are_identical_in_class_and_message_to_the_controllers`, `test_mode_and_fixed_output_setters_keep_the_previous_value_on_failure`, `test_reset_clears_window_and_keeps_mode_length_and_hold`, `test_reset_is_a_no_op_when_called_twice`, `test_command_radiator_pass_through`, `test_command_floor_heating_binary_output`, `test_command_reads_window_before_appending`, `test_command_tie_at_exact_duty_rests_the_slot`, `test_command_accepts_range_edges_exactly`, `test_command_rejects_one_step_outside_the_range`, `test_command_rejects_non_real_types_naming_level`, `test_command_rejects_decimal_complex_list_and_bytes_naming_level`, `test_command_rejects_non_finite_level`, `test_command_rejects_huge_int_level_with_overflow_error`, `test_command_validates_level_even_while_the_hold_is_set`, `test_command_negative_zero_returns_positive_zero_in_both_modes`, `test_command_accepts_int_and_fraction_and_returns_float`, `test_command_fraction_range_error_repeats_the_original_value`, `test_mode_switch_mid_run_reads_fractional_radiator_history`, `test_schedule_quarter_level_is_identical_as_demand_and_as_a_hold`, `test_schedule_history_length_one_alternates_every_slot`, `test_schedule_level_just_above_min_fires_exactly_one_slot_per_window`, `test_schedule_level_just_below_max_rests_exactly_one_slot_per_window` | pass |
+| T2 (D3) | `tests/test_modulator.py`: `test_private_snapshot_has_four_keys_in_order_and_is_a_copy`, `test_private_snapshot_refuses_the_controllers_eight_key_snapshot`, `test_private_snapshot_reports_missing_keys_before_unknown_ones`, `test_private_snapshot_refuses_a_non_mapping`, `test_load_history_is_atomic_and_checks_length_before_entries`, `test_subclass_from_dict_returns_an_instance_of_the_subclass` | pass |
+| T3 | `tests/test_pi_controller.py`: `test_public_names_are_identical_across_every_import_path` | pass |
+| T4 (D3) | `tests/test_pi_controller.py`: `test_to_dict_matches_the_round_3_literal_byte_for_byte`, `test_from_dict_round_3_floor_literal_restores_and_reserialises_to_itself` | pass |
+| T5 (D4) | `tests/test_pi_controller.py`: `test_reset_then_to_dict_equals_fresh_controller_with_current_settings` (both legs: run-and-held, and restored-then-reset) | pass |
+| T6 (D5) | `tests/test_modulator.py`: `test_helpers_and_mode_coercion_exist_once_and_are_shared`, `test_errors_are_identical_in_class_and_message_to_the_controllers`; pre-existing `tests/test_pi_controller.py::test_from_dict_raises_identical_error_type_and_message_as_the_setter` still passes unchanged, as the plan anticipated | pass |
+| T7 (D6) | `tests/test_pi_controller.py`: `test_update_reset_and_construction_bypass_a_raising_integral_setter`; pre-existing `test_integral_setter_matches_the_numeric_family_contract` and every round-1/round-2 hand-computed and twin-integral test still pass unchanged | pass |
+| T8 (D2, D7) | Full `pytest` run, 713 passed; the four reshaped tests (`test_fixed_output_floor_quarter_level_converges_to_exact_fraction`, `test_fixed_output_floor_history_length_one_alternates`, `test_fixed_output_floor_level_just_above_min_fires_once_per_window`, `test_fixed_output_floor_level_just_below_max_rests_once_per_window`) pass with their remaining assertions; no other pre-round test was touched | pass |
+
+X4's finding (the `update` row's "a raise leaves state untouched" reads as absolute, but a
+passed `setpoint` is stored before the modulator is reached) is confirmed real but
+unreachable with the shipped modulator, whose `command` never raises for an in-range `u`.
+`test_update_leaves_integral_pi_output_and_history_untouched_when_modulator_raises` proves
+the documented guarantee using a monkeypatched, deliberately-raising `Modulator.command`,
+and deliberately does not pass a `setpoint` to the raising call, so it does not exercise the
+gap X4 found. `STRUCTURE.md`'s `update` row is accurate as written (a raise from validation
+stores nothing); the class docstring's stronger-sounding note is a pre-existing wording
+looseness, recorded here rather than fixed, since fixing it would mean either weakening the
+guarantee's wording (a documentation regression) or changing `update`'s statement order to
+validate `setpoint` after the modulator call (a behaviour change outside this round's scope,
+since it changes B4-adjacent semantics no acceptance criterion asked for). Left as a step 8
+candidate.
+
+No production bug was found. Every hand-computed number and error message the two briefs
+proposed matched the shipped code exactly on first verification (Bash script runs against
+`.venv/bin/python`, kept out of the suite itself). The only correction made during test
+design was to the test brief's own phrasing, not to production code: Brief A's case 13
+chained "append to the snapshot dict, then use that same now-mutated dict for the
+`_from_dict` round trip" — the appended `99.0` is out of the actuator range, so the chained
+roundtrip would itself raise `ValueError` rather than proving the roundtrip. Rewritten as
+`test_private_snapshot_has_four_keys_in_order_and_is_a_copy`, which checks the mutation is
+inert against `m.history` on one copy and does the `_from_dict` roundtrip on the original,
+unmutated `d` — proving both properties without the contradiction.
 
 Edge cases considered and deliberately skipped, with reasons:
+
+- **Text validation beyond `mode`** (Brief B). `command`'s `level` parameter is numeric-only;
+  a `str` is already covered as a `TypeError` case (`test_command_rejects_non_real_types_naming_level`).
+  No text-specific probe (non-ASCII, whitespace, very long strings) applies to a numeric
+  argument, so the checklist's Text row is vacuous here.
+- **History tuple identity on an empty window** (Brief B). `Modulator.history` always builds
+  a fresh `tuple(self._history)`; there is no singleton-empty-tuple optimisation in the
+  implementation for this to test, and CPython's own empty-tuple interning is not this
+  package's contract to pin.
+- **An `int` subclass as `history_length`** (Brief B). `window_length`'s `isinstance(value, int)`
+  check accepts any `int` subclass (excluding `bool`, which is checked first); no behaviour
+  in this package treats an `int` subclass specially, so a dedicated test would duplicate
+  `test_history_length_rejects_everything_except_a_positive_int`'s existing `bool` case
+  without adding coverage.
+- **Range-error message formatting for integer bounds** (Brief B). Every real caller passes
+  `OUTPUT_MIN`/`OUTPUT_MAX` as `float`s (`0.0`/`1.0`); `level`'s bound formatting for `int`
+  arguments is exercised implicitly by `test_level_bounds_equal_accepts_only_that_exact_value`
+  and `test_level_inverted_bounds_reject_every_value` in `tests/test_validation.py`, which is
+  believed sufficient without a dedicated int-bounds formatting test.
+- **`duty_cycle` floating-point precision at large window sizes** (Brief B). `duty_cycle` is
+  `sum(window) / len(window)`, ordinary float division already exercised by every schedule
+  and convergence test with `pytest.approx`; no window size in this round's scope is large
+  enough to expose a precision concern distinct from those already asserted.
+- **A dedicated multi-fault constructor-order test for `PIController` itself** (beyond
+  `Modulator`'s, which `test_three_fault_construction_names_mode_first_two_fault_names_history_length`
+  pins). Verified by hand while designing tests (`hs.PIController(**kwargs)` reports `mode`
+  before `history_length` before `kp` before `ki` before `setpoint`, exactly matching pre-round
+  behaviour, since the modulator is now built first inside `__init__` and takes `mode` and
+  `history_length` with it) but not written up as its own test, mirroring the plan's own Risks
+  decision to leave `from_dict`'s analogous multi-fault priority "documented nowhere and
+  deliberately untested" — the same reasoning applies to the constructor's priority across the
+  full six-parameter surface, which no acceptance criterion pins.
+- **The `_to_command` docstring's "converges to level" claim** (Brief B's observation (2)).
+  True only to within roughly `1/history_length` (e.g. a two-slot window at demand 0.5 settles
+  to a duty cycle of 1/3, not 0.5) — a pre-existing arithmetic property, not something this
+  round changed. Recorded as a step 8 documentation candidate rather than fixed here, since
+  neither section 1 nor D1–D7 asks for a docstring rewrite and the behaviour itself is
+  unchanged from round 3.
 
 ---
 

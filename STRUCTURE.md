@@ -309,9 +309,111 @@ as the setter itself would — `from_dict` now runs the range check on the origi
 `update`'s output clamp now normalises `-0.0` explicitly with `+ 0.0`, rather than relying
 on `max(OUTPUT_MIN, ...)`'s argument order to return a positive zero by accident.
 
+Round 4 moves the actuator mapping into `Modulator` (see `tests/test_modulator.py` below)
+and delegates to it, so the four tests that used to pin floor heating's exact firing
+schedule here now assert only what `PIController` itself still promises: which slots fire
+is the modulator's concern, not the controller's. `test_fixed_output_floor_quarter_level_converges_to_exact_fraction`
+keeps its `set(outs) <= {0.0, 1.0}`, `duty_cycle` and `is_history_full` assertions and drops
+the exact on-slot list; `test_fixed_output_floor_history_length_one_alternates` replaces its
+exact output list with `outs.count(1.0) == 3` on the same `set(outs) <= {0.0, 1.0}` base;
+`test_fixed_output_floor_level_just_above_min_fires_once_per_window` and
+`test_fixed_output_floor_level_just_below_max_rests_once_per_window` each keep a slot-count
+assertion (`outs.count(1.0) == 1` / `outs.count(0.0) == 1`) and their `duty_cycle` assertion,
+dropping the assertion that pinned *which* slot. Round 3's snapshot-twin tests that happen to
+pin an exact floor history are untouched, since they prove restore equality, not the
+schedule.
+
+Round 4's own additions: `to_dict` reproduces the exact round-3 literal for a held radiator
+controller, key order included, both as a `dict` and through `json.dumps`
+(`test_to_dict_matches_the_round_3_literal_byte_for_byte`); a round-3-shaped floor-heating
+JSON literal restores through `from_dict` and re-serialises to the identical text
+(`test_from_dict_round_3_floor_literal_restores_and_reserialises_to_itself`); after `reset()`,
+`to_dict()` equals a freshly constructed controller with the same settings — for a controller
+that ran, held and had its setpoint changed mid-run, and for one restored from a snapshot —
+and differs from a fresh controller built with the wrong setpoint
+(`test_reset_then_to_dict_equals_fresh_controller_with_current_settings`); a subclass whose
+`integral` setter always raises still constructs, `update()`s and `reset()`s without raising,
+proving `update`/`reset` write `_integral` directly rather than through the public setter —
+while `from_dict` (external state) still goes through it and does raise
+(`test_update_reset_and_construction_bypass_a_raising_integral_setter`); `Modulator`,
+`HeatingMode`, `OUTPUT_MIN` and `OUTPUT_MAX` are the identical objects across every import
+path (`heatingsystem`, `heatingsystem.modulator`, `heatingsystem.modulator.modulator`,
+`heatingsystem.pi_controller`, `heatingsystem.pi_controller.pi_controller`), `Modulator` is
+in `heatingsystem.__all__` and `heatingsystem.modulator.__all__` but not
+`heatingsystem.pi_controller.__all__`, and `HeatingMode` coerces identically from any of them
+(`test_public_names_are_identical_across_every_import_path`); and a monkeypatched
+`Modulator.command` that raises leaves `integral`, `pi_output` and `history` — the whole
+`to_dict()` snapshot — exactly as they were before the call
+(`test_update_leaves_integral_pi_output_and_history_untouched_when_modulator_raises`; no
+`setpoint` is passed in that call, since the setpoint setter runs before the modulator is
+reached and would otherwise store even on a raise — see plan round 4 section 5).
+
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file
 found anywhere else.
+
+### `tests/test_modulator.py`
+
+Covers `Modulator` and, jointly with it, the shared numeric-contract plumbing it and
+`PIController` now both call through (D1, D5, D7). Construction defaults and validation for
+`mode`, `history_length` and `fixed_output` identical in class and message to the
+controller's own (checked directly against `PIController(**kwargs)` for the same keyword
+arguments), including the previous-value-kept rule, `history_length`'s read-only property,
+the keyword-only constructor after `mode`, and which attribute a three- or two-fault
+construction names; `reset` clearing the window while keeping the mode, length and hold, and
+being a no-op called twice.
+
+`command`: radiator pass-through, floor-heating's binary output, reading the window before
+appending (including an empty window and a hold read mid-run), the exact tie-at-duty case
+that rests the slot; every range edge accepted exactly and one ULP outside rejected; every
+non-real type, `bool`, non-finite value and huge `int` raising the right exception naming
+`level`, including while a hold is set (the level is always validated first, even though the
+hold then replaces it); `-0.0` returned as `+0.0` in both modes; `int` and `Fraction` demands
+accepted and returned as `float`, with a rejected `Fraction`'s range error repeating the
+original value; and a mid-run `mode` switch reading a fractional radiator-mode history
+correctly once floor heating takes over.
+
+The four exact firing-schedule tests moved from `tests/test_pi_controller.py` (R8, D7) live
+here, driven directly through `command`: the quarter-level pattern (`[1, 6, 10, 14, 18, 22]`
+of 24), proven identical whether driven as a demand or as a `fixed_output` hold; a
+one-slot window alternating on every call; a level one ULP above `OUTPUT_MIN` firing exactly
+once per 24-slot window; and a level one ULP below `OUTPUT_MAX` resting exactly once.
+
+The private four-key snapshot pair (`_to_dict`/`_from_dict`, not the public wire format):
+exactly the keys `mode`, `history_length`, `fixed_output`, `history` in that order, a fresh
+copy that a caller mutating the returned dict cannot use to reach back into the modulator's
+own history, round-tripping through `_from_dict`, refusing the controller's own eight-key
+snapshot (unknown keys named, sorted), reporting missing keys before unknown ones, refusing a
+non-mapping, and a subclass's `_from_dict` returning an instance of that subclass rather than
+`Modulator` itself. `_load_history`: atomic on a bad entry (the window is left as it was),
+the length check running before the per-entry checks, and the empty and full cases.
+
+D5's helper consolidation: `_finite`, `_level`, `_window_length`, `_to_command` and
+`_heating_mode` no longer exist on either the controller or the modulator module (`hasattr`
+false throughout, including `PIController._to_command`), the four `heatingsystem._validation`
+helpers are callable, and monkeypatching the modulator module's single `_heating_mode` breaks
+mode coercion identically for `PIController.mode`, `Modulator.mode` and
+`PIController.from_dict` — proof there is exactly one coercion function, not one per class.
+
+### `tests/test_validation.py`
+
+Covers `heatingsystem._validation`, the private module the numeric contract is stated in
+once and that both `PIController` and `Modulator` call through by name (D5). `finite`:
+accepts a plain number and returns `float`, normalises `-0.0` to `+0.0`, accepts `int` and
+`Fraction`, rejects every non-finite value and every non-`numbers.Real` type (`bool`
+included) naming the attribute and the offending type, and raises `OverflowError` naming the
+attribute for a huge `int`. `window_length`: accepts a positive `int` up to `sys.maxsize`
+unchanged, rejects every non-`int` type (`bool` included) naming it, rejects less than 1, and
+raises `OverflowError` one past `sys.maxsize`. `level`: accepts values inside the range,
+rejects values outside it while repeating the caller's own value, accepts equal bounds as
+exactly that one value and rejects one ULP outside them, treats inverted bounds as rejecting
+every value, checks finiteness before the range, normalises `-0.0`, and repeats a rejected
+`Fraction`'s own value rather than its `float` conversion. `snapshot_mapping`: returns the
+mapping unchanged on success (identity, not a copy) for a plain `dict` and a
+`MappingProxyType`, reports an unknown key, reports missing keys sorted, reports missing
+before unknown, sorts a mixed-type unknown-key set by `repr` rather than raising a bare
+`TypeError` from `sorted()`, and rejects a `set` and a list of pairs (anything that is not a
+`Mapping`) naming the type.
 
 ### `tests/test_guard_git.py`
 

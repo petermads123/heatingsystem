@@ -105,16 +105,11 @@ class PIController:
         TypeError: If ``history_length`` is a ``bool`` or not an ``int``.
         OverflowError: If ``history_length`` is too large for a rolling
             window to hold.
-        ValueError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output``
-            are not finite numbers (e.g. ``nan``, ``inf``), or
-            ``fixed_output`` is not ``None`` and lies outside
-            ``[OUTPUT_MIN, OUTPUT_MAX]``.
-        TypeError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output`` are
-            not a real number, ``bool`` included; the message names the
-            attribute.
-        OverflowError: If ``kp``, ``ki``, ``setpoint`` or ``fixed_output``
-            are too large to represent as a ``float`` (e.g. an ``int`` such
-            as ``10**400``); the message names the attribute.
+        TypeError, ValueError, OverflowError: See
+            :mod:`heatingsystem._validation` for the numeric contract
+            behind ``kp``, ``ki``, ``setpoint`` and ``fixed_output``
+            (plus its range check for ``fixed_output``); each raises
+            naming the offending attribute.
 
     Example:
         >>> ctrl = PIController(kp=0.5, ki=0.02, setpoint=22.0)
@@ -400,14 +395,10 @@ class PIController:
             value: A finite real number. ``bool`` is rejected.
 
         Raises:
-            TypeError: If ``value`` is not a real number, ``bool``
-                included. See :mod:`heatingsystem._validation` for the
-                full numeric contract. The previous gain is left
+            TypeError, ValueError, OverflowError: See
+                :mod:`heatingsystem._validation` for the numeric contract:
+                raised naming ``kp``, with the previous gain left
                 unchanged.
-            ValueError: If ``value`` is not finite. The previous gain is
-                left unchanged.
-            OverflowError: If ``value`` is too large to represent as a
-                float. The previous gain is left unchanged.
         """
         self._kp = _validation.finite("kp", value)
 
@@ -424,14 +415,10 @@ class PIController:
             value: A finite real number. ``bool`` is rejected.
 
         Raises:
-            TypeError: If ``value`` is not a real number, ``bool``
-                included. See :mod:`heatingsystem._validation` for the
-                full numeric contract. The previous gain is left
+            TypeError, ValueError, OverflowError: See
+                :mod:`heatingsystem._validation` for the numeric contract:
+                raised naming ``ki``, with the previous gain left
                 unchanged.
-            ValueError: If ``value`` is not finite. The previous gain is
-                left unchanged.
-            OverflowError: If ``value`` is too large to represent as a
-                float. The previous gain is left unchanged.
         """
         self._ki = _validation.finite("ki", value)
 
@@ -448,14 +435,10 @@ class PIController:
             value: A finite real number. ``bool`` is rejected.
 
         Raises:
-            TypeError: If ``value`` is not a real number, ``bool``
-                included. See :mod:`heatingsystem._validation` for the
-                full numeric contract. The previous setpoint is left
-                unchanged.
-            ValueError: If ``value`` is not finite. The previous setpoint
-                is left unchanged.
-            OverflowError: If ``value`` is too large to represent as a
-                float. The previous setpoint is left unchanged.
+            TypeError, ValueError, OverflowError: See
+                :mod:`heatingsystem._validation` for the numeric contract:
+                raised naming ``setpoint``, with the previous setpoint
+                left unchanged.
         """
         self._setpoint = _validation.finite("setpoint", value)
 
@@ -482,14 +465,10 @@ class PIController:
             value: A finite real number. ``bool`` is rejected.
 
         Raises:
-            TypeError: If ``value`` is not a real number, ``bool``
-                included. See :mod:`heatingsystem._validation` for the
-                full numeric contract. The previous value is left
+            TypeError, ValueError, OverflowError: See
+                :mod:`heatingsystem._validation` for the numeric contract:
+                raised naming ``integral``, with the previous value left
                 unchanged.
-            ValueError: If ``value`` is not finite. The previous value is
-                left unchanged.
-            OverflowError: If ``value`` is too large to represent as a
-                float. The previous value is left unchanged.
         """
         self._integral = _validation.finite("integral", value)
 
@@ -559,14 +538,12 @@ class PIController:
                 as a float.
 
         Raises:
-            TypeError: If ``value`` is not ``None`` and is not a real
-                number, ``bool`` included. The previous setting is left
-                unchanged.
-            ValueError: If ``value`` is not ``None`` and is not finite or
-                lies outside [``OUTPUT_MIN``, ``OUTPUT_MAX``]. The previous
-                setting is left unchanged.
-            OverflowError: If ``value`` is too large to represent as a
-                float. The previous setting is left unchanged.
+            TypeError, ValueError, OverflowError: See
+                :mod:`heatingsystem._validation` for the numeric contract:
+                raised naming ``fixed_output`` for a value that is not
+                ``None`` and fails it (including a value outside
+                [``OUTPUT_MIN``, ``OUTPUT_MAX``]); the previous setting is
+                left unchanged.
         """
         self._modulator.fixed_output = value
 

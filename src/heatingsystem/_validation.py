@@ -95,7 +95,9 @@ def level(name: str, value: object, lower: float, upper: float) -> float:
     Builds on :func:`finite`, adding the ``[lower, upper]`` range check
     shared by a fixed-output override and by each entry of a restored
     history. Takes the bounds as parameters rather than importing them from
-    the modulator module, so this module has no dependency on it.
+    the modulator module, so this module has no dependency on it. Inverted
+    bounds (``lower > upper``) are not special-cased: they simply make the
+    range check reject every value, since nothing can satisfy both.
 
     Args:
         name: The attribute or parameter name, used in the error message.
