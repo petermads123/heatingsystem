@@ -193,46 +193,180 @@ None.
 
 ## 2. Plan
 
-> Written in step 2, accepted by the user before step 3 starts. Concrete enough that
-> step 3 is transcription, not invention.
-
 ### Approach
 
-One paragraph on the chosen approach, and one on what was rejected and why.
+**Chosen — a `Modulator` class in its own subpackage, a private validation module at the
+package root, and a controller that delegates.** `HeatingMode`, `OUTPUT_MIN` and
+`OUTPUT_MAX` are actuator concepts, so they move to the modulator's module and the
+controller imports them from there; both `__init__.py` re-exports keep working and the
+round 2 identity test still holds because the objects are the same. The modulator owns the
+window, the mode, the hold and the mapping, and exposes `command(level)`, which maps the
+demand (or the fixed level) to a command, appends it, and returns it. `PIController` keeps
+every existing property by delegating to its modulator; `update` becomes validate,
+compute, record `pi_output`, anti-windup writing `_integral` directly, then
+`return self._modulator.command(u)`. The modulator has its own four-key `to_dict` /
+`from_dict` with a private history loader; the controller's `to_dict` merges its four keys
+with the modulator's into the frozen eight-key order, and its `from_dict` checks the eight
+keys, builds the modulator from the four it owns, builds the controller, and installs the
+modulator. The three numeric helpers move unchanged into `src/heatingsystem/_validation.py`
+with plain names, and the contract's prose lives in that module's docstring, which every
+setter's `Raises:` refers to. The mode coercion becomes a private function in the
+modulator's module, used by its setter and its `from_dict`; the controller never coerces a
+mode itself.
+
+**Rejected — the modulator inside the `pi_controller` subpackage**: a second model
+importing from `heatingsystem.pi_controller.modulator` says the opposite of what the split
+means. **Rejected — the helpers inside the modulator's module**: the controller would then
+import validation from the actuator, an odd dependency; a private module at the root is
+where shared plumbing belongs. **Rejected — the controller reaching into the modulator's
+deque for the snapshot**: that is the debt round 3's lenses named. **Deferred, not
+rejected — splitting STRUCTURE.md per subpackage** as its Growth section prescribes: it
+changes what the stop gate and the session brief see, which is not a thing to do inside an
+unattended build; it is a step 8 recommendation.
 
 ### Modules
 
 | Path | New or changed | Purpose |
 |---|---|---|
+| `src/heatingsystem/_validation.py` | new | Private module: the numeric contract stated once, and the three helpers `finite`, `window_length`, `level` (bodies moved unchanged from the controller). A `main()` showcase per the Python rules. |
+| `src/heatingsystem/modulator/__init__.py` | new | Subpackage entry point: re-exports `Modulator`, `HeatingMode`, `OUTPUT_MIN`, `OUTPUT_MAX`. |
+| `src/heatingsystem/modulator/modulator.py` | new | `OUTPUT_MIN`, `OUTPUT_MAX`, `HeatingMode` (moved), the private mode coercion, and the `Modulator` class. A `main()` showcase. |
+| `src/heatingsystem/pi_controller/pi_controller.py` | changed | Imports the constants, the enum and the helpers; the controller composes a `Modulator`, delegates six properties, writes `_integral` directly in `update`/`reset`, merges snapshots; `_to_command`, `_finite`, `_window_length`, `_level` and the inline mode coercion removed. |
+| `src/heatingsystem/pi_controller/__init__.py` | changed | Same four re-exports, now resolved through the controller module's imports (no textual change may be needed; verify). |
+| `src/heatingsystem/__init__.py` | changed | Adds `Modulator` to the imports and `__all__`. |
+| `tests/test_modulator.py` | new | The modulator's own suite, including the four exact-schedule tests. |
+| `tests/test_pi_controller.py` | changed | The four schedule tests keep only their count-and-bound assertions; new tests for the frozen snapshot, reset-by-rule and the direct integral write. |
+| `STRUCTURE.md` | changed | Tree, the new modules' sections, the controller's rows, both `__init__` tables, the test-file paragraphs. |
+| `README.md` | changed | One sentence: the modulator is importable and reusable by another model. |
 
 ### Public API
 
-> Every public class and function, with its full signature as it will be written.
-> `Covers` links back to the acceptance criteria above.
-
 | Signature | Module | Purpose | Covers |
 |---|---|---|---|
+| `OUTPUT_MIN: float = 0.0`, `OUTPUT_MAX: float = 1.0`, `HeatingMode(StrEnum)` | `modulator.py` | Moved verbatim from the controller module; the same objects re-exported from `heatingsystem`, `heatingsystem.modulator` and `heatingsystem.pi_controller`. | D1, D2 |
+| `Modulator(mode: HeatingMode \| str = HeatingMode.RADIATOR, *, history_length: int = 24, fixed_output: float \| None = None)` | `modulator.py` | The actuator mapping. Every argument goes through its setter or check, with the controller's existing messages. | D1 |
+| `Modulator.command(self, level: float) -> float` | `modulator.py` | Map a demand level to this step's command (the fixed level replaces `level` when set; radiator pass-through; floor-heating duty-cycle modulation reading the window before appending), append it to the history, return it. `level` is validated with `level("level", value)` from the helpers. | D1 |
+| `Modulator.reset(self) -> None` | `modulator.py` | Clear the history; settings and the hold unchanged. | D1, D4 |
+| `Modulator.mode -> HeatingMode` / setter `(value: HeatingMode \| str) -> None` | `modulator.py` | As the controller's today, same message. | D1 |
+| `Modulator.history_length -> int` (read-only) | `modulator.py` | The window length. | D1 |
+| `Modulator.fixed_output -> float \| None` / setter `(value: float \| None) -> None` | `modulator.py` | As the controller's today, same messages. | D1 |
+| `Modulator.history -> tuple[float, ...]`, `Modulator.duty_cycle -> float`, `Modulator.is_history_full -> bool` | `modulator.py` | As the controller's today. | D1 |
+| `Modulator.to_dict(self) -> dict[str, object]` | `modulator.py` | Exactly the keys `mode` (string), `history_length`, `fixed_output`, `history` (a fresh list), in that order. | D3 |
+| `Modulator.from_dict(cls, data: Mapping[str, object]) -> Self` (classmethod) | `modulator.py` | Rebuild from those four keys: the same mapping check, missing-before-unknown check, value checks and history loading the controller's `from_dict` does today for these keys, with the same messages (`snapshot ...`, `history must be a list or tuple, got ...`, `history has N entries but history_length is M.`, `history[i] ...`). | D3 |
+| `Modulator.main() -> None` (module-level `main`) | `modulator.py` | Showcase: a radiator pass-through, a floor-heating run to a converged duty cycle, a hold, a snapshot round trip. | — (showcase) |
+| `PIController(kp: float = 0.3, ki: float = 0.015, mode: HeatingMode \| str = HeatingMode.RADIATOR, setpoint: float = 21.0, *, history_length: int = 24, fixed_output: float \| None = None)` | `pi_controller.py` | Unchanged. Builds `Modulator(mode, history_length=..., fixed_output=...)` first (so a bad mode raises first, as today), then assigns `kp`, `ki`, `setpoint`, `integral` through their setters. | D2 |
+| `PIController.mode`, `.fixed_output` (settable), `.history_length`, `.history`, `.duty_cycle`, `.is_history_full` | `pi_controller.py` | Unchanged signatures; each delegates to the modulator. | D2 |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | `pi_controller.py` | Unchanged signature and results; anti-windup writes `self._integral`; the command comes from `self._modulator.command(u)`. | D2, D6 |
+| `PIController.reset() -> None` | `pi_controller.py` | Unchanged signature; writes `self._integral = 0.0`, `self._pi_output = None`, calls `self._modulator.reset()`. | D4, D6 |
+| `PIController.to_dict(self) -> dict[str, object]` / `PIController.from_dict(cls, data: Mapping[str, object]) -> Self` | `pi_controller.py` | Unchanged signatures and format: the eight keys in the round 3 order `kp, ki, setpoint, mode, history_length, fixed_output, integral, history`. | D3 |
+| `PIController.kp`, `.ki`, `.setpoint`, `.integral` (settable), `.pi_output` | `pi_controller.py` | Unchanged; the setters now call the helpers from `_validation`. | D2, D6 |
+| `main() -> None` in `_validation.py` | `_validation.py` | Showcase: one accepted value and one refusal per helper. | — (showcase) |
+| `Modulator` re-exported from `heatingsystem` | `__init__.py` | Importable from the package root. | D1 |
+
+No signature of `PIController` changes, and no public name is removed from any module a
+caller imports today.
 
 ### Implementation guide
 
-Ordered. Each entry small enough to finish and check.
-
-1.
-2.
+1. Create `src/heatingsystem/_validation.py`. Module docstring states the numeric contract
+   once (real number, `bool` excluded; finite; representable as a float; `TypeError` /
+   `ValueError` / `OverflowError` naming the attribute; a negative zero returned positive;
+   the window length an `int` of at least 1 and at most `sys.maxsize`; a level also inside
+   `[OUTPUT_MIN, OUTPUT_MAX]`). Move `_finite`, `_window_length`, `_level` in as `finite`,
+   `window_length`, `level`, bodies and messages unchanged; each docstring's `Raises:`
+   stays (it is the one place). `level` needs the range bounds: take them as parameters
+   `level(name: str, value: object, lower: float, upper: float) -> float` so this module
+   does not import from the modulator (no cycle); the callers pass `OUTPUT_MIN`,
+   `OUTPUT_MAX`. Add `main()` in showcase form. `import math, numbers, sys`.
+2. Create `src/heatingsystem/modulator/__init__.py` re-exporting `Modulator`,
+   `HeatingMode`, `OUTPUT_MIN`, `OUTPUT_MAX` with `__all__`.
+3. Create `src/heatingsystem/modulator/modulator.py`: move `OUTPUT_MIN`, `OUTPUT_MAX`,
+   `HeatingMode` verbatim (docstrings included). Add a private `_heating_mode(value: object) -> HeatingMode`
+   with the controller's current setter body and message. Define `Modulator` with
+   class-level annotations `_mode: HeatingMode`, `_history_length: int`,
+   `_fixed_output: float | None`, `_history: deque[float]`; the constructor assigns
+   `self.mode = mode`, `self._history_length = window_length(history_length)`, the deque,
+   `self._fixed_output = None`, then `self.fixed_output = fixed_output`. Properties as
+   listed, bodies moved from the controller. `command(level)`: `demand = level("level", value, OUTPUT_MIN, OUTPUT_MAX)`
+   (a private local name to avoid shadowing the helper), `target = demand if self._fixed_output is None else self._fixed_output`,
+   then the current `_to_command` body on `target`, append, return. `reset()` clears the
+   deque. A private `_load_history(self, entries: object) -> None` holding today's shape
+   check, length check and per-entry `level(f"history[{i}]", ...)` loop with the same
+   messages, extending only after the loop. `to_dict` / `from_dict` with the four-key
+   `_KEYS = frozenset(...)`, the mapping check and missing-before-unknown check copied from
+   the controller (messages verbatim, `key=repr` sort), building `cls(mode=..., history_length=..., fixed_output=...)`
+   then `_load_history`. `main()` in showcase form.
+4. Rewrite `src/heatingsystem/pi_controller/pi_controller.py`: imports become
+   `from heatingsystem._validation import finite, level, window_length` (drop
+   `window_length` if unused after the split) and
+   `from heatingsystem.modulator.modulator import OUTPUT_MAX, OUTPUT_MIN, HeatingMode, Modulator`;
+   delete `_finite`, `_window_length`, `_level`, the enum, the constants and
+   `_to_command`. Class-level annotations become `_kp`, `_ki`, `_setpoint`, `_integral`,
+   `_pi_output`, `_modulator: Modulator`. Constructor: `self._modulator = Modulator(mode, history_length=history_length, fixed_output=fixed_output)`
+   first, then `self.kp = kp`, `self.ki = ki`, `self.setpoint = setpoint`,
+   `self._integral = 0.0`, `self._pi_output = None`. Delegating properties: `mode`
+   (getter and setter), `fixed_output` (both), `history_length`, `history`, `duty_cycle`,
+   `is_history_full`. `update`: unchanged up to the clamp; the three anti-windup
+   assignments become `self._integral = new_integral`; the tail becomes
+   `return self._modulator.command(u)` (no substitution, no append; the modulator does
+   both). `reset` as in the table. `to_dict`: `{"kp": self.kp, "ki": self.ki, "setpoint": self.setpoint, **modulator_part_in_order..., "integral": self.integral, "history": ...}`
+   — build it as an explicit literal in the eight-key order, pulling the four modulator
+   values from `self._modulator.to_dict()`. `from_dict`: mapping check and eight-key
+   missing/unknown check as today (verbatim), then
+   `modulator = Modulator.from_dict({k: data[k] for k in ("mode", "history_length", "fixed_output", "history")})`,
+   then `controller = cls(kp=finite("kp", data["kp"]), ki=..., setpoint=..., mode=modulator.mode, history_length=modulator.history_length, fixed_output=modulator.fixed_output)`,
+   `controller.integral = finite("integral", data["integral"])`, `controller._modulator = modulator`,
+   return. Docstrings: every setter's `Raises:` becomes one line referring to the contract
+   in `heatingsystem._validation`; the class docstring names the modulator in one sentence.
+5. `src/heatingsystem/__init__.py`: add `Modulator` (import from `heatingsystem.modulator`),
+   `__all__` in alphabetical order.
+6. `tests/test_modulator.py`: the four schedule tests (`..._floor_quarter_level_converges_to_exact_fraction`'s
+   `on_steps` assertion, `..._floor_history_length_one_alternates`, `..._floor_level_just_above_min_fires_once_per_window`,
+   `..._floor_level_just_below_max_rests_once_per_window`) rewritten against
+   `Modulator.command`, plus the modulator's own construction, validation, mapping, hold,
+   reset and snapshot tests (step 5 designs them). In `tests/test_pi_controller.py` the
+   four originals keep their convergence, count and bound assertions and lose only the
+   exact-slot ones; nothing else changes except additions.
+7. `STRUCTURE.md`: tree gains `modulator/` and `_validation.py`; new sections for the three
+   new files (the private module documented with a table because step 4 and 6 audit
+   against it); the controller section loses the constants and enum rows and gains the
+   delegation note; both `__init__` tables updated; the test paragraphs. Note in the
+   Growth paragraph that the per-subpackage split is pending.
+8. README: one sentence after the usage block.
+9. Run `ruff check .`, `ruff format --check .`, `mypy`, `pytest`,
+   `python -m heatingsystem.pi_controller.pi_controller`, `python -m heatingsystem.modulator.modulator`,
+   `python -m heatingsystem._validation`, and `MPLBACKEND=Agg python test.py`.
 
 ### Test intents
 
-> High-level: what a test must prove, not how it is written. Step 5 turns each of these
-> into concrete cases, including the edge cases.
-
 | # | Must prove | Covers |
 |---|---|---|
-| T1 | | |
+| T1 | `Modulator` alone: construction defaults and validation errors identical in class and message to the controller's for `mode`, `history_length`, `fixed_output`; `command` returns the level in radiator mode and only `0.0`/`1.0` in floor mode, reads the window before appending, converges to a fractional level, and returns the fixed level (or its floor modulation) when a hold is set; `command` rejects a non-finite or out-of-range level naming `level`; `reset` clears the history and keeps settings and hold; the four exact-schedule tests moved from the controller file. | D1, D7 |
+| T2 | `Modulator.to_dict` has exactly its four keys in order and is a copy; `from_dict` round-trips, refuses a non-mapping, reports missing before unknown, and raises the controller's exact history messages. | D3 |
+| T3 | `hs.Modulator`, `hs.modulator.Modulator` and `hs.modulator.modulator.Modulator` are the same class; `hs.HeatingMode`, `hs.OUTPUT_MIN`, `hs.OUTPUT_MAX` are the same objects from `heatingsystem`, `heatingsystem.modulator` and `heatingsystem.pi_controller`; every name is in the relevant `__all__`. | D1, D2 |
+| T4 | A literal dict equal to what round 3's `to_dict()` produced for a known state (defaults plus two updates and a hold, values written out) restores to a controller with that state, and `to_dict()` on it returns a dict equal to the literal with the keys in the same order. | D3 |
+| T5 | After `reset()`, `to_dict()` equals `PIController(kp, ki, mode, setpoint, history_length=..., fixed_output=...).to_dict()` for a controller that has run and held, and for a restored controller. | D4 |
+| T6 | The three helpers are importable from `heatingsystem._validation` only (not defined in the controller or modulator modules), `_heating_mode` exists once, and no test name or message changed: the controller's `from_dict` error messages for every key equal the setter's, as round 3's test already asserts. | D5 |
+| T7 | The `integral` setter still rejects bad values naming `integral`; `update` and `reset` still produce exactly the same integral trajectory as before (the round 1 twin tests and round 2 hand computations, unchanged); and a subclass whose `integral` setter always raises still runs `update` and `reset` without raising, proving the direct write. | D6 |
+| T8 | Every pre-round test passes unchanged except the four named in the guide, whose remaining assertions still pass. | D2, D7 |
 
 ### Risks
 
-What could make this harder than it looks, and what the build should do if it does —
-including whether it should halt.
+- **Import cycles.** `_validation` imports nothing from the package; `modulator` imports
+  `_validation`; `pi_controller` imports both. Keep that order. If a cycle appears, the
+  fix is to move whatever crossed it, not to import lazily. Not a halt.
+- **Constants identity.** The round 2 test asserts the objects are identical across the
+  three import paths; re-exporting the same objects satisfies it. If it fails, something
+  redefined a constant: fix. Not a halt.
+- **A moved test that cannot be split.** If one of the four schedule tests has no
+  assertion left once the exact-slot one moves, keep the convergence assertion from the
+  neighbouring test in it rather than deleting it; nothing is deleted. Not a halt.
+- **The showcase for `_validation`.** The Python rules require a `main()` on every module;
+  a private module is not exempt. Showcase form, three cases.
+- **STRUCTURE.md and the stop gate.** Every new `.py` file must be named in STRUCTURE.md or
+  the gate blocks at step 8; the private module too.
+- **Halting line.** Any change to a `PIController` signature, to the eight-key format, or
+  to the PI arithmetic would amend section 1: **halt**.
 
 ---
 
