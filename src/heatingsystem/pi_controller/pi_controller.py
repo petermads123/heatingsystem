@@ -29,6 +29,12 @@ from heatingsystem.modulator.modulator import (
     Modulator,
 )
 
+# ``HeatingMode``, ``OUTPUT_MIN`` and ``OUTPUT_MAX`` were defined here before the
+# modulator split and are still re-exported from this module and its subpackage
+# for callers that imported them from either; naming them here keeps a
+# ``ruff --fix`` from treating the pass-through imports as unused.
+__all__ = ["OUTPUT_MAX", "OUTPUT_MIN", "HeatingMode", "PIController"]
+
 # The exact key set a snapshot from to_dict() must have for from_dict() to
 # accept it; a missing or extra key is refused rather than partially applied.
 _SNAPSHOT_KEYS: frozenset[str] = frozenset(
@@ -259,8 +265,9 @@ class PIController:
         # duty cycle) before appending this step's command, and applies
         # fixed_output itself when one is set; the PI computation and
         # anti-windup above are unaffected either way. Computed into a
-        # local before any state is written, so a raise here leaves the
-        # controller's own state untouched.
+        # local before the integral and the demand are written, so a raise
+        # here leaves those untouched (a setpoint passed to this call has
+        # already been stored, as with any other raise after validation).
         command = self._modulator.command(u)
 
         self._integral = next_integral
@@ -315,7 +322,8 @@ class PIController:
         Every value is applied through the same validating setter or check
         a direct assignment would go through, so a bad snapshot raises
         exactly what a bad assignment would, naming the offending key, and
-        no controller is produced.
+        no controller is produced. When several values are bad, which key
+        is reported first is unspecified.
 
         Args:
             data: A mapping with exactly the keys ``to_dict`` produces:
@@ -371,15 +379,7 @@ class PIController:
 
     @mode.setter
     def mode(self, value: HeatingMode | str) -> None:
-        """Set the heating actuator mode.
-
-        Args:
-            value: A :class:`HeatingMode` member or its string value.
-
-        Raises:
-            ValueError: If ``value`` is not a valid :class:`HeatingMode`
-                member or value. The previous mode is left unchanged.
-        """
+        """Set the heating actuator mode; delegates to :attr:`Modulator.mode`."""
         self._modulator.mode = value
 
     @property
@@ -444,12 +444,7 @@ class PIController:
 
     @property
     def history_length(self) -> int:
-        """The rolling command-window length given at construction.
-
-        Read-only: the window is sized once, at construction, and a
-        restore through :meth:`from_dict` builds a new controller rather
-        than resizing this one.
-        """
+        """The window length; delegates to :attr:`Modulator.history_length`."""
         return self._modulator.history_length
 
     @property
@@ -474,31 +469,17 @@ class PIController:
 
     @property
     def history(self) -> tuple[float, ...]:
-        """Immutable snapshot of the command history, oldest to newest.
-
-        Returns:
-            A tuple of past actuator commands in chronological order.
-        """
+        """The command history; delegates to :attr:`Modulator.history`."""
         return self._modulator.history
 
     @property
     def duty_cycle(self) -> float:
-        """Mean of the current history window (fraction of ON-time).
-
-        Returns:
-            The mean of the history window, or ``0.0`` when the window
-            is empty.
-        """
+        """The realised duty cycle; delegates to :attr:`Modulator.duty_cycle`."""
         return self._modulator.duty_cycle
 
     @property
     def is_history_full(self) -> bool:
-        """Whether the rolling history window has been completely filled.
-
-        Returns:
-            ``True`` once :attr:`history` contains ``history_length``
-            samples; ``False`` during the initial warm-up period.
-        """
+        """Whether the window is full; delegates to :attr:`Modulator.is_history_full`."""
         return self._modulator.is_history_full
 
     @property
@@ -518,33 +499,12 @@ class PIController:
 
     @property
     def fixed_output(self) -> float | None:
-        """The current fixed-output override, or ``None`` if unset.
-
-        Returns:
-            The fixed actuator level in [``OUTPUT_MIN``, ``OUTPUT_MAX``], or
-            ``None`` when the PI loop is in control.
-        """
+        """The fixed-output override; delegates to :attr:`Modulator.fixed_output`."""
         return self._modulator.fixed_output
 
     @fixed_output.setter
     def fixed_output(self, value: float | None) -> None:
-        """Set or clear the fixed-output override.
-
-        Args:
-            value: A finite number in [``OUTPUT_MIN``, ``OUTPUT_MAX``] to
-                fix the output, or ``None`` to release it back to the PI
-                loop. ``bool`` is rejected. Stored as ``float(value)``, so
-                an ``int`` such as ``0`` or ``1`` is accepted and read back
-                as a float.
-
-        Raises:
-            TypeError, ValueError, OverflowError: See
-                :mod:`heatingsystem._validation` for the numeric contract:
-                raised naming ``fixed_output`` for a value that is not
-                ``None`` and fails it (including a value outside
-                [``OUTPUT_MIN``, ``OUTPUT_MAX``]); the previous setting is
-                left unchanged.
-        """
+        """Set or clear the override; delegates to :attr:`Modulator.fixed_output`."""
         self._modulator.fixed_output = value
 
 

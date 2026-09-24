@@ -48,7 +48,8 @@ print(radiator.is_history_full)  # True once history_length steps have been issu
 
 # --- Floor-heating controller (binary output: 0.0 or 1.0) ---
 # Uses the same internal PI logic but quantises to on/off each step.
-# Over a full window the duty_cycle converges to the equivalent continuous output.
+# Over a full window the duty_cycle converges to within about one slot (1 / history_length)
+# of the equivalent continuous output.
 floor = hs.PIController(
     kp=0.3,
     ki=0.015,
@@ -90,7 +91,19 @@ except (TypeError, ValueError, OverflowError):
 
 The actuator mapping behind `update()` — the mode, the rolling history window, the duty
 cycle and the `fixed_output` hold — lives in its own `hs.Modulator` class, reusable by any
-future model that drives the same actuator range without reimplementing it.
+future model that drives the same actuator range without reimplementing it. It can also be
+driven on its own, for example by a demand that comes from a schedule or a slider rather
+than a PI loop:
+
+```python
+floor_valve = hs.Modulator("floor_heating", history_length=24)
+
+command = floor_valve.command(0.25)  # a demand level in [0, 1] -> 0.0 or 1.0 this step
+print(floor_valve.duty_cycle)  # the realised ON fraction over the window so far
+floor_valve.fixed_output = 0.0  # hold the floor off; command() now returns 0.0
+floor_valve.fixed_output = None  # release the hold
+floor_valve.reset()  # clear the window; mode, history_length and the hold stay
+```
 
 A few things to know when the snapshot meets your own configuration on the next startup:
 

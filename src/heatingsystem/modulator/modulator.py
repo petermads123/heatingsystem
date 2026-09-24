@@ -282,7 +282,8 @@ class Modulator:
 
         Used by :meth:`_to_command` in floor-heating mode to decide
         whether the current slot should be ON or OFF so that the
-        long-run ON fraction converges to the target demand level.
+        long-run ON fraction converges to within about one slot
+        (``1 / history_length``) of the target demand level.
 
         Returns:
             The mean of the history window, or ``0.0`` when the window
@@ -318,10 +319,12 @@ class Modulator:
         * If ``level`` is at or below ``OUTPUT_MIN`` the slot is always OFF.
         * If ``level`` is at or above ``OUTPUT_MAX`` the slot is always ON.
         * Otherwise the slot is ON when the realised duty cycle so far
-          (mean of the trailing window) is below the target ``level``.  Over
-          many cycles this causes the ON-fraction to converge to ``level``,
-          which is why a long window (the default 24 samples is 2 h at
-          5-min intervals) is needed for good modulation fidelity.
+          (mean of the trailing window) is below the target ``level``; a tie
+          rests the slot.  Over many cycles the ON-fraction converges to
+          within about one slot (``1 / history_length``) of ``level`` — a
+          two-slot window at 0.5 settles at 1/3 — which is why a long
+          window (the default 24 samples is 2 h at 5-min intervals) is
+          needed for good modulation fidelity.
 
         This method is called BEFORE the new command is appended to the
         history, so :attr:`duty_cycle` reflects only past samples.
@@ -396,9 +399,11 @@ class Modulator:
     def _to_dict(self) -> dict[str, object]:
         """Capture the modulator's settings and history as a private snapshot.
 
-        Not a public wire format: called only by
+        Not a public wire format: package-internal, for any model in this
+        package that composes a modulator and folds these four keys into
+        its own snapshot, as
         :class:`~heatingsystem.pi_controller.pi_controller.PIController`
-        to build its own eight-key snapshot.
+        does (see the module docstring for the composition recipe).
 
         Returns:
             A fresh ``dict`` with exactly the keys ``mode``,
