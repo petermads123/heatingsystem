@@ -121,6 +121,13 @@ The round runs steps 1 to 9 on the same branch: its step 9 re-verifies the whole
 marks the round `done` and pushes into the same pull request, and its `/watch-pr` resumes
 this watch.
 
+A comment that reports a **defect** in what the branch shipped opens the round the same
+way but invokes `/fix` instead: it finds the just-opened file, reproduces and diagnoses
+before anything is agreed, and hands to `/conceptualize` itself. Write "Opened on a bug
+report — run `/fix` first" under **Builds on** before committing, so a session resumed
+from the marker knows a diagnosis is still owed. The folder keeps its prefix; the filled
+Defect block is what makes the round a fix round.
+
 Use the same test as everywhere else. It is not small if it adds or removes a file, changes
 a public signature, changes behavior, or needs a new test. **When it is close, route up** —
 an over-routed comment costs a conversation, an under-routed one puts unplanned, untested
@@ -174,15 +181,24 @@ reason to merge something broken; they told you to merge the thing they last saw
 
 ### After merging
 
-- Delete the branch, if the repo does that.
+- **Delete the branch.** Whoever merged it — the user in the GitHub UI, or Claude on their
+  instruction — deleting the merged branch is part of closing out, and needs no separate
+  permission. First confirm the merge from the repository rather than from the event:
+  `git fetch origin` and `git merge-base --is-ancestor origin/<branch> origin/main`. Only a
+  branch whose head is an ancestor of `main` is deleted; a closed-unmerged branch is left
+  for the user. Then `git push origin --delete <branch>`, and drop the local branch too.
+  A hosted environment may refuse a ref deletion while still accepting pushes; if the
+  delete is refused, say so once and name the branch rather than reporting it deleted —
+  the user can remove it from the repository's Branches page.
 - Cancel the recurring check.
 - Report once: the merge commit, and **every bot finding dismissed along the way**, with the
   reason each was dismissed.
 
 ## 7. Stop conditions
 
-- **Merged or closed** — whether Claude merged it or someone else did, cancel the recurring
-  check and say so once. The pipeline is finished; the plan file already says so.
+- **Merged or closed** — whether Claude merged it or someone else did, delete the branch
+  if it was merged (per **After merging** above), cancel the recurring check and say so
+  once. The pipeline is finished; the plan file already says so.
 - **The user says stop** — unsubscribe, cancel the check, and stop. Immediately, no
   argument.
 

@@ -7,8 +7,11 @@ duty-cycle modulation).  For each mode it draws a plot showing the measured room
 temperature, the (stepped) setpoint, and the controller's actuator state encoded
 as a blue (off) -> red (on) background hue.
 
-A setpoint change is injected halfway through the run so the controller's
-response to a new target is visible.  Run it directly to produce the figure::
+Two events are injected: a fixed-output hold (the valve held shut, as during a
+price spike) once the room has settled, so the temperature sag and the demand
+burst at release are visible; and a setpoint change halfway through the run so
+the controller's response to a new target is visible.  Run it directly to
+produce the figure::
 
     .venv/Scripts/python.exe test.py
 """
@@ -22,12 +25,17 @@ from matplotlib.colors import Colormap, Normalize
 import heatingsystem as hs
 
 # --- Simulation configuration -------------------------------------------------
-N_STEPS: int = 30  # total number of 5-minute control steps to simulate
+N_STEPS: int = 40  # total number of 5-minute control steps to simulate
 HISTORY_LENGTH: int = 6  # controller lookback window (requested)
 CHANGE_STEP: int = N_STEPS // 2  # setpoint changes halfway through the run
 SETPOINT_INITIAL: float = 21.0  # °C target before the change
 SETPOINT_CHANGED: float = 23.0  # °C target after the change
 START_TEMP: float = 19.0  # °C initial room temperature
+
+# --- Fixed-output hold (e.g. a price spike) ----------------------------------
+HOLD_START: int = 8  # first step of the hold, once the room has settled
+HOLD_END: int = 14  # first step after the hold (exclusive)
+HOLD_LEVEL: float = 0.0  # actuator level held during the hold: 0.0 = shut
 
 # --- Controller gains ---------------------------------------------------------
 KP: float = 0.4  # proportional gain
@@ -91,6 +99,10 @@ def run_simulation(
         # Apply the setpoint change once we pass the halfway point.
         setpoint = SETPOINT_INITIAL if step < CHANGE_STEP else SETPOINT_CHANGED
 
+        # Hold the valve at HOLD_LEVEL inside the hold window, as an automation
+        # would during a price spike; release it afterwards.
+        controller.fixed_output = HOLD_LEVEL if HOLD_START <= step < HOLD_END else None
+
         # The controller sees the current temperature and returns the command.
         command = controller.update(measured=temp, setpoint=setpoint)
 
@@ -116,7 +128,8 @@ def plot_mode(
 
     The actuator state is shown as a per-step background band coloured from
     blue (off) to red (fully on); the measured temperature and the stepped
-    setpoint are overlaid as lines.
+    setpoint are overlaid as lines, and the fixed-output hold window is
+    hatched so the sag during it and the burst after it can be read off.
 
     Args:
         ax: The matplotlib axis to draw on.
@@ -170,6 +183,19 @@ def plot_mode(
         zorder=1,
     )
 
+    # Hatch the hold window: the valve is fixed at HOLD_LEVEL here, whatever
+    # the controller would have asked for.
+    ax.axvspan(
+        HOLD_START - 0.5,
+        HOLD_END - 0.5,
+        facecolor="none",
+        edgecolor="dimgray",
+        hatch="//",
+        linewidth=0.0,
+        label=f"Fixed output {HOLD_LEVEL:.1f} (hold)",
+        zorder=1,
+    )
+
     ax.set_title(title)
     ax.set_ylabel("Temperature (°C)")
     ax.set_xlim(-0.5, len(temps) - 0.5)
@@ -200,7 +226,9 @@ def main() -> None:
     colorbar.set_label("Control state (0 = off / blue, 1 = on / red)")
 
     fig.suptitle(
-        "PIController closed-loop simulation with a setpoint change", fontsize=13
+        "PIController closed-loop simulation with a fixed-output hold "
+        "and a setpoint change",
+        fontsize=13,
     )
 
     # Save an artifact and show the window when running interactively.

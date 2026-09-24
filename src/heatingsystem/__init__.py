@@ -1,5 +1,11 @@
 """Initialize the heating system package."""
 
-from heatingsystem.pi_controller import HeatingMode, PIController
+from heatingsystem.modulator import (
+    OUTPUT_MAX,
+    OUTPUT_MIN,
+    HeatingMode,
+    Modulator,
+)
+from heatingsystem.pi_controller import PIController
 
-__all__ = ["HeatingMode", "PIController"]
+__all__ = ["OUTPUT_MAX", "OUTPUT_MIN", "HeatingMode", "Modulator", "PIController"]

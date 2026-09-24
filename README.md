@@ -38,7 +38,7 @@ measured_temp = 19.5  # e.g. read from a sensor entity
 output = radiator.update(measured_temp)
 print(f"Radiator valve: {output:.2f}")  # e.g. 0.46
 
-# Override the setpoint for a single call (does not change the stored setpoint):
+# Pass a new setpoint with the call; it replaces the stored setpoint from here on:
 output = radiator.update(measured_temp, setpoint=22.0)
 
 # Inspect the last 24 issued commands (oldest first) and the mean ON-fraction:
@@ -48,7 +48,8 @@ print(radiator.is_history_full)  # True once history_length steps have been issu
 
 # --- Floor-heating controller (binary output: 0.0 or 1.0) ---
 # Uses the same internal PI logic but quantises to on/off each step.
-# Over a full window the duty_cycle converges to the equivalent continuous output.
+# Over a full window the duty_cycle converges to within about one slot (1 / history_length)
+# of the equivalent continuous output.
 floor = hs.PIController(
     kp=0.3,
     ki=0.015,
@@ -61,9 +62,72 @@ command = floor.update(measured_temp)  # 0.0 (off) or 1.0 (on)
 print(f"Floor heating: {'ON' if command else 'OFF'}")
 print(f"Duty cycle over window: {floor.duty_cycle:.2f}")
 
-# --- Reset (e.g. on controller restart or setpoint change) ---
+# --- Reset (start the loop afresh while keeping every setting) ---
 radiator.reset()  # zeroes the integral accumulator and clears the history window
+
+# --- Fixed output override (e.g. hold the valve shut during a price spike) ---
+# Any real number in [hs.OUTPUT_MIN, hs.OUTPUT_MAX] is accepted. Out of range or non-finite
+# raises ValueError; a string, bool or other non-number raises TypeError.
+radiator.fixed_output = 0.0  # update() now returns 0.0 regardless of measured_temp
+output = radiator.update(measured_temp)
+print(radiator.pi_output)  # the PI demand the loop would have issued, unheld
+radiator.fixed_output = None  # release the override; update() resumes the PI result
+
+# --- State snapshot (e.g. survive a Home Assistant restart or AppDaemon reload) ---
+# to_dict() captures every setting and every piece of running state as a plain dict
+# of built-in types, which json.dumps accepts directly. Store it however suits you —
+# a file, a Home Assistant entity attribute — and hand it back to from_dict() on
+# startup to rebuild an equivalent controller. A missing, unknown or invalid key
+# raises ValueError, TypeError or OverflowError naming it, and no controller is produced.
+state = radiator.to_dict()
+radiator_restored = hs.PIController.from_dict(state)
+
+# On startup: restore if a snapshot exists and is usable, otherwise start fresh.
+try:
+    radiator = hs.PIController.from_dict(state)
+except (TypeError, ValueError, OverflowError):
+    radiator = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
 ```
+
+The actuator mapping behind `update()` — the mode, the rolling history window, the duty
+cycle and the `fixed_output` hold — lives in its own `hs.Modulator` class, reusable by any
+future model that drives the same actuator range without reimplementing it. It can also be
+driven on its own, for example by a demand that comes from a schedule or a slider rather
+than a PI loop:
+
+```python
+floor_valve = hs.Modulator("floor_heating", history_length=24)
+
+command = floor_valve.command(0.25)  # a demand level in [0, 1] -> 0.0 or 1.0 this step
+print(floor_valve.duty_cycle)  # the realised ON fraction over the window so far
+floor_valve.fixed_output = 0.0  # hold the floor off; command() now returns 0.0
+floor_valve.fixed_output = None  # release the hold
+floor_valve.reset()  # clear the window; mode, history_length and the hold stay
+```
+
+A few things to know when the snapshot meets your own configuration on the next startup:
+
+- **Your configuration wins.** The snapshot carries the settings it was saved with. Restore
+  first, then assign `kp`, `ki`, `setpoint`, `mode` and `fixed_output` from your config;
+  the running state is kept and the settings are yours.
+- **A shrunk window needs the history trimmed first.** `history_length` is the one setting
+  that cannot be re-applied after restore, and a history longer than the window is
+  refused. If you changed it from 24 to 12, set `state["history_length"] = 12` and
+  `state["history"] = state["history"][-12:]` before calling `from_dict`.
+- **Keep your own metadata outside the dict.** An unknown key is refused, so store
+  something like `{"saved_at": ..., "controller": radiator.to_dict()}` rather than adding
+  keys to the snapshot itself.
+- **A stale snapshot is restored, then reset.** After a long outage the saved integral and
+  window describe a room that no longer exists. `from_dict` followed by `reset()` keeps the
+  settings and any hold and discards the running state.
+
+The PI loop keeps running underneath a hold: the integral goes on accumulating the error
+the room builds up, and the fixed commands are recorded in `history` like any others. So
+when the hold is released the controller does not resume gently. A radiator jumps to the
+demand that built up during the hold, and floor heating fires several slots in a row
+because its duty-cycle window is still full of the held commands. That burst is usually
+what you want after a cold spell, since the room needs the heat it went without. If you
+would rather resume from a clean state, call `reset()` at release.
 
 `test.py` at the repo root runs a closed-loop simulation of both modes and plots the
 result. It needs matplotlib, which is installed with the `sim` extra:
@@ -164,6 +228,24 @@ This repo ships a Claude Code configuration under `.claude/`, plus `CLAUDE.md` (
 map, loaded every session) and `STRUCTURE.md` (a map of what lives where, imported by
 `CLAUDE.md`). It was adopted from `petermads123/template_repo`.
 
+### The commands
+
+These are the ones you would type. Everything else under `.claude/skills/` is a step the
+pipeline opens by itself, and you rarely need to know it is there.
+
+| Command | Use it for |
+|---|---|
+| `/feature <what to build>` | Anything new or changed that is not cosmetic: a module, a public function, a behaviour change. Opens the ten-step pipeline below at step 1. With no argument, reports where an in-flight feature got to. |
+| `/fix <symptom>` | Something that exists behaves wrongly: wrong output, a crash, a guard that lets something through. Reproduces it, finds the root cause and sizes what else the cause breaks **before** the pipeline opens, then runs the same ten steps as a fix round. Sends you to `/feature` or `/small-change` instead if the diagnosis says it is not a bug. |
+| `/small-change <what to change>` | Cosmetic edits with none of the pipeline: a local rename, a docstring reword, message text, plot styling, formatting. Refuses anything that adds or removes a file, changes a public signature, changes behaviour or needs a new test. |
+| `/build` | Resume a build that halted to ask you something, once you have answered. |
+| `/recommend` | Re-open the follow-up decisions at step 8, if a session ended with them undecided. |
+| `/create-pr` | Open the pull request for a finished branch, if you did not do it in the session that finished it. |
+| `/watch-pr` | Resume watching an open pull request in a fresh session. |
+
+You do not have to type any of them: describe the work in prose and Claude picks the route,
+saying which and why in one line. The routing rules are in `CLAUDE.md`.
+
 ### The implementation pipeline
 
 Anything that is not cosmetic goes through ten steps. You decide three times — the concept,
@@ -202,17 +284,19 @@ resumes once you answer. While it runs you get a trace — a line or two per mod
 function and test group as each step lands — so you can see what was built without reading
 the diff.
 
-Where the work genuinely diverges, more than one agent reads it: a plan critic reads the
-plan against the concept before you accept it, two test designers with different briefs
-find the edge cases at step 5, and three brainstormers with different lenses propose the
-follow-ups at step 8. The calling step merges what they find and stays the single voice.
+Where the work genuinely diverges, more than one agent reads it: a diagnosis critic tries
+to falsify the root cause before a fix is agreed, a plan critic reads the plan against the
+concept before you accept it, two test designers with different briefs find the edge cases
+at step 5, and three brainstormers with different lenses propose the follow-ups at step 8.
+The calling step merges what they find and stays the single voice.
 
 Step 9 requests your review on the PR it opens. **Claude never merges on its own judgment,
 and never on an approval alone** — a PR reaches `main` either because you pressed the button
 or because you explicitly told Claude to. An approval says the change is wanted, not that it
 should ship now. Once told, the instruction still waives nothing: it must not be stale
 (anything pushed since means you would be merging code you have not seen), no conflict, and
-every review thread resolved.
+every review thread resolved. Once a pull request has merged, by either route, Claude
+deletes its branch as part of closing out, after confirming the head is on `main`.
 
 Note that **GitHub lets nobody request a review from, or approve, their own pull request**.
 In a solo repo, where Claude pushes under your token, every PR is authored by you — so the
@@ -223,12 +307,25 @@ Start with `/feature <what to build>` — it opens step 1. Your confirmation of 
 opens step 2 in the same turn, and your acceptance of the plan opens the build. After the
 build, step 8 ends on a question, and step 9 asks before it publishes.
 
+A bug starts with `/fix <symptom>` instead, and gets a diagnosis before step 1: the symptom
+reproduced and its output quoted, the root cause as a file and line, the commit that
+introduced it, the other inputs the same cause breaks, and who depends on the current
+behaviour — read a second time by a critic whose job is to find a different cause. Only
+then does step 1 open, and its first question is the one every fix has: this instance, or
+the whole class? The rest of the pipeline is the same, with differences you will see in
+the trace: the build writes the reproduction as a test and runs it red before fixing,
+and halts if it is not red; the concept check has to show more than a green suite for
+"nothing else changed"; and the follow-ups get a fourth reader asking where else the same
+cause lives and what should have caught it. If the diagnosis finds that the code does what
+was agreed and you want something different, `/fix` says so and hands over to `/feature`.
+
 **You do not have to type the commands.** Describe the work in prose — "I want to add a
-thermostat model", "rename that variable" — and Claude classifies it against the
-small-or-large test before doing anything: a local rename with no signature or behaviour
-change is small, and anything that adds a file, changes a public signature, changes
-behaviour or needs a test is not. It says which way it routed and why in one line, so a
-wrong call costs you a sentence to correct, and asks only when the request is genuinely
+thermostat model", "rename that variable" — and Claude classifies it against the small-or-large test
+before doing anything: a local rename with no signature or behaviour change is small, and
+anything that adds a file, changes a public signature, changes behaviour or needs a test is
+not — and a bug is a third thing, routed to `/fix` because the first question it raises is
+whether it is a bug at all. It says which way it routed and why in one line, so a wrong
+call costs you a sentence to correct, and asks only when the request is genuinely
 borderline. When it is close, it routes up to the pipeline, because step 1 is a
 conversation you can redirect — whereas a feature handled as a small change quietly skips
 the concept, the tests and the audit.
@@ -261,12 +358,6 @@ the same folder and goes back through steps 1 to 7 on the same branch, so one pu
 can carry several deliberate passes over one feature. Step 6 of a later round re-checks the
 earlier rounds' acceptance criteria, so a follow-up cannot quietly regress what it builds on.
 
-| Other commands | Use for |
-|---|---|
-| `/small-change` | Renames, wording, styling — anything cosmetic, no plan file |
-| `/feature` with no argument | "Where did we get to?" |
-| `/build` | Resume a halted build once you have answered its question |
-
 ### Hooks
 
 Four run automatically:
@@ -279,8 +370,9 @@ Four run automatically:
   come back.
 - **Before a turn ends** — the stop gate. Through step 7 it only reports, because the build
   runs its own checks and has to be able to halt on a red tree; from step 8, and for any
-  work with no plan file, it refuses to end the turn while ruff, mypy or pytest fail or
-  `STRUCTURE.md` is out of sync. Create `.claude/.skip-gate` to bypass it.
+  work with no plan file, it refuses to end a turn that changed Python while ruff, mypy or
+  pytest fail or `STRUCTURE.md` is out of sync. Prose-only work is not gated. Create
+  `.claude/.skip-gate` to bypass it.
 
 Three caveats worth knowing:
 
