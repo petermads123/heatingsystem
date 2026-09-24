@@ -1,6 +1,6 @@
 # Modulator: the actuator mapping as its own object
 
-<!-- claude-plan step=9 status=active -->
+<!-- claude-plan step=9 status=done -->
 
 | Field | Value |
 |---|---|
@@ -24,8 +24,8 @@ conventional name `feat/fixed-output`.
 | 6 | Concept check | `/concept-check` | in `/build` | done |
 | 7 | Ship | `/ship` | in `/build` | done |
 | 8 | Recommend | `/recommend` | with the user | done |
-| 9 | Pull request | `/create-pr` | with the user | in progress |
-| 10 | Review | `/watch-pr` | on the pull request | pending |
+| 9 | Pull request | `/create-pr` | with the user | done |
+| 10 | Review | `/watch-pr` | on the pull request | in progress |
 
 Statuses: `pending`, `in progress`, `done`.
 
