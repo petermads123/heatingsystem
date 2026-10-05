@@ -391,13 +391,13 @@ Three caveats worth knowing:
 
 ### Branch protection
 
-The rulesets for `main` live in `petermads123/template_repo`, under
-`.claude/skills/repo-setup/`. That skill sets up new repos only, so it is not carried here.
-`main_protect.solo.json` is the one for a solo repo: deletion and force-push blocked, a pull
-request required, review threads resolved, Copilot reviewing each push.
-`main_protect.collab.json` is for once other people work here too. Neither is applied
-automatically. Import one under
-*Settings → Rules → Rulesets → New ruleset → Import a ruleset*.
+`main` is protected by the `main_protect` ruleset, imported from `petermads123/template_repo`'s
+`.claude/skills/repo-setup/main_protect.solo.json`. It blocks deletion and force-push,
+requires a pull request with every review thread resolved, and has Copilot review each
+push. No one can bypass it, admins included. Once other people work here too, replace it
+with `main_protect.collab.json` from the same folder: delete the current ruleset, then
+*Settings → Rules → Rulesets → New ruleset → Import a ruleset*. The two share a name, so
+GitHub refuses an import while the other one exists.
 
 ### Troubleshooting
 
