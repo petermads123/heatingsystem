@@ -495,7 +495,6 @@ its entry here is deleted in the same change.
 | — | Every skill pins `model` and `effort` in its frontmatter; the table in `skills/build/models.md` says which and why |
 | `skills/build/` | `/build` — steps 3 to 7 as one unattended block, with `models.md` holding the per-step model and effort table and its rationale: a subagent per step on its pinned model, the step's readers (`structure-auditor`, `test-designer`) run by the orchestrator and handed over in the brief, work-in-progress commits, commit and push after each, halting rules, trace relay, resume from the marker or an interrupted run |
 | `rules/python.md` | Coding conventions, auto-loaded for `**/*.py` |
-| `skills/repo-setup/` | `/repo-setup` — one-time setup of a repo made from this template; carries `main_protect.solo.json` and `main_protect.collab.json` |
 | `skills/feature/` | `/feature` — starts or resumes the pipeline |
 | `skills/fix/` | `/fix` — starts the pipeline from a defect: reproduces, finds the root cause, sizes the class, has the diagnosis criticised, decides whether it is a bug at all, then hands to `/conceptualize` as a fix round |
 | `skills/conceptualize/` | `/conceptualize` — step 1, agree the concept |

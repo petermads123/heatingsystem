@@ -391,11 +391,13 @@ Three caveats worth knowing:
 
 ### Branch protection
 
-`.claude/skills/repo-setup/main_protect.solo.json` is the ruleset for `main` in a solo
-repo: deletion and force-push blocked, a pull request required, review threads resolved,
-Copilot reviewing each push. It is not applied automatically. Import it under
-*Settings → Rules → Rulesets → New ruleset → Import a ruleset*, or use
-`main_protect.collab.json` once other people work here too.
+The rulesets for `main` live in `petermads123/template_repo`, under
+`.claude/skills/repo-setup/`. That skill sets up new repos only, so it is not carried here.
+`main_protect.solo.json` is the one for a solo repo: deletion and force-push blocked, a pull
+request required, review threads resolved, Copilot reviewing each push.
+`main_protect.collab.json` is for once other people work here too. Neither is applied
+automatically. Import one under
+*Settings → Rules → Rulesets → New ruleset → Import a ruleset*.
 
 ### Troubleshooting
 
