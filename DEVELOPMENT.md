@@ -11,7 +11,7 @@ ends by cleaning it: entries the branch resolved are removed, duplicates are mer
 only open items are left. Before an entry is deleted or renamed, anything that points at it
 by heading is updated in the same change.
 
-## `feat/fixed-output` round 2 — 2026-09-22
+## `feat/fixed-output` round 2 — 2026-09-23
 
 Deferred at step 8; the full rows are in `development/feat/fixed-output/02-attribute-surface.md` §8.
 
@@ -37,8 +37,8 @@ Deferred at step 8; the full rows are in `development/feat/fixed-output/04-modul
 
 - **R4** — make `update()` transactional for the per-call setpoint too, so a modulator raise
   stores nothing. Take it with R5 if a second model lands.
-- **R5** — give `_validation.window_length` a `name` parameter like the other helpers. Waits
-  for a second caller.
+- **R5** — give `_validation.window_length` a `name` parameter like the other helpers, and
+  stop `_validation.py`'s module docstring naming its callers. Waits for a second caller.
 - **R6** — regroup `tests/test_pi_controller.py` by subject, collapse the duplicated
   validation matrices, and prune `STRUCTURE.md`'s test narrative; apply the per-subpackage
   `STRUCTURE.md` split only once a third subpackage arrives.
