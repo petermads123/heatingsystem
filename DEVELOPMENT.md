@@ -1,0 +1,46 @@
+# Development notes
+
+Development-side open questions and things to fix later: what the code does not do yet, a
+question nobody can answer yet, an idea that fell short of a recommendation. Not a design
+document and not a changelog.
+
+**Adding an entry:** a heading, the date and the branch/round it came from, the item itself,
+and its next step or where it is configured. **Resolving an entry:** the change that
+resolves it deletes it — this file only ever shows what is still open. Step 8 of every round
+ends by cleaning it: entries the branch resolved are removed, duplicates are merged, and
+only open items are left. Before an entry is deleted or renamed, anything that points at it
+by heading is updated in the same change.
+
+## `feat/fixed-output` round 2 — 2026-09-23
+
+Deferred at step 8; the full rows are in `development/feat/fixed-output/02-attribute-surface.md` §8.
+
+- **R4** — decide what a mid-run `ki` change does to the accumulated integral: rescale so
+  the I-term stays continuous, or document that the caller should `reset()` after re-tuning.
+- **R6** — record `pi_output` in the `test.py` simulation and draw it under the hold band;
+  use `hs.OUTPUT_MIN`/`OUTPUT_MAX` there instead of literals. Lands together with round 3's R5.
+- **R7** — move the room's first-order thermal model out of `test.py` into the package as
+  its second model.
+
+## `feat/fixed-output` round 3 — 2026-09-23
+
+Deferred at step 8; the full rows are in `development/feat/fixed-output/03-state-snapshot.md` §8.
+
+- **R4** — a `PIController.__repr__` built from `to_dict()`.
+- **R5** — a restart in the closed-loop simulation: snapshot mid-hold, rebuild with
+  `from_dict`, overlay a fresh controller's trajectory. Same two `test.py` signatures as
+  round 2's R6, so the two land together.
+
+## `feat/fixed-output` round 4 — 2026-09-24
+
+Deferred at step 8; the full rows are in `development/feat/fixed-output/04-modulator.md` §8.
+
+- **R4** — make `update()` transactional for the per-call setpoint too, so a modulator raise
+  stores nothing. Take it with R5 if a second model lands.
+- **R5** — give `_validation.window_length` a `name` parameter like the other helpers, and
+  stop `_validation.py`'s module docstring naming its callers. Waits for a second caller.
+- **R6** — regroup `tests/test_pi_controller.py` by subject, collapse the duplicated
+  validation matrices, and prune `STRUCTURE.md`'s test narrative; apply the per-subpackage
+  `STRUCTURE.md` split only once a third subpackage arrives.
+- **R7** — promote the modulator's `_to_dict`/`_from_dict` to public, once a caller drives a
+  `Modulator` standalone and needs it to survive a reload.

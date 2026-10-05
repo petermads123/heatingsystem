@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_brief.py\"",
+            "command": "\"$(for p in python3 python; do \"$p\" -c '' </dev/null >/dev/null 2>&1 && command -v \"$p\" && break; done || echo python3)\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_brief.py\"",
             "timeout": 30
           }
         ]
@@ -13,11 +13,11 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_git.py\"",
+            "command": "\"$(for p in python3 python; do \"$p\" -c '' </dev/null >/dev/null 2>&1 && command -v \"$p\" && break; done || echo python3)\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_git.py\"",
             "timeout": 30
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint_py.py\"",
+            "command": "\"$(for p in python3 python; do \"$p\" -c '' </dev/null >/dev/null 2>&1 && command -v \"$p\" && break; done || echo python3)\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint_py.py\"",
             "timeout": 90
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_gate.py\"",
+            "command": "\"$(for p in python3 python; do \"$p\" -c '' </dev/null >/dev/null 2>&1 && command -v \"$p\" && break; done || echo python3)\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_gate.py\"",
             "timeout": 320
           }
         ]

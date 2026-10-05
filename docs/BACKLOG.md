@@ -3,7 +3,14 @@
 Findings from a review of the Claude configuration this repo adopted from
 `petermads123/template_repo` (`.claude/`, the hooks, the ruleset, `pyproject.toml`),
 September 2026. The configuration was ported wholesale, so every open item here applies
-to this repo as much as to the template.
+to this repo as much as to the template. It was re-imported in October 2026 with three
+deliberate exceptions, which a future wholesale import must keep:
+
+- `/repo-setup` is left out, because it sets up new repos only.
+- `.claude/settings.json` finds the hook interpreter differently (see Portability in §4).
+- `.claude/skills/implement/SKILL.md` and `.claude/skills/test/SKILL.md` give this
+  package's `pi_controller.py` and `tests/test_pi_controller.py` as a second reference.
+  The template points at its `hello_world` placeholder instead, which does not exist here.
 
 This is **not** a plan file. It carries no `claude-plan` marker and lives outside
 `development/`, which is the only directory `.claude/hooks/plan_state.py` scans — so nothing
@@ -93,10 +100,10 @@ Routing: the prose fix alone is `/small-change`; adding either check to the stop
 | Item | Why | Routing |
 |---|---|---|
 | ~~Tests for `plan_state.py` and `stop_gate.py`~~ — **done**, `e155ea4` | Shipped with the git-guard work rather than as a later round: 291 tests now cover all three substantial hooks, where there were none. | — |
-| ~~`gh` is an undeclared hard dependency~~ — **done** | `create-pr` and `repo-setup` now say "the GitHub MCP tools where they are available, `gh` where it is", which is how PR #6 and #7 were actually opened. A `.mcp.json` pinning the GitHub MCP server would make the two surfaces identical; not needed until one of them fails. | — |
-| `CODEOWNERS` | `main_protect.collab.json` can set `require_code_owner_review`, and the collab ruleset is offered without the file that gives it meaning. Also auto-routes the approver named in `CLAUDE.md`. | `/small-change` |
+| ~~`gh` is an undeclared hard dependency~~ — **done** | `create-pr` now says "the GitHub MCP tools where they are available, `gh pr create` where it is", which is how `template_repo`'s PR #6 and #7 were actually opened. A `.mcp.json` pinning the GitHub MCP server would make the two surfaces identical; not needed until one of them fails. | — |
+| `CODEOWNERS` | `main` now runs the template's solo ruleset, which leaves `require_code_owner_review` off, so nothing needs the file yet. It would auto-route the approver named in `CLAUDE.md`, and would be needed if code-owner review were ever turned on. | `/small-change` |
 | ~~Pin the toolchain~~ — **done**, `e155ea4` | It happened exactly as predicted while the git-guard work was in flight: a Ruff release added formatting of Python inside Markdown and turned the gate red on `.claude/rules/python.md`, prose nobody had edited. Now pinned to `ruff>=0.16,<0.17`, `mypy>=2.3,<3`, `pytest>=9.1,<10`, with the reason recorded in `pyproject.toml` so a future reader does not undo it. | — |
-| Portability | `.vscode/settings.json` hardcodes `.venv\Scripts\python.exe`, the documented commands are PowerShell, and `settings.json` invokes hooks as bare `python`. `venv_tool` correctly probes both layouts, so the hooks themselves are fine — but where the interpreter is `python3` only, all four hooks fail silently, which is a poor failure mode for the machinery enforcing every rule. | `/feature` |
-| `/bugfix` skill | Ten steps cover building a feature and the routing table has exactly two destinations. A reported bug is neither cosmetic nor a fresh concept, so it all lands in `/feature` today. | `/feature` |
+| Portability | `.vscode/settings.json` hardcodes `.venv\Scripts\python.exe` and the documented commands are PowerShell. ~~`settings.json` invokes hooks as bare `python`~~ — **done**: every hook command now runs the first of `python3` or `python` that actually starts, so a `python3`-only machine runs the hooks and the Windows Store alias stub (exit 9009, which made `guard_git` fail open) is skipped. This line deliberately differs from `template_repo`, which still has `command -v python3 \|\| command -v python`: a future wholesale `.claude/` import must keep it until the template carries the same fix. | `/feature` |
+| ~~`/bugfix` skill~~ — **done** | Shipped from the template as `/fix`, which diagnoses before step 1 and runs the pipeline as a fix round. | — |
 | `/release` skill | Nothing manages `version = "0.1.0"`. No tag, no changelog. | `/feature` |
 | `/audit` skill | The git history contains "Fix the inconsistencies a full audit of the repo turned up" — that audit was ad hoc, and the drifts in 3.4 are the same class of thing recurring. Make it repeatable. | `/feature` |

@@ -3,7 +3,7 @@ name: conceptualize
 description: Step 1 of the feature pipeline. Discuss and agree what a feature is, what it connects to, and the observable criteria that define it as done; then name the branch, create its plan folder and first round file, and commit. Use at the start of a feature, or to revise a concept before planning.
 argument-hint: [what to build]
 model: opus
-effort: xhigh
+effort: high
 ---
 
 # Step 1 — Conceptualize
@@ -33,8 +33,10 @@ and nothing on disk would otherwise say a diagnosis was owed.
 
 ## 1. Ground yourself
 
-Read `STRUCTURE.md` and skim whatever it names as relevant. A concept that ignores what
-already exists produces a plan that duplicates it.
+Read `STRUCTURE.md` and skim whatever it names as relevant. Also read `DEVELOPMENT.md`: an
+open entry this feature touches is part of its context, and a question the feature raises
+that cannot be answered yet may belong there too. A concept that ignores what already exists
+produces a plan that duplicates it.
 
 **If this is a later round** — step 8 or step 10 opened a second or third file in the
 branch's folder — read every earlier round in that folder first, then fill in the **Builds
@@ -129,6 +131,11 @@ Fill the Open questions list as they come up, and empty it before the step ends.
 unanswered question here becomes a decision made by accident in step 3 — and in this
 pipeline nobody is watching step 3.
 
+A question the user genuinely cannot answer yet, and that this round does not depend on, is
+not left open either: turn it into a stated assumption in section 1 and a `DEVELOPMENT.md`
+entry recording the question and where it is tracked. It is written alongside section 1 in
+*Stop here, then create* below — nothing reaches disk before the user confirms.
+
 ## 5. Name the branch
 
 Once the scope is settled, propose the branch, using the convention in `CLAUDE.md` —
@@ -141,6 +148,10 @@ than the ticket: `fix/rolling-mean-last-window`, not `fix/bug-12`.
 
 A later round keeps the branch its folder is named for. There is nothing to choose.
 
+Whatever branch the session happens to be on is not a proposal. A hosted session starts on
+a branch the environment named before the scope existed; it is a placeholder, and the name
+chosen here replaces it when the round file is created below.
+
 ## Stop here, then create
 
 Ask the user to confirm the concept, quoting the acceptance criteria and the branch name in
@@ -152,17 +163,42 @@ place in the pipeline to change your mind and the most expensive one to rush.
 **Only once they confirm**, in this order:
 
 1. Create the branch from `main`, unless this is a later round — then the branch already
-   exists and is checked out.
+   exists and is checked out. This is the first moment the branch exists under its agreed
+   name, and that holds even when the session is already sitting on some other branch.
 
    ```bash
    git fetch origin main
    git checkout -b <type>/<topic> origin/main
    ```
 
-   Where the environment dictates the branch — a hosted session that may only push to a
-   branch it was given — keep the conventional name for the **folder** and write the branch
-   you actually push to in the Branch row. The folder is the feature's name; the row is
-   where its commits go.
+   **A session placeholder is not the branch.** A hosted session usually starts on a
+   branch the environment created before anyone knew the scope — `claude/<random-words>`
+   or similar. Recognise it by its name not following the `type/kebab-case` convention and
+   by it carrying no commits beyond `origin/main`:
+
+   ```bash
+   git branch --show-current
+   git log --oneline origin/main..HEAD
+   ```
+
+   Branch off `origin/main` as above all the same, and push to `<type>/<topic>`, not to
+   the placeholder. The branch name quoted in the confirmation message is what makes that
+   permitted: say there that the work will go to `<type>/<topic>` rather than to the
+   session's assigned branch, so the user's yes covers it. Then drop the local placeholder
+   with `git branch -D <placeholder>` — it has no commits, and nothing of the pipeline's
+   was pushed to it. A placeholder that already exists on the remote is left there; delete
+   it only if the user asks.
+
+   If the placeholder *does* carry commits beyond `origin/main`, it is not a placeholder —
+   it holds someone's work. Stop and ask whether to branch from it, from `main`, or to use
+   it as is.
+
+   **Only if the push to `<type>/<topic>` is refused** — an environment that lets the
+   session push to its assigned branch and nowhere else — fall back to that branch: switch
+   to it, fast-forward it to the commit (`git merge --ff-only <type>/<topic>`), push it,
+   and write it in the Branch row. The folder keeps the conventional name either way: the
+   folder is the feature's name; the row is where its commits go. Tell the user the
+   fallback happened, in one line.
 
 2. Create the folder and the round file (round 1 shown; a later round's file already
    exists, created by the step that opened it):
@@ -177,7 +213,9 @@ place in the pipeline to change your mind and the most expensive one to rush.
    everything from the conversation into section 1 — the Defect block from the diagnosis
    and the conversation on a fix round, or deleted whole on a feature round. On a round
    that was opened on a bug report, delete the "Opened on a bug report — run `/fix`
-   first" line from **Builds on** now that the block is filled.
+   first" line from **Builds on** now that the block is filled. If step 4 above turned an
+   unanswerable question into a stated assumption, write its `DEVELOPMENT.md` entry now too,
+   alongside section 1.
 
 3. Mark step 1 `done` in the Progress table and set the marker to
    `<!-- claude-plan step=2 status=active -->`.
@@ -187,8 +225,15 @@ place in the pipeline to change your mind and the most expensive one to rush.
    always resume from the remote.
 
    ```bash
-   git add development/ && git commit -m "..." && git push -u origin <branch>
+   git add development/ DEVELOPMENT.md && git commit -m "..." -- development/ DEVELOPMENT.md && git push -u origin <branch>
    ```
+
+   `<branch>` is the Branch row: `<type>/<topic>` unless the fallback in item 1 applied.
+
+   The pathspec on the commit keeps anything else that happens to be staged out of the
+   branch's first commit. `DEVELOPMENT.md` is harmless to name even when this round added no
+   entry to it: a pathspec naming a file with nothing staged under it is a no-op, not an
+   error.
 
 5. **Invoke `/plan`** in the same turn. The user's confirmation is the gate between the two
    steps, and they have just passed it; the plan is what they see next, and it ends on its

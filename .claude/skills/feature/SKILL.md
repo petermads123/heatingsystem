@@ -3,12 +3,13 @@ name: feature
 description: Start or resume the ten-step implementation pipeline for a feature, module, behavior change or anything needing a design decision. Creates the plan file that carries the work from concept to pull request, or reports which step an in-flight plan is on. Use for any change that is not purely cosmetic, whether the user names the skill or just describes the work in prose.
 argument-hint: [what to build]
 model: opus
-effort: xhigh
+effort: high
 ---
 
 # Feature pipeline
 
-Ten steps, one plan folder per branch, three places where the user decides. This skill is
+Ten steps, one plan folder per branch, at most three places where the user decides (step
+8 only when it finds something critical), plus a yes before step 9 publishes. This skill is
 the entry point for a feature: it either resumes what is in flight or starts something new.
 It does not do the work. A defect enters the same pipeline through `/fix`, which diagnoses
 it first.
@@ -24,7 +25,7 @@ it first.
 | 5 | Test | `/build` → `/test` | Edge-case suite, pytest green | — |
 | 6 | Concept check | `/build` → `/concept-check` | Audit against step 1, not step 2 | — |
 | 7 | Ship | `/build` → `/ship` | Round complete on the branch | — |
-| 8 | Recommend | `/recommend` | Ranked follow-ups | the user |
+| 8 | Recommend | `/recommend` | Critical follow-ups, usually none | the user, only if there is one |
 | 9 | Pull request | `/create-pr` | PR to `main`, ready for review | the user, before publishing |
 | 10 | Review | `/watch-pr` | Hourly check until the PR merges or closes | — |
 
@@ -66,6 +67,11 @@ names the branch, creates the plan folder and the first round file, and commits.
 created here, because the folder is named for the branch and the branch is not chosen
 until the scope is — naming it now would guess at a scope step 1 has not settled yet.
 
+The same goes for a branch the session already started on. A hosted session is usually
+handed one before anyone has said what the work is — `claude/<random-words>` — and it is a
+placeholder, not the feature's branch. Commit nothing to it and do not propose its name;
+step 1 names the branch from the agreed scope and moves the work onto it.
+
 Do not shortcut step 1 by writing a concept unilaterally and asking for a yes. It is where
 the shape of the feature actually gets decided.
 
@@ -74,5 +80,6 @@ the shape of the feature actually gets decided.
 `/feature` with no argument, or in a fresh session, reports the state and stops — including
 which round of which branch is in flight, what the earlier rounds delivered, and whether a
 build halted and on what. The step's own skill re-enters it: `/plan` to revise a plan,
-`/build` to resume a halted build, `/recommend` to decide the list, `/watch-pr` to resume a
-watch. Re-running a step is normal and cheap. Skipping one is neither.
+`/build` to resume a halted build, `/recommend` to decide a critical follow-up left
+undecided, `/watch-pr` to resume a watch. Re-running a step is normal and cheap. Skipping
+one is neither.

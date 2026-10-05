@@ -3,7 +3,7 @@ name: test
 description: Step 5 of the feature pipeline. Turn the plan's test intents into a concrete pytest suite, hunting edge cases — empty, boundary, unicode, missing and malformed input — then fix what the tests expose and re-run the static checks. Runs inside /build as a subagent, after verification passes.
 argument-hint: [slug, if more than one plan exists]
 model: sonnet
-effort: max
+effort: high
 ---
 
 # Step 5 — Test
@@ -18,7 +18,11 @@ your brief.
 ## 1. Find the cases
 
 For each public function, delegate edge-case discovery rather than guessing at it — to two
-designers at once, with different briefs, so the list is not one reader's blind spots:
+designers at once, with different briefs, so the list is not one reader's blind spots.
+Inside `/build` a subagent cannot start another agent, so the orchestrator runs both just
+before this step and their reports are in your brief: start from the merge below. If the
+brief says one failed or returned nothing, find that brief's cases yourself and say so in
+the trace. Run standalone, start them yourself:
 
 ```
 Agent with subagent_type: "test-designer"   brief: input-space
@@ -133,8 +137,8 @@ including one that proves the message names the value, a malformed type with a n
 `# type: ignore` and its reason on the same line, purity and idempotency. Nine tests for one
 function is not excessive — it is what "past the happy path" costs.
 
-The package's own `tests/test_hello_world.py` is **not** the reference: it covers a
-placeholder script and gets deleted with it.
+The package's own suites are a fair second reference — `tests/test_pi_controller.py`
+follows these conventions — but the worked file above is the authority where they differ.
 
 ## 3. Fix what the tests expose
 
