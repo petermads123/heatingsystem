@@ -1,9 +1,9 @@
 ---
 name: fix
-description: Start the pipeline from a defect — wrong output, a crash, a guard that lets something through. Diagnoses before anything is agreed: reproduces the symptom, finds the root cause, sizes the class of inputs it breaks, has a second reader try to falsify the cause, and decides whether it is a defect at all; then hands the diagnosis to /conceptualize as a fix round. Use for any reported bug, whether the user names the skill or describes the symptom in prose.
+description: "Start the pipeline from a defect — wrong output, a crash, a guard that lets something through. Diagnoses before anything is agreed: reproduces the symptom, finds the root cause, sizes the class of inputs it breaks, has a second reader try to falsify the cause, and decides whether it is a defect at all; then hands the diagnosis to /conceptualize as a fix round. Use for any reported bug, whether the user names the skill or describes the symptom in prose."
 argument-hint: [the symptom]
 model: opus
-effort: xhigh
+effort: high
 ---
 
 # Fix
@@ -49,6 +49,12 @@ fixes what its tests find — not to a second pipeline.
 be about what that branch shipped. Ask. If it is, open the round the way `/watch-pr`
 section 4 does — a new numbered file in that branch's folder, marked as opened on a bug
 report — and diagnose into it, rather than branching a fresh `fix/` round from `main`.
+
+**If the session started on a branch the environment named** — `claude/<random-words>`
+in a hosted session — that is a placeholder, not the fix's branch, and it does not count
+as "the current branch" above unless it really has an open pull request. Commit nothing
+to it; the diagnosis writes nothing to the tree anyway, and step 1 names the `fix/` branch
+once the scope is agreed and moves the round onto it.
 
 **If the request is not a defect** — the user wants something that does not exist, or wants
 existing behaviour changed rather than corrected — say so and switch to `/feature`. The
@@ -102,8 +108,9 @@ Two lists. **Other inputs the same cause breaks**: enumerate them and run the on
 matter, because they are the raw material of the acceptance criteria and the substance of
 the scope question. **The same shape elsewhere**: grep for the pattern — a second
 comparison that fails the same way, a second parser with the same blind spot. What is found
-here is either in this round's scope or a recommendation at step 8, and step 1 decides
-which.
+here is either in this round's scope or left for step 8, and step 1 decides which; step 8
+raises it as a recommendation only if it is critical, and otherwise at most notes it in
+`DEVELOPMENT.md`.
 
 ### Blast radius
 

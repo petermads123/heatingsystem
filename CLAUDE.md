@@ -30,7 +30,7 @@ accepted at step 8 opens the next round on the same branch.
 | 5 | Test | `/build` → `/test` | Edge-case suite, pytest green | — |
 | 6 | Concept check | `/build` → `/concept-check` | Audit against step 1, not step 2 | — |
 | 7 | Ship | `/build` → `/ship` | Round closed, whole tree green | — |
-| 8 | Recommend | `/recommend` | Ranked follow-ups, decided with the user | the user |
+| 8 | Recommend | `/recommend` | Critical follow-ups only, usually none; lesser ideas noted in `DEVELOPMENT.md` | the user, only if there is one |
 | 9 | Pull request | `/create-pr` | Whole-branch re-verification, then a PR to `main` | the user, before publishing |
 | 10 | Review | `/watch-pr` | Hourly check until the PR merges or closes | — |
 
@@ -54,7 +54,7 @@ behave differently read the block from the plan file, and no hook needs to know:
 | 3 | Writes the reproduction as a test and runs it red before fixing; a reproduction that is already green halts the build |
 | 5 | Extends the test file step 3 added the reproduction to, and leaves that test as written |
 | 6 | Cites the red run and the green run for the reproduction, and more than a green suite for the regression criterion |
-| 8 | Runs a fourth `brainstormer` lens, `defect-class`: the same cause elsewhere, and what let this ship |
+| 8 | Runs one `brainstormer`, lens `defect-class`: the same cause elsewhere, and what let this ship; held to the same critical-only bar |
 | 9 | Puts the Defect block's Observed, Root cause and Scope rows in the pull request body, so the reviewer sees the cause |
 
 Exactly one plan file across the repo carries `status=active`. When step 8 opens the next
@@ -64,11 +64,12 @@ says a build is in flight and no commit exists only to tidy up afterwards.
 
 ### Three gates, one unattended block
 
-The user decides three times: they confirm the concept (step 1), accept the plan (step 2),
-and decide the recommendations (step 8), plus a yes before step 9 publishes. Everything
-between the plan and the recommendations — **steps 3 to 7** — is `/build`: one skill that
-runs the five steps in order without asking, each in its own subagent on the model that
-step pins, committing and pushing after each.
+The user decides at most three times: they confirm the concept (step 1), accept the plan
+(step 2), and decide any critical follow-up (step 8), plus a yes before step 9 publishes.
+Most rounds have no critical follow-up, and then step 8 records `None.` and hands straight
+to step 9. Everything between the plan and step 8 — **steps 3 to 7** — is `/build`: one
+skill that runs the five steps in order without asking, each in its own subagent on the
+model that step pins, committing and pushing after each.
 
 The build **halts** and hands back to the user on exactly two things:
 
@@ -97,45 +98,19 @@ reader is cheap insurance against one author's blind spots:
 | 2 Plan | one `plan-critic` | The plan is the last thing anyone re-thinks before the build runs unattended |
 | 5 Test | two `test-designer` briefs, `input-space` and `contract` | Edge cases from the parameters and from the promises are different lists |
 | 6 Concept check | none extra | Running as its own subagent already makes it an independent read |
-| 8 Recommend | three `brainstormer` lenses, `user`, `maintainer`, `integrator`, plus `defect-class` on a fix round | Follow-ups are opinion; three opinions that disagree are worth more than one |
+| 8 Recommend, fix round only | one `brainstormer`, lens `defect-class` | The same cause elsewhere is the one follow-up a fix reliably has, and its author is the last to see it |
 
 Read-only agents run in parallel; anything that writes runs alone. The calling step merges
 what comes back, applies or rebuts each finding on the record, and stays the one voice in
-the code and the plan file.
+the code and the plan file. A step's subagent cannot start another agent, so inside
+`/build` the orchestrator runs step 5's designers, and the `structure-auditor` before steps
+4 and 6, and hands their reports over in the step's brief.
 
 ### Each step picks its own model
 
-Every skill pins a model and effort in its frontmatter, so a step runs on what it needs
-rather than on whatever the session happens to be set to. A skill's override lasts the
-turn, which is exactly why steps 3 to 7 run as **subagents**: chained in one turn they
-would all run on the first skill's model. `/build` passes each step's model to its
-subagent; effort cannot be passed, so the subagent reads it from its skill file as intent.
-
-| Step | Model | Effort | Why |
-|---|---|---|---|
-| `/fix` diagnosis | `opus` | `xhigh` | A wrong root cause costs the whole build and ships a fix that does not fix |
-| 1 Conceptualize | `opus` | `xhigh` | Shaping the concept is the most expensive thing to get wrong |
-| 2 Plan | `opus` | `high` | The design fork, and signatures step 4 checks literally |
-| 3–7 `/build` | `opus` | `medium` | Orchestration: reads the marker, spawns, relays, halts |
-| 3 Implement | `sonnet` | `max` | Transcribing a plan that has already done the thinking |
-| 4 Verify | `sonnet` | `max` | Mechanical checks plus classifying each mismatch |
-| 5 Test | `sonnet` | `max` | Edge cases and the bugs they expose |
-| 6 Concept check | `sonnet` | `max` | A different model from the one that wrote the plan |
-| 7 Ship | `sonnet` | `max` | Gates on the whole round, diff review; procedural |
-| 8 Recommend | `opus` | `xhigh` | Judging what is worth building next |
-| 9 Pull request | `sonnet` | `max` | Verification and writing, both well-specified |
-| 10 Review | `opus` | `medium` | Most check-ins find nothing; the judgment is fix-or-new-round |
-
-`/feature` carries step 1's settings because it opens step 1 in the same turn, and so does
-`/fix`, whose diagnosis is the same judgment made one step earlier.
-`/small-change` runs `opus` at `high`: bypassing the pipeline is a judgment call made
-without any of its safety nets, so the step that decides whether a change really is small
-gets the clever model.
-
-`max` is the top effort level; every Sonnet step uses it. Aliases rather than pinned IDs, so
-a newer Opus or Sonnet is picked up without editing a dozen files. `ultracode` is a
-session-level effort setting and not valid in frontmatter, where the levels are `low`,
-`medium`, `high`, `xhigh` and `max`.
+Every skill pins `model` and `effort` in its frontmatter, and steps 3 to 7 run as subagents
+because a skill's override lasts the turn. The per-step table and the reasoning behind each
+choice live in `.claude/skills/build/models.md`.
 
 ### Review and merge
 
@@ -175,34 +150,18 @@ one thread is feedback, not authorisation to merge. When unsure, ask.
 
 ### Step 10 runs until the pull request closes
 
-Opening the pull request is not finishing the work. Step 10 re-checks it about once an hour,
-acts on review comments and CI, and ends only when the pull request merges or closes. The
-plan file is already `done`, so the watch is session state and the pull request thread is
-the record; `/watch-pr` in a fresh session finds the pull request from the branch.
-
-`/create-pr` invokes `/watch-pr` unasked, because the alternative is a published pull
-request nobody is watching. It is also the one step that mostly does nothing, and a quiet
-check-in re-arms silently rather than reporting.
-
-Its judgment call is whether a review comment is a fix or a new round. The same small-or-
-large test decides, and the same rule applies: **when it is close, route up.** An
-over-routed comment costs a conversation; an under-routed one puts unplanned, untested
-behaviour into a pull request a reviewer has already read. A comment that fits neither is
-left open and handed to the user — guessing at a comment you cannot place is worse than
-saying you cannot place it.
-
-A bot's finding, Copilot's included, is a claim to verify against the code rather than a
-request to obey. Because thread resolution gates the merge and a bot never resolves its own
-thread, every bot thread must end resolved — which makes "resolve it" the cheapest way to
-green. So **a dismissed bot finding is always reported to the user**, with the reason, in
-the same breath as the merge.
+Opening the pull request is not finishing the work: `/create-pr` invokes `/watch-pr` unasked,
+and it runs until the pull request merges or closes. How it re-checks, routes review comments
+and handles bot findings lives in that skill.
 
 ### The gates are the point
 
-**Steps 1, 2 and 8 end on a question, and wait for the answer.** Never take a user's gate
-for them: not because the answer looks obvious, not because they seem to want speed. The
-user's confirmation at step 1 opens step 2 in the same turn, and their acceptance at step 2
-opens the build — those are the user passing a gate, not Claude skipping one.
+**Steps 1 and 2 end on a question, and so does step 8 when it has a critical follow-up;
+each waits for the answer.** Step 8 with nothing critical asks nothing and hands on to step
+9, whose question before publishing still waits. Never take a user's gate for them: not
+because the answer looks obvious, not because they seem to want speed. The user's
+confirmation at step 1 opens step 2 in the same turn, and their acceptance at step 2 opens
+the build — those are the user passing a gate, not Claude skipping one.
 
 The gates are where the work is cheap to redirect: a concept costs a conversation to
 change, a plan a revision, and a build that halts costs whatever it built. A build that
@@ -223,7 +182,7 @@ belongs back at step 1, and saying so — as a halt, from inside the build — i
 | Need edge cases for a function | `test-designer` subagent, `input-space` or `contract` brief |
 | A root cause that needs a second reader before a fix is agreed on it | `diagnosis-critic` subagent, from `/fix` |
 | A plan that needs a second reader | `plan-critic` subagent |
-| Follow-ups for a finished feature | `brainstormer` subagent, one lens per run |
+| Ideas for what to build next, when the user asks for them | `brainstormer` subagent, one lens per run |
 | STRUCTURE.md looks out of sync with the code | `structure-auditor` subagent |
 | Broad "where is X" search across the repo | built-in `Explore` subagent |
 
@@ -287,6 +246,15 @@ the failure this section exists to prevent.
 the conventions are already in context — you do not need to invoke anything to get them.
 A subagent does not get that for free: the build's steps read the file themselves.
 
+## Development notes: `DEVELOPMENT.md`
+
+A file at the repo root for development-side open questions and things to fix later. Steps
+1, 8 and 10 add entries — step 8's are the ideas that fell short of a critical
+recommendation — and step 9 checks the branch removed the ones it resolved. Step 8 ends
+every round by cleaning the file: entries the branch resolved are removed, duplicates are
+merged, and only open items are left. The change that resolves an entry deletes it — the
+procedure for adding and cleaning entries lives in the skills, not here.
+
 ## Branches
 
 Never commit to `main`; it is protected on the remote and `.claude/hooks/guard_git.py`
@@ -303,9 +271,11 @@ refuses the command. Branch names are `type/kebab-case`:
 
 Examples: `feat/csv-export`, `fix/greet-unicode-crash`, `refactor/split-solver-module`,
 `chore/bump-ruff`. The branch is chosen and created at the close of step 1, and its plan
-folder is named for it: `development/feat/csv-export/`. Where the environment dictates a
-different branch to push to, the folder keeps the conventional name and the plan's Branch
-row records the real one.
+folder is named for it: `development/feat/csv-export/`. A branch a hosted session starts
+on — `claude/<random-words>` — is a placeholder named before the scope existed: nothing is
+committed to it, and step 1 branches the agreed name off `main` and pushes there instead.
+Only if the environment refuses that push does the work fall back to the session's branch;
+the folder then keeps the conventional name and the plan's Branch row records the real one.
 
 ## Commands
 
@@ -322,11 +292,11 @@ pytest
 
 - **At session start**, `.claude/hooks/session_brief.py` reports the active plan and the
   step it is on. Silent when nothing is in flight.
-- **Before every `Bash` call**, `.claude/hooks/guard_git.py` refuses a commit or push that
-  would land on `main`, including inside a compound command. `settings.json` pre-approves
-  the git commands the pipeline needs — add, commit, push, fetch, checkout, switch, merge —
-  so an unattended build never stalls on a permission prompt; the guard is what makes that
-  safe.
+- **Before every `Bash` or `PowerShell` call**, `.claude/hooks/guard_git.py` refuses a
+  commit or push that would land on `main`, including inside a compound command.
+  `settings.json` pre-approves the git commands the pipeline needs — add, commit, push,
+  fetch, checkout, switch, merge — so an unattended build never stalls on a permission
+  prompt; the guard is what makes that safe.
 - **After every `Write`/`Edit` of a `.py` file**, `.claude/hooks/lint_py.py` runs
   `ruff format` and `ruff check --fix` on that file. Formatting is handled for you; only
   unfixable errors come back.
