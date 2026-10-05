@@ -145,7 +145,7 @@ constant kept out of `STRUCTURE.md`, and a showcase whose inputs are named, whos
 argument lists its values, and whose second case teaches something the first does not.
 
 The package's own modules are a fair second reference — `src/heatingsystem/pi_controller/pi_controller.py`
-follows these conventions — but the worked module below is the authority where they differ.
+follows these conventions — but the worked module above is the authority where they differ.
 
 Do not hand-format. `.claude/hooks/lint_py.py` runs `ruff format` and `ruff check --fix` on
 every file you write, and reports back only what it could not fix.

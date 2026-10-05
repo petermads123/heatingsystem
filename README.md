@@ -337,13 +337,14 @@ something works gets an answer, not a pipeline.
 
 Each step also picks its own model. Concept, planning and recommendations run on Opus
 because they are judgment; implementation, verification, tests, the concept check and the
-pull request run on Sonnet at max effort because the thinking has already been done and
+pull request run on Sonnet at high effort because the thinking has already been done and
 written down. Steps 3 to 7 run as subagents for exactly this reason — a skill's model
 override lasts the whole turn, so five steps chained in one turn would all run on the first
 one's model. The one exception is the end of the build: `/build` opens `/recommend` in its
 own turn, so step 8 and the `/create-pr` it hands on to run on the build's model.
 `/small-change` runs on Opus too — deciding a change is small enough to skip the pipeline
-is the one judgment made without the pipeline to catch it. `CLAUDE.md` has the table.
+is the one judgment made without the pipeline to catch it. `.claude/skills/build/models.md`
+has the table.
 
 Step 9 is not a formality. It is the only point where the branch is verified as a whole:
 step 7 checked one round at one moment, so on a multi-round branch nothing has yet proved
@@ -384,8 +385,9 @@ Three caveats worth knowing:
   `.claude/settings.json` needs a Claude Code restart. Skills and rules hot-reload.
 - **The first session prompts for workspace trust**, because `.claude/settings.json`
   registers hooks. Accept it or the hooks stay inactive.
-- The hooks call `python` from your PATH and only use the standard library; they locate
-  `ruff`, `mypy` and `pytest` inside `.venv` themselves.
+- The hooks run the first of `python3` or `python` on your PATH that actually starts, so
+  the Windows Store alias stub, which exists but cannot run anything, is skipped. They only
+  use the standard library and locate `ruff`, `mypy` and `pytest` inside `.venv` themselves.
 
 ### Branch protection
 

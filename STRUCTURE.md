@@ -38,7 +38,7 @@ The package now has two subpackages (`modulator/`, `pi_controller/`) plus the pr
 `_validation.py` module at its root, but the per-subpackage split described above has
 deliberately not been applied yet — doing it inside an unattended build changes what the
 stop gate and the session brief see, which is not a change to make mid-round. It is
-recorded as a step 8 recommendation for this feature.
+deferred until a third subpackage arrives (see `DEVELOPMENT.md`).
 
 ## Tree
 
@@ -456,9 +456,12 @@ development/
 
 Each file holds the concept and acceptance criteria, the plan, the verification and test
 logs, the concept-check audit, the recommendations and the pull request, plus a `Halted`
-section if the build stopped to ask. Every round of a feature shares one branch and one
-pull request; a later round's **Builds on** section names what the earlier rounds
-delivered, and its step 6 re-checks their acceptance criteria as a regression pass.
+section if the build stopped to ask. A fix round's section 1 also carries a **Defect**
+block — reproduction, root cause, class, blast radius, scope — filled from the `/fix`
+diagnosis; its presence is what tells the later steps the round is a fix. Every round
+of a feature shares one branch and one pull request; a later round's **Builds on** section
+names what the earlier rounds delivered, and its step 6 re-checks their acceptance criteria
+as a regression pass.
 
 The first line after the title is the workflow's state and is read by the hooks:
 
@@ -489,7 +492,7 @@ its entry here is deleted in the same change.
 | Path | Role |
 |---|---|
 | `settings.json` | Registers the four hooks; pre-approves ruff/mypy/pytest, `python -m`, and the git commands the pipeline uses (read-only ones plus add, commit, push, fetch, checkout, switch, merge, mv) so an unattended build never stalls on a prompt — `guard_git.py` is what keeps that safe |
-| — | Every skill pins `model` and `effort` in its frontmatter; the table in `CLAUDE.md` says which and why |
+| — | Every skill pins `model` and `effort` in its frontmatter; the table in `skills/build/models.md` says which and why |
 | `skills/build/` | `/build` — steps 3 to 7 as one unattended block, with `models.md` holding the per-step model and effort table and its rationale: a subagent per step on its pinned model, the step's readers (`structure-auditor`, `test-designer`) run by the orchestrator and handed over in the brief, work-in-progress commits, commit and push after each, halting rules, trace relay, resume from the marker or an interrupted run |
 | `rules/python.md` | Coding conventions, auto-loaded for `**/*.py` |
 | `skills/repo-setup/` | `/repo-setup` — one-time setup of a repo made from this template; carries `main_protect.solo.json` and `main_protect.collab.json` |

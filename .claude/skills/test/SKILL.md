@@ -137,8 +137,8 @@ including one that proves the message names the value, a malformed type with a n
 `# type: ignore` and its reason on the same line, purity and idempotency. Nine tests for one
 function is not excessive — it is what "past the happy path" costs.
 
-The package's own `tests/test_hello_world.py` is **not** the reference: it covers a
-placeholder script and gets deleted with it.
+The package's own suites are a fair second reference — `tests/test_pi_controller.py`
+follows these conventions — but the worked file above is the authority where they differ.
 
 ## 3. Fix what the tests expose
 
