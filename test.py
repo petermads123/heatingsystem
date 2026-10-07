@@ -32,7 +32,7 @@ from matplotlib.colors import Colormap, Normalize
 import heatingsystem as hs
 
 # --- Simulation configuration -------------------------------------------------
-N_STEPS: int = 40  # total number of 5-minute control steps to simulate
+N_STEPS: int = 100  # total number of 5-minute control steps to simulate
 HISTORY_LENGTH: int = 6  # controller lookback window (requested)
 CHANGE_STEP: int = N_STEPS // 2  # setpoint changes halfway through the run
 SETPOINT_INITIAL: float = 21.0  # °C target before the change
@@ -40,20 +40,23 @@ SETPOINT_CHANGED: float = 23.0  # °C target after the change
 START_TEMP: float = 19.0  # °C initial room temperature
 
 # --- Fixed-output hold (e.g. a price spike) ----------------------------------
-HOLD_START: int = 8  # first step of the hold, once the room has settled
-HOLD_END: int = 14  # first step after the hold (exclusive)
+HOLD_START: int = 20  # first step of the hold, once the room has settled
+HOLD_END: int = 30  # first step after the hold (exclusive)
 HOLD_LEVEL: float = 0.0  # actuator level held during the hold: 0.0 = shut
 
 # --- Controller gains ---------------------------------------------------------
-KP: float = 0.4  # proportional gain
-KI: float = 0.1  # integral gain (per 5-minute step)
+# Tuned for ROOM_CAPACITY = 3 with a 4-step heat delay; a faster room or a
+# longer delay needs a lower KP to avoid oscillating.
+KP: float = 0.2  # proportional gain
+KI: float = 0.01  # integral gain (per 5-minute step)
 
 # --- First-order thermal-model parameters -------------------------------------
 AMBIENT_TEMP: float = 17.0  # °C the room drifts toward with the heater off
-HEAT_GAIN: float = 2.0  # °C/step added at full actuator output
-LOSS_COEFF: float = 0.2  # fraction of the room-to-ambient gap lost per step
+HEAT_GAIN: float = 2.0  # °C/step added at full output, for a capacity of 1
+LOSS_COEFF: float = 0.2  # fraction of the room-to-ambient gap lost per step, capacity 1
+ROOM_CAPACITY: float = 3.0  # thermal mass; higher = slower room, same final temperature
 HEAT_DELAY_STEPS: int = (
-    2  # steps before a command's heat reaches the room; 0 = immediate
+    4  # steps before a command's heat reaches the room; 0 = immediate
 )
 
 # Diverging colormap: 0.0 (off) -> blue, 1.0 (full on) -> red.
@@ -65,7 +68,9 @@ def step_temperature(temp: float, command: float) -> float:
 
     The model is a simple first-order energy balance: the heater adds energy
     proportional to its actuator command while the room continuously loses
-    energy toward the ambient temperature.
+    energy toward the ambient temperature.  Both are divided by
+    ``ROOM_CAPACITY``, so a larger capacity makes the room respond more slowly
+    without changing the temperature it settles at for a given command.
 
     Args:
         temp: Current room temperature in °C.
@@ -74,8 +79,10 @@ def step_temperature(temp: float, command: float) -> float:
     Returns:
         The room temperature in °C at the next step.
     """
-    # Heat added by the actuator minus passive loss toward ambient.
-    return temp + HEAT_GAIN * command - LOSS_COEFF * (temp - AMBIENT_TEMP)
+    # Heat added by the actuator minus passive loss toward ambient, scaled
+    # down by the room's thermal mass.
+    energy = HEAT_GAIN * command - LOSS_COEFF * (temp - AMBIENT_TEMP)
+    return temp + energy / ROOM_CAPACITY
 
 
 def run_simulation(
