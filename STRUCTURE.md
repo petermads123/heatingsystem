@@ -86,10 +86,10 @@ it will not install.
 
 ### `src/heatingsystem/_validation.py`
 
-Private module: the numeric contract behind every validating setting on `Modulator` and
-`PIController`, stated once so it does not drift between the two classes' docstrings. Not a
-subpackage — a single module at the package root, imported by both `modulator.py` and
-`pi_controller.py` as `from heatingsystem import _validation`, so a helper name can never be
+Private module: the numeric contract behind every validating setting on `Modulator`,
+`PIController`, `Room` and `SectionAllocator`, stated once so it does not drift between the classes' docstrings. Not a
+subpackage — a single module at the package root, imported by `modulator.py`,
+`pi_controller.py` and `allocator.py` as `from heatingsystem import _validation`, so a helper name can never be
 shadowed by a local or a parameter (`finite`/`level` are called as `_validation.finite`/
 `_validation.level`, never imported by name).
 
@@ -118,8 +118,8 @@ demand mismatch plus per-room evenness times the spread `sum((u_s - mean)**2)`),
 connected component of the room-section graph with a closed form `min(1, demand / share)`
 for a one-room, one-section component; and turns each duty into 0.0/1.0 through one
 floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
-`scipy`). The component split, matrix assembly, `_allocate` and the layout validation are
-private.
+`scipy`). The component split, matrix assembly, the solve step and the layout validation are
+private helpers and are omitted per this file's convention.
 
 | Signature | Description |
 |---|---|
@@ -133,14 +133,14 @@ private.
 | `Room.integral -> float` | Read-only; the PI integral. |
 | `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last `update`, `None` before the first and after `from_dict`. |
 | `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority", "evenness"}`; `sections` maps name to `{room: share}`. Every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
-| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes; if the allocation fails, every room's integral and demand are restored and the error propagates. |
+| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`, each naming `measured['<room>']`. If the allocation fails (`ArithmeticError` for a non-finite solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. |
 | `SectionAllocator.rooms -> Mapping[str, Room]` | Read-only `MappingProxyType` of the `Room` handles. |
 | `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the shares. |
 | `SectionAllocator.history_length -> int` | Read-only. |
 | `SectionAllocator.duty -> dict[str, float] \| None` | Last allocated duty per section; `None` before the first `update` and after `from_dict`. |
 | `SectionAllocator.history -> dict[str, tuple[float, ...]]` | Each section's command window, oldest first. |
 | `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`shares`, `history`), fresh containers. |
-| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor, settings through the setters, each window through `Modulator._from_dict`; errors keep their class with the path prefixed. |
+| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor, settings through the setters, each section's window restored into a fresh floor-heating `Modulator`; errors keep their class with the path prefixed. |
 | `main() -> None` | Showcase: the reference layout with evenness 0 vs 0.1, a priority conflict on a shared section, a setpoint change, a JSON snapshot round trip and an invalid layout. |
 
 Runnable standalone: `python -m heatingsystem.allocator.allocator`, once the package is

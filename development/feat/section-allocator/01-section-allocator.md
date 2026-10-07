@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,7 +16,7 @@
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -368,12 +368,26 @@ left open:
 
 | Check | Result |
 |---|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
+| `ruff check .` | All checks passed! |
+| `ruff format --check .` | 52 files already formatted |
+| `mypy` | Success: no issues found in 20 source files |
+| `pytest` | 730 passed (existing suite; `tests/test_allocator.py` is step 5's) |
+| Plan completeness | every signature in the Public API table exists as written (checked with `inspect`: `Room` and its 8 properties, `SectionAllocator.__init__`, `update`, `rooms`, `sections`, `history_length`, `duty`, `history`, `to_dict`, `from_dict`, `main`); no Missing, Deviation or Unplanned. `Room`, `SectionAllocator` in both `__all__`; `pyproject.toml` declares `numpy>=2`, `scipy>=1.14,<2`. |
+| `STRUCTURE.md` | in sync after four auditor edits (below) |
+| `python -m heatingsystem.allocator.allocator` | exit 0; six labelled sections (hungry R2 at evenness 0 vs 0.1 giving HS1 0.0 vs 0.067, priority conflict, setpoint change, JSON round trip with identical commands, invalid layout refused). Showcase is in the required three-phase form. Expected `RuntimeWarning` only. |
+
+Auditor findings (all four applied, each checked against the code as it stands):
+
+1. `from_dict` row named private `Modulator._from_dict`: reworded to "restored into a fresh floor-heating `Modulator`".
+2. Purpose paragraph named private `_allocate`: reworded to private helpers omitted per convention.
+3. `_validation.py` purpose was stale: now names `Room`, `SectionAllocator` and `allocator.py` as callers.
+4. `update` row named no exceptions: now lists `TypeError`/`ValueError`/`OverflowError` and `ArithmeticError` plus the restore and no-write guarantees (matches the code's `Raises:`).
+
+Left alone: older test sections naming private names (`tests/test_modulator.py`,
+`tests/test_pi_controller.py`) describe what those tests target; not this round's.
+Step 5 must add a `### tests/test_allocator.py` entry.
+
+No code changed in this step.
 
 ---
 
