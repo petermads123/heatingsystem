@@ -117,7 +117,11 @@ dedicated share of 1.0; A1 states the 1e-9 share-sum tolerance. And the weights 
 scales: **priority ∈ (0, 1]** (1 = most important; only ratios between rooms matter), and
 **evenness ∈ [0, 1], applied as priority × evenness × spread** — 0 = floor evenness does not
 matter, 1 = an uneven floor costs as much as the same-sized temperature miss for that room,
-and a low-priority room's evenness counts correspondingly less.
+and a low-priority room's evenness counts correspondingly less. At evenness 1 a two-section
+gap g costs as much as a temperature miss of g/√2. A10 pins the exact cost, A11 the ratio
+property, A12 worked examples computed with the prototype. With slack, any small evenness
+gets an even floor for free (B, G); the weights matter only when rooms conflict through a
+shared section (C, D, E).
 
 ### Acceptance criteria
 
@@ -128,10 +132,13 @@ and a low-priority room's evenness counts correspondingly less.
 | A3 | `update` takes a temperature for every room and returns a `0.0`/`1.0` command for every section, keyed by section name. A missing or unknown room, or a non-finite or non-numeric temperature, raises before any state changes. The last allocated duty per section and the last demand per room are readable afterwards. |
 | A4 | With evenness weight 0, when some duties in `[0, 1]` deliver every room's demand exactly, the allocation delivers them within a numerical tolerance — e.g. with HS2 split 50/50 between R1 and R2, demands 0.1 and 0.6 are met exactly. |
 | A5 | Raising one room's priority never increases that room's absolute mismatch `|demand − delivered heat|`. When demands cannot all be met, the competing rooms receive equal shares from the sections they share, their evenness weights are 0 and no section ends at 0 or 1, the higher-priority room ends with the smaller mismatch. |
-| A6 | Raising one room's evenness weight never widens that room's own spread of duty among its sections. In the "R2 always hungry" case (demands R1 0.1, R2 0.6, HS2 split 50/50, HS3 not saturated), evenness 0 may leave HS1 at 0 while HS2 heats R1 (which exact fit is returned is the solver's choice), and R1's evenness weight > 0 with R2's at 0 gives HS1 a duty > 0, a narrower HS1–HS2 gap, and both demands still met. |
+| A6 | Raising one room's evenness weight never widens that room's own spread of duty among its sections. In the "R2 always hungry" case (demands R1 0.1, R2 0.6, HS2 split 50/50, HS3 not saturated), evenness 0 may leave HS1 at 0 while HS2 heats R1 (which exact fit is returned is the solver's choice), and R1's evenness 0.1 with R2's at 0 (priorities 1) gives HS1 = HS2 ≈ 0.067 and HS3 ≈ 0.567, with both demands met. |
 | A7 | A room with exactly one dedicated section of share 1.0 (R3 with HS4) produces exactly the command sequence of a standalone `PIController` in floor-heating mode with the same gains, setpoint and window length, regardless of the other rooms or the evenness weight. |
 | A8 | `scipy` (bringing `numpy`) is a declared runtime dependency; the package installs and imports with it; `PIController` and `Modulator` behave exactly as before and the existing suite stays green. |
 | A9 | `to_dict()` returns layout (rooms, priorities, evenness weights, section shares), window length, each room's setpoint, `kp`, `ki` and integral, and each section's command history as `json.dumps`-accepted built-in types; `from_dict(to_dict())`, also through a JSON round trip, yields a controller producing identical commands thereafter; a malformed or invalid snapshot raises naming the offending key, validated as the constructor would, and produces no controller. |
+| A10 | The duties minimise exactly the cost `J(u) = Σ_r p_r·(d_r − h_r)² + Σ_r p_r·e_r·spread_r` over `u ∈ [0, 1]` (`h_r = Σ share·u` over r's sections; `spread_r = Σ (u_s − mean)²` over r's sections, 0 for a room with one section; `p` priority, `e` evenness): for any layout, demands and weights, `J` of the returned duties is no higher than an independent solve of the same `J` finds, within 1e-9. |
+| A11 | Only priority ratios matter: multiplying every room's priority by the same factor (staying within `(0, 1]`) leaves every duty unchanged within 1e-9. |
+| A12 | On the reference layout (R1 ← HS1 1.0 + HS2 0.5; R2 ← HS2 0.5 + HS3 1.0) the worked examples hold within 1e-3 — demands R1/R2, priorities, evenness → HS1, HS2, HS3: (B) 0.1/0.6, 1/1, 0.1/0 → 0.067, 0.067, 0.567; (C) 0.1/0.6, 1/1, 1/1 → 0.067, 0.233, 0.400; (D) 0.1/0.6, 1/1, 1/0.1 → 0.067, 0.108, 0.525; (E) 0.1/0.6, 0.3/1, 1/1 → 0.067, 0.323, 0.400; (G) 0.3/1.0, 1/1, 0.1/0 → 0.200, 0.200, 0.900. Cases with many exact fits — (A) 0.1/0.6 and (F) 0.3/1.0, all evenness 0 — deliver each demand exactly rather than fixed duties. |
 
 ### Open questions
 
@@ -277,6 +284,7 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
 | T7 | Evenness: spread is `Σ (u_s − mean)²` over the room's sections. On the reference layout and on a room served by three sections, sweeping one room's evenness weight upward never increases that room's spread (several demand pairs, other room's weight 0 and > 0); the hungry-R2 case (0.1, 0.6) with R1 = 0.1, R2 = 0 gives HS1 > 0, an HS1–HS2 gap smaller than the weights-0 result's, and both demands met within tolerance (the weights-0 HS1 value itself is not asserted). | A6 |
 | T8 | R3/HS4 (share 1.0) yields a command sequence identical (`==`, not approx) to `PIController(kp, ki, "floor_heating", setpoint, history_length=n)` over a long varied measurement sequence including saturation both ways and a mid-run setpoint/gain change, regardless of R1/R2's measurements and evenness weights; also a single-room, single-section allocator. | A7 |
 | T9 | `scipy` is in `[project] dependencies`; the package, `heatingsystem.allocator` and `heatingsystem` import; `SectionAllocator`/`Room` are the identical objects from every import path and in both `__all__`; the existing suite passes untouched. | A8 |
+| T11 | The cost: for random layouts, demands and weights in range, `J` of the returned duties ≤ `J` of an independent solve (e.g. `scipy.optimize.minimize` with bounds, or a dense grid for 2–3 sections) + 1e-9; scaling all priorities by one factor in (0, 1] leaves duties unchanged within 1e-9; worked examples B, C, D, E, G give the A12 duties within 1e-3, and A, F deliver demand exactly. | A10, A11, A12 |
 | T10 | `to_dict` has exactly the documented shape and order and `json.dumps`-able types, fresh containers; `from_dict(to_dict())` and the JSON round trip give an allocator whose next 50 commands equal the original's, mid-run with partly filled and full windows; every malformed snapshot (missing/unknown keys at each level, bad values, over-long history, invalid layout, non-mapping) raises naming the path and produces nothing; a subclass round-trips as itself. | A9 |
 
 ### Coverage
@@ -285,6 +293,7 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
   layout), A2 (`Room` setters), A3 (`update`, `duty`, `Room.demand`), A4–A6 (`update`,
   `duty`), A7 (`update`, `history`), A8 (`pyproject.toml`, the package exports), A9
   (`to_dict`/`from_dict`, `Room.integral`).
+- A10–A12 (added at the step-5 halt) are covered by `update`/`duty` and by T11 below.
 - Every criterion has at least one test intent: A1 T1–T2, A2 T3, A3 T4/T4b, A4 T5, A5 T6, A6 T7,
   A7 T8, A8 T9, A9 T10.
 - Nothing in the Public API lacks a criterion; `main()` is the repo's module convention.
@@ -537,9 +546,13 @@ test change is expected for 1-3), mark step 5 done, set the marker to step 6.
 the 1e-9 tolerance**. 4. Instead of only accepting the weight floor, the user asked for
 properly defined weight scales; agreed: **priority ∈ (0, 1]**, **evenness ∈ [0, 1] applied as
 priority × evenness × spread**; values outside raise `ValueError` naming the attribute; the
-internal 1e-12 weight floor stays as a safety net.
+internal 1e-12 weight floor stays as a safety net. After the user asked for the mechanism to
+be laid out exactly (the cost `J`, the meaning of each weight, worked examples A–G), they
+confirmed it and the new criteria **A10** (exact cost), **A11** (only priority ratios
+matter) and **A12** (worked examples); A6's example now names case B's duties.
 
-What changed: section 1 (A1, A5, A7, the stage-2 description, an amendment note) and
+What changed: section 1 (A1, A5, A6, A7 amended, A10–A12 added, the stage-2 description, an
+amendment note), section 2 also gains T11, and
 section 2 (spread-row weight `√(p_r·e_r)`, `Room` validation ranges). This is a code change,
 so the build goes back to **step 3**: `Room` range checks, spread rows weighted by
 `priority × evenness`, docstrings, `STRUCTURE.md`/`README.md` wording, and the showcase; then
