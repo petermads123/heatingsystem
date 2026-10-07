@@ -588,12 +588,6 @@ Whole-tree gates at ship: `ruff check .` clean, `ruff format --check .` 53 files
 
 None.
 
----|---|---|---|---|
-| R1 | | | | |
-
-Decisions: `deferred`, `rejected`, or `next round` — a new numbered file in this folder,
-taken back through steps 1 to 7 on the same branch.
-
 ---
 
 ## 9. Pull request
