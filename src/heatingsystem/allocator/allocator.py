@@ -41,6 +41,18 @@ from heatingsystem.pi_controller.pi_controller import PIController
 # exactly 1.0 are accepted.
 _SHARE_SUM_TOLERANCE: float = 1e-9
 
+# Smallest weight, relative to the largest in a component, that still reaches
+# the solver. Dividing by the largest weight is exact in real arithmetic, but a
+# row weighted below about 1e-15 of the rest is lost to round-off (and one below
+# 1e-300 underflows to zero), so a feasible demand of a very low-priority room
+# would silently stop being met. Flooring the ratio keeps every row in play; it
+# changes the minimiser only where a weight is more than 1e12 below the largest.
+_MIN_WEIGHT_RATIO: float = 1e-12
+
+# bvls stops at max_iter == number of variables by default, which it can reach
+# on a converged problem and report as status 0; allow generous headroom.
+_SOLVER_ITERATIONS_PER_SECTION: int = 20
+
 _ROOM_KEYS: frozenset[str] = frozenset({"priority", "evenness"})
 _SNAPSHOT_KEYS: frozenset[str] = frozenset({"history_length", "rooms", "sections"})
 _ROOM_SNAPSHOT_KEYS: frozenset[str] = frozenset(
@@ -84,6 +96,19 @@ def _name(where: str, value: object) -> str:
     if not value:
         raise ValueError(f"{where} names must be non-empty, got {value!r}.")
     return value
+
+
+def _row_weight(weight: float, scale: float) -> float:
+    """Square-root row weight of ``weight`` relative to the component's ``scale``.
+
+    Args:
+        weight: A priority or evenness weight.
+        scale: The largest weight in the component.
+
+    Returns:
+        ``sqrt(max(weight / scale, _MIN_WEIGHT_RATIO))``, so no row vanishes.
+    """
+    return math.sqrt(max(weight / scale, _MIN_WEIGHT_RATIO))
 
 
 def _mapping(name: str, value: object) -> Mapping[str, object]:
@@ -303,6 +328,9 @@ class SectionAllocator:
         history_length: int = 24,
     ) -> None:
         """Initialise the allocator; see the class docstring for the arguments."""
+        # Shared gains and setpoint are validated first, so a bad one is named
+        # as the argument the caller passed rather than as one room's attribute.
+        PIController(kp, ki, "radiator", setpoint, history_length=1)
         built_rooms = self._build_rooms(rooms, kp, ki, setpoint)
         shares = self._build_shares(sections, built_rooms)
 
@@ -488,7 +516,7 @@ class SectionAllocator:
         rows: list[np.ndarray] = []
         for room in rooms:
             row = np.zeros(len(sections))
-            weight = math.sqrt(self._rooms[room].priority / scale)
+            weight = _row_weight(self._rooms[room].priority, scale)
             for s in serving[room]:
                 row[column[s]] = weight * self._shares[s][room]
             rows.append(row)
@@ -497,7 +525,7 @@ class SectionAllocator:
             evenness = self._rooms[room].evenness
             if len(covering) < 2 or evenness <= 0.0:
                 continue
-            weight = math.sqrt(evenness / scale)
+            weight = _row_weight(evenness, scale)
             for s in covering:
                 row = np.zeros(len(sections))
                 for other in covering:
@@ -533,7 +561,8 @@ class SectionAllocator:
                 first), or a temperature is not finite.
             OverflowError: If a temperature is too large to represent as a
                 float.
-            ArithmeticError: If the solver returns a non-finite duty.
+            ArithmeticError: If the solver returns a non-finite duty or
+                does not converge.
         """
         values = _mapping("measured", measured)
         missing = [name for name in self._rooms if name not in values]
@@ -632,9 +661,11 @@ class SectionAllocator:
         """Rebuild an allocator from a :meth:`to_dict` snapshot.
 
         The layout goes through the constructor, so it raises what the
-        constructor raises. Settings go through the same setters a direct
-        assignment uses. Any error is re-raised as the same class with the
-        path prefixed, such as ``rooms['R1'].integral``.
+        constructor raises, naming the constructor's path
+        (``sections['HS1']['R1']`` for a bad share). Settings and section
+        windows go through the same setters a direct assignment uses; their
+        errors keep their class with the snapshot path prefixed, such as
+        ``rooms['R1'].integral``.
 
         Args:
             data: A mapping with exactly the keys ``to_dict`` produces.
@@ -682,7 +713,10 @@ class SectionAllocator:
             name: {"priority": spec["priority"], "evenness": spec["evenness"]}
             for name, spec in room_specs.items()
         }
-        layout_sections = {name: spec["shares"] for name, spec in section_specs.items()}
+        layout_sections = {
+            name: _mapping(f"sections[{name!r}]['shares']", spec["shares"])
+            for name, spec in section_specs.items()
+        }
         allocator = cls(
             layout_rooms,  # type: ignore[arg-type]  # the constructor validates every value
             layout_sections,  # type: ignore[arg-type]  # the constructor validates every value
@@ -731,8 +765,8 @@ class SectionAllocator:
             order.
 
         Raises:
-            ArithmeticError: If the solver returns a non-finite duty,
-                naming the component's sections.
+            ArithmeticError: If the solver returns a non-finite duty or does
+                not converge, naming the component's sections.
         """
         found: dict[str, float] = {}
         for component in self._components:
@@ -744,15 +778,21 @@ class SectionAllocator:
             b = np.zeros(component.matrix.shape[0])
             for i, room in enumerate(component.rooms):
                 b[i] = (
-                    math.sqrt(self._rooms[room].priority / component.scale)
+                    _row_weight(self._rooms[room].priority, component.scale)
                     * demand[room]
                 )
-            solution = lsq_linear(  # type: ignore[operator]  # mypy resolves scipy.optimize.lsq_linear to the submodule, not the function
-                component.matrix, b, bounds=(OUTPUT_MIN, OUTPUT_MAX), method="bvls"
-            ).x
-            if not bool(np.all(np.isfinite(solution))):
+            result = lsq_linear(  # type: ignore[operator]  # mypy resolves scipy.optimize.lsq_linear to the submodule, not the function
+                component.matrix,
+                b,
+                bounds=(OUTPUT_MIN, OUTPUT_MAX),
+                method="bvls",
+                max_iter=_SOLVER_ITERATIONS_PER_SECTION * len(component.sections),
+            )
+            solution = result.x
+            if int(result.status) < 1 or not bool(np.all(np.isfinite(solution))):
                 raise ArithmeticError(
-                    f"allocation for sections {component.sections} is not finite."
+                    f"allocation for sections {component.sections} did not "
+                    f"converge to a finite solution (solver status {result.status})."
                 )
             for section, value in zip(component.sections, solution, strict=True):
                 found[section] = float(min(OUTPUT_MAX, max(OUTPUT_MIN, value))) + 0.0

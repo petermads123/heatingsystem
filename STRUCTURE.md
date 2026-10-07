@@ -116,7 +116,9 @@ share per covered room). Every `update` runs, per room, a composed radiator-mode
 bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`: priority-weighted
 demand mismatch plus per-room evenness times the spread `sum((u_s - mean)**2)`), split by
 connected component of the room-section graph with a closed form `min(1, demand / share)`
-for a one-room, one-section component; and turns each duty into 0.0/1.0 through one
+for a one-room, one-section component (every weight is divided by the component's largest and
+floored at 1e-12 of it, so a very low-priority room's feasible demand is never lost to round-off,
+and the solver's status is checked); and turns each duty into 0.0/1.0 through one
 floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
 `scipy`). The component split, matrix assembly, the solve step and the layout validation are
 private helpers and are omitted per this file's convention.
@@ -132,8 +134,8 @@ private helpers and are omitted per this file's convention.
 | `Room.ki -> float` (settable) | Delegates to the composed `PIController`. |
 | `Room.integral -> float` | Read-only; the PI integral. |
 | `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last `update`, `None` before the first and after `from_dict`. |
-| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority", "evenness"}`; `sections` maps name to `{room: share}`. Every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
-| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`, each naming `measured['<room>']`. If the allocation fails (`ArithmeticError` for a non-finite solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. |
+| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority", "evenness"}`; `sections` maps name to `{room: share}`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
+| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`, each naming `measured['<room>']`. If the allocation fails (`ArithmeticError` for a non-finite or non-converged solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. |
 | `SectionAllocator.rooms -> Mapping[str, Room]` | Read-only `MappingProxyType` of the `Room` handles. |
 | `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the shares. |
 | `SectionAllocator.history_length -> int` | Read-only. |
@@ -399,6 +401,24 @@ reached and would otherwise store even on a raise — see plan round 4 section 5
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file
 found anywhere else.
+
+### `tests/test_allocator.py`
+
+Covers `SectionAllocator` and `Room`. Construction: every A1 refusal with its class and path (share
+at, either side of and far from `(0, 1]`, share sums either side of the 1e-9 tolerance, unknown and
+uncovered rooms, priority and evenness limits, bad types, empty and malformed mappings, non-string
+names), the error order, shared-gain errors identical to `PIController`'s and naming the argument,
+`history_length` parity, no aliasing of the caller's mappings, and a read-only layout. `Room`
+setters identical to `PIController`'s and effective on the next `update`. `update`: output shape and
+binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, numeric
+variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
+evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
+and tiny-share matrices), the weight floor against extreme priority and evenness ratios, A5's
+absolute-mismatch monotonicity and its documented exceptions, A6's spread monotonicity (including a
+three-section room) and the hungry-R2 case, and A7's bit-exact equivalence to a standalone
+floor-heating `PIController`. Package exports, the declared scipy/numpy dependencies, and
+`to_dict`/`from_dict`: shape and order, identical next 50 commands (direct and through JSON, empty,
+partial and full windows), every malformed snapshot naming its path, subclass round trip.
 
 ### `tests/test_modulator.py`
 
