@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | in progress (re-run after the step-5 halt) |
+| 3 | Implement | `/implement` | in `/build` | done (re-run after the step-5 halt) |
 | 4 | Verify | `/verify` | in `/build` | pending (re-run) |
 | 5 | Test | `/test` | in `/build` | pending (re-run) |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
@@ -377,6 +377,37 @@ left open:
   flat, and `tests/test_allocator.py` is not yet listed there (step 5 adds it with the
   file).
 - Environment: `.venv` created with Python 3.13.16; scipy 1.18.1, numpy 2.5.3 installed.
+
+Re-run after the step-5 halt (amended concept A1, A5-A7, A10-A12), `allocator.py` only:
+
+- `Room` validates `priority` in `(0, 1]` and `evenness` in `[0, 1]` (`ValueError` naming the
+  attribute and repeating the caller's value; type/finite/overflow errors as before).
+- Spread rows are weighted `sqrt(p_r * e_r)`, so the cost is exactly A10's `J`. The
+  per-component scale is now the largest *priority* (a spread weight never exceeds it); the
+  1e-12 floor stays as a safety net. `main()` uses in-range weights and shows worked examples
+  B and C; `STRUCTURE.md` and `README.md` reworded.
+- A12 checked directly through `_allocate` on the reference layout: B 0.067/0.067/0.567,
+  C 0.067/0.233/0.400, D 0.067/0.108/0.525, E 0.067/0.323/0.400, G 0.200/0.200/0.900, all
+  within 1e-3; `J` of each result is within 1e-16 of an independent `scipy.optimize.minimize`.
+- **For step 5:** with the old tests, `pytest` gives 42 failed, 967 passed, all in
+  `tests/test_allocator.py` (out-of-range weights or the old spread weighting, expected):
+  `test_construction_accepts_the_edges_of_every_range`, `test_construction_stores_int_inputs_as_float`,
+  `test_dedicated_room_produces_the_command_sequence_of_a_standalone_controller` (3),
+  `test_documented_exception_unequal_shares_favour_the_larger_share`,
+  `test_evenness_of_a_single_section_room_is_inert`, `test_evenness_on_a_shared_section_is_a_real_trade_off`,
+  `test_extreme_but_uniform_weights_allocate_like_unit_weights` (3),
+  `test_feasible_demands_survive_an_extreme_priority_ratio` (4),
+  `test_one_room_two_sections_with_evenness_gives_equal_duties` (4),
+  `test_other_rooms_do_not_leak_into_a_dedicated_rooms_duty`,
+  `test_priority_sweep_is_monotone_for_both_rooms_on_a_shared_section` (4),
+  `test_raising_evenness_never_widens_the_rooms_spread_reference_layout` (8),
+  `test_raising_evenness_never_widens_the_spread_of_a_three_section_room` (4),
+  `test_raising_priority_is_monotone_when_evenness_creates_a_trade_off`,
+  `test_raising_priority_never_increases_that_rooms_mismatch_shared_section`,
+  `test_signed_mismatch_can_grow_when_priority_rises`,
+  `test_single_shared_section_weights_fit_rows_by_square_root_priority`,
+  `test_the_higher_priority_room_ends_with_the_smaller_mismatch`,
+  `test_three_section_spread_is_the_sum_of_squares_about_the_mean`.
 
 Step 5 production changes (bugs the tests and the two readers found; all in
 `allocator.py`, signatures unchanged):

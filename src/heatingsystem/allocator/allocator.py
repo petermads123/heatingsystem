@@ -10,10 +10,14 @@ it covers). Every :meth:`SectionAllocator.update` works in three stages:
    :class:`~heatingsystem.pi_controller.pi_controller.PIController`) and
    yields a demand in ``[0, 1]``.
 2. **Allocation.** Section duty cycles in ``[0, 1]`` are chosen by bounded
-   weighted least squares: the priority-weighted squared mismatch between
-   each room's demand and the heat it receives (the sum of share times duty
-   over its sections), plus, per room, the room's evenness weight times the
-   *spread* of duty among the sections serving it, ``sum((u_s - mean)**2)``.
+   weighted least squares, minimising exactly
+   ``J(u) = sum_r p_r * (d_r - h_r)**2 + sum_r p_r * e_r * spread_r``: the
+   priority-weighted squared mismatch between each room's demand ``d_r`` and
+   the heat ``h_r`` it receives (the sum of share times duty over its
+   sections), plus, per room, priority times evenness times the *spread* of
+   duty among the sections serving it, ``sum((u_s - mean)**2)``. Priorities
+   lie in ``(0, 1]`` (only their ratios matter) and evenness weights in
+   ``[0, 1]``.
    Rooms and sections that share no variable are solved separately; a
    component of one room and one section has a closed form.
 3. **Actuation.** Each section owns a floor-heating
@@ -42,7 +46,9 @@ from heatingsystem.pi_controller.pi_controller import PIController
 _SHARE_SUM_TOLERANCE: float = 1e-9
 
 # Smallest weight, relative to the largest in a component, that still reaches
-# the solver. Dividing by the largest weight is exact in real arithmetic, but a
+# the solver. A safety net for priorities that differ by more than 1e12:
+# with priorities in (0, 1] and evenness in [0, 1] it is otherwise inert.
+# Dividing by the largest weight is exact in real arithmetic, but a
 # row weighted below about 1e-15 of the rest is lost to round-off (and one below
 # 1e-300 underflows to zero), so a feasible demand of a very low-priority room
 # would silently stop being met. Flooring the ratio keeps every row in play; it
@@ -102,8 +108,8 @@ def _row_weight(weight: float, scale: float) -> float:
     """Square-root row weight of ``weight`` relative to the component's ``scale``.
 
     Args:
-        weight: A priority or evenness weight.
-        scale: The largest weight in the component.
+        weight: A row weight: a priority, or priority times evenness.
+        scale: The largest priority in the component.
 
     Returns:
         ``sqrt(max(weight / scale, _MIN_WEIGHT_RATIO))``, so no row vanishes.
@@ -141,10 +147,13 @@ class Room:
 
     Args:
         name: The room's name; a non-empty ``str``.
-        priority: Weight of this room's mismatch in the allocation; finite
-            and greater than 0.
-        evenness: Weight of this room's spread of duty among its sections;
-            finite and at least 0 (0 means the room's evenness is ignored).
+        priority: Weight of this room's mismatch in the allocation, in
+            ``(0, 1]``; 1 is the most important, and only ratios between
+            rooms matter.
+        evenness: How much this room's evenness of duty among its sections
+            matters, in ``[0, 1]``; 0 ignores it, 1 makes an uneven floor
+            cost as much as the same-sized temperature miss. It is applied
+            as priority times evenness.
         kp: Proportional gain.
         ki: Integral gain.
         setpoint: Target temperature in degrees C.
@@ -152,8 +161,9 @@ class Room:
     Raises:
         TypeError: If ``name`` is not a ``str``, or a number is not a real
             number or is a ``bool``.
-        ValueError: If ``name`` is empty, ``priority`` is not above 0,
-            ``evenness`` is below 0, or a number is not finite.
+        ValueError: If ``name`` is empty, ``priority`` is outside
+            ``(0, 1]``, ``evenness`` is outside ``[0, 1]``, or a number is
+            not finite.
         OverflowError: If a number is too large to represent as a float.
     """
 
@@ -175,11 +185,11 @@ class Room:
         if not name:
             raise ValueError(f"name must be non-empty, got {name!r}.")
         weight = _validation.finite("priority", priority)
-        if weight <= 0.0:
-            raise ValueError(f"priority must be > 0, got {priority!r}.")
+        if not 0.0 < weight <= 1.0:
+            raise ValueError(f"priority must be in (0, 1], got {priority!r}.")
         spread_weight = _validation.finite("evenness", evenness)
-        if spread_weight < 0.0:
-            raise ValueError(f"evenness must be >= 0, got {evenness!r}.")
+        if not 0.0 <= spread_weight <= 1.0:
+            raise ValueError(f"evenness must be in [0, 1], got {evenness!r}.")
 
         self._name = name
         self._priority = weight
@@ -193,12 +203,12 @@ class Room:
 
     @property
     def priority(self) -> float:
-        """The room's fixed priority weight."""
+        """The room's fixed priority weight, in ``(0, 1]``."""
         return self._priority
 
     @property
     def evenness(self) -> float:
-        """The room's fixed evenness weight."""
+        """The room's fixed evenness weight, in ``[0, 1]``."""
         return self._evenness
 
     @property
@@ -263,8 +273,9 @@ class _Component:
             component, or ``None`` for the closed-form one-room,
             one-section case.
         share: The single share of the closed-form case (``0.0`` otherwise).
-        scale: The largest priority or evenness weight in the component,
-            which the matrix rows and the demand vector are divided by.
+        scale: The largest priority in the component (a spread weight,
+            priority times evenness, never exceeds it), which the matrix
+            rows and the demand vector are divided by.
     """
 
     def __init__(
@@ -293,8 +304,8 @@ class SectionAllocator:
 
     Args:
         rooms: Maps each room name to a mapping with exactly the keys
-            ``"priority"`` (finite, above 0) and ``"evenness"`` (finite, at
-            least 0).
+            ``"priority"`` (in ``(0, 1]``) and ``"evenness"`` (in
+            ``[0, 1]``).
         sections: Maps each section name to ``{room name: share}``; every
             share in ``(0, 1]``, each section's shares summing to at most 1
             (the rest heats something unmeasured), every room covered by at
@@ -310,8 +321,9 @@ class SectionAllocator:
             ``str``, or a number is not a real number or is a ``bool``.
         ValueError: If a mapping is empty or has the wrong keys, a name is
             empty, a section names an unknown room, a share is outside
-            ``(0, 1]``, a section's shares sum above 1, a room is covered by
-            no section, or a number is not finite or out of range.
+            ``(0, 1]``, a section's shares sum above 1 by more than 1e-9, a
+            room is covered by no section, a priority is outside ``(0, 1]``,
+            an evenness is outside ``[0, 1]``, or a number is not finite or out of range.
         OverflowError: If a number is too large to represent as a float.
             Every error names the offending path, such as
             ``sections['HS1']['R1']``.
@@ -492,9 +504,10 @@ class SectionAllocator:
             sections: The component's section names.
 
         Returns:
-            The component. Priorities and evenness weights are divided by the
-            largest of them before their square roots are taken, which leaves
-            the minimiser unchanged and cannot overflow.
+            The component. Priorities and the spread weights (priority times
+            evenness) are divided by the largest priority before their square
+            roots are taken, which leaves the minimiser unchanged and cannot
+            overflow.
         """
         if len(rooms) == 1 and len(sections) == 1:
             return _Component(
@@ -505,13 +518,7 @@ class SectionAllocator:
         serving = {
             room: [s for s in sections if room in self._shares[s]] for room in rooms
         }
-        weights = [self._rooms[r].priority for r in rooms]
-        weights += [
-            self._rooms[r].evenness
-            for r in rooms
-            if len(serving[r]) >= 2 and self._rooms[r].evenness > 0.0
-        ]
-        scale = max(weights)
+        scale = max(self._rooms[r].priority for r in rooms)
 
         rows: list[np.ndarray] = []
         for room in rooms:
@@ -522,10 +529,10 @@ class SectionAllocator:
             rows.append(row)
         for room in rooms:
             covering = serving[room]
-            evenness = self._rooms[room].evenness
-            if len(covering) < 2 or evenness <= 0.0:
+            spread_weight = self._rooms[room].priority * self._rooms[room].evenness
+            if len(covering) < 2 or spread_weight <= 0.0:
                 continue
-            weight = _row_weight(evenness, scale)
+            weight = _row_weight(spread_weight, scale)
             for s in covering:
                 row = np.zeros(len(sections))
                 for other in covering:
@@ -803,7 +810,7 @@ def main() -> None:
     """Showcase this module's functionality."""
     # The reference layout: HS2 is split 50/50 between R1 and R2.
     rooms = {
-        "R1": {"priority": 1.0, "evenness": 0.0},
+        "R1": {"priority": 1.0, "evenness": 0.0},  # priority (0, 1], evenness [0, 1]
         "R2": {"priority": 1.0, "evenness": 0.0},
         "R3": {"priority": 1.0, "evenness": 0.0},
     }
@@ -828,7 +835,8 @@ def main() -> None:
     print(f"  duty     = {allocator.duty}")
     print(f"  commands = {commands}")
 
-    # R1 now wants an even floor: HS1 is pulled up towards HS2's duty.
+    # Worked example B: R1 wants an even floor (evenness 0.1, R2 does not
+    # care), so HS1 is pulled up towards HS2 and both demands are still met.
     rooms = {
         "R1": {"priority": 1.0, "evenness": 0.1},
         "R2": {"priority": 1.0, "evenness": 0.0},
@@ -840,14 +848,32 @@ def main() -> None:
     )
     commands = even.update(measured)
 
-    print("\n=== Same demands, R1 evenness 0.1 ===")
+    print("\n=== Example B: R1 evenness 0.1, R2 evenness 0 ===")
     print(f"  duty     = {even.duty}")
     print(f"  commands = {commands}")
 
-    # A higher priority for R1 only matters when demands cannot all be met.
+    # Worked example C: both floors want to be even and pull HS2 in opposite
+    # directions, so the demands are traded off against the evenness.
     rooms = {
-        "R1": {"priority": 4.0, "evenness": 0.0},
-        "R2": {"priority": 1.0, "evenness": 0.0},
+        "R1": {"priority": 1.0, "evenness": 1.0},
+        "R2": {"priority": 1.0, "evenness": 1.0},
+        "R3": {"priority": 1.0, "evenness": 0.0},
+    }
+
+    both = SectionAllocator(
+        rooms, sections, kp=kp, ki=ki, history_length=history_length
+    )
+    commands = both.update(measured)
+
+    print("\n=== Example C: R1 and R2 evenness 1 ===")
+    print(f"  duty     = {both.duty}")
+    print(f"  commands = {commands}")
+
+    # A higher priority for R1 only matters when demands cannot all be met;
+    # only the ratio between priorities counts (0.8 vs 0.2 is 4 vs 1).
+    rooms = {
+        "R1": {"priority": 0.8, "evenness": 0.0},
+        "R2": {"priority": 0.2, "evenness": 0.0},
     }
     sections = {"HS1": {"R1": 0.5, "R2": 0.5}}
     measured = {"R1": 20.8, "R2": 20.4}
@@ -855,7 +881,7 @@ def main() -> None:
     shared = SectionAllocator(rooms, sections, kp=kp, ki=ki)
     commands = shared.update(measured)
 
-    print("\n=== One shared section, R1 priority 4 vs R2 priority 1 ===")
+    print("\n=== One shared section, R1 priority 0.8 vs R2 priority 0.2 ===")
     print(f"  duty     = {shared.duty}")
     print(f"  commands = {commands}")
 
@@ -878,9 +904,9 @@ def main() -> None:
     print(f"  original = {original_next}")
     print(f"  restored = {restored_next}")
 
-    # An invalid layout raises and produces nothing.
-    rooms = {"R1": {"priority": 1.0, "evenness": 0.0}}
-    sections = {"HS1": {"R1": 0.8}, "HS2": {"R1": 1.5}}
+    # An invalid layout raises and produces nothing; a priority above 1 is one.
+    rooms = {"R1": {"priority": 2.0, "evenness": 0.0}}
+    sections = {"HS1": {"R1": 0.8}}
 
     try:
         SectionAllocator(rooms, sections)

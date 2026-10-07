@@ -143,15 +143,16 @@ python test.py
 ## SectionAllocator usage
 
 `hs.SectionAllocator` controls on/off heating sections that may each heat more than one
-room. It is built once from a fixed layout: rooms with a priority and an evenness weight,
-and sections with the share of their heat that reaches each room they cover. Each `update`
+room. It is built once from a fixed layout: rooms with a priority (in `(0, 1]`, 1 = most important, only ratios matter) and an evenness
+weight (in `[0, 1]`), and sections with the share of their heat that reaches each room they cover. Each `update`
 takes one temperature per room and returns a `0.0`/`1.0` command per section.
 
 ```python
 import heatingsystem as hs
 
 # HS2 gives half its heat to R1 and half to R2. Evenness 0 means that room's floor
-# evenness does not matter; a weight above 0 pulls its sections' duty cycles together.
+# evenness does not matter; a weight above 0 pulls its sections' duty cycles together
+# (it counts as priority x evenness, so 1 prices an uneven floor like a temperature miss).
 rooms = {
     "R1": {"priority": 1.0, "evenness": 0.1},
     "R2": {"priority": 1.0, "evenness": 0.0},

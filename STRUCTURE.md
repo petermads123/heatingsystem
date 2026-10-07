@@ -113,11 +113,12 @@ Multi-room control of on/off heating sections that may each serve several rooms.
 once from a fixed layout (rooms with a priority and an evenness weight; sections with a
 share per covered room). Every `update` runs, per room, a composed radiator-mode
 `PIController` (`history_length=1`) for the demand; allocates section duty cycles by
-bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`: priority-weighted
-demand mismatch plus per-room evenness times the spread `sum((u_s - mean)**2)`), split by
-connected component of the room-section graph with a closed form `min(1, demand / share)`
-for a one-room, one-section component (every weight is divided by the component's largest and
-floored at 1e-12 of it, so a very low-priority room's feasible demand is never lost to round-off,
+bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`) minimising exactly
+`J(u) = sum_r p_r (d_r - h_r)^2 + sum_r p_r e_r spread_r` (`p` priority in `(0, 1]`, `e` evenness
+in `[0, 1]`, `h_r` the heat room r receives, `spread_r = sum((u_s - mean)**2)` over its sections),
+split by connected component of the room-section graph with a closed form `min(1, demand / share)`
+for a one-room, one-section component (every weight is divided by the component's largest priority and
+floored at 1e-12 of it as a safety net for priorities more than 1e12 apart, so a very low-priority room's feasible demand is never lost to round-off,
 and the solver's status is checked); and turns each duty into 0.0/1.0 through one
 floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
 `scipy`). The component split, matrix assembly, the solve step and the layout validation are
@@ -125,7 +126,7 @@ private helpers and are omitted per this file's convention.
 
 | Signature | Description |
 |---|---|
-| `Room(name: str, *, priority: float, evenness: float, kp: float, ki: float, setpoint: float)` | One room, built by `SectionAllocator` (construction is internal). Validates `name` (non-empty `str`), `priority` (finite, `> 0`), `evenness` (finite, `>= 0`); composes the radiator-mode `PIController`. |
+| `Room(name: str, *, priority: float, evenness: float, kp: float, ki: float, setpoint: float)` | One room, built by `SectionAllocator` (construction is internal). Validates `name` (non-empty `str`), `priority` (finite, in `(0, 1]`), `evenness` (finite, in `[0, 1]`); a value outside raises `ValueError` naming the attribute and repeating the caller's value; composes the radiator-mode `PIController`. |
 | `Room.name -> str` | Read-only. |
 | `Room.priority -> float` | Read-only. |
 | `Room.evenness -> float` | Read-only. |
@@ -134,7 +135,7 @@ private helpers and are omitted per this file's convention.
 | `Room.ki -> float` (settable) | Delegates to the composed `PIController`. |
 | `Room.integral -> float` | Read-only; the PI integral. |
 | `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last `update`, `None` before the first and after `from_dict`. |
-| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority", "evenness"}`; `sections` maps name to `{room: share}`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
+| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority" in (0, 1], "evenness" in [0, 1]}`; `sections` maps name to `{room: share}`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
 | `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`, each naming `measured['<room>']`. If the allocation fails (`ArithmeticError` for a non-finite or non-converged solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. |
 | `SectionAllocator.rooms -> Mapping[str, Room]` | Read-only `MappingProxyType` of the `Room` handles. |
 | `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the shares. |
@@ -143,7 +144,7 @@ private helpers and are omitted per this file's convention.
 | `SectionAllocator.history -> dict[str, tuple[float, ...]]` | Each section's command window, oldest first. |
 | `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`shares`, `history`), fresh containers. |
 | `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor, settings through the setters, each section's window restored into a fresh floor-heating `Modulator`; errors keep their class with the path prefixed. |
-| `main() -> None` | Showcase: the reference layout with evenness 0 vs 0.1, a priority conflict on a shared section, a setpoint change, a JSON snapshot round trip and an invalid layout. |
+| `main() -> None` | Showcase: the reference layout with evenness 0, worked example B (R1 evenness 0.1) and C (both rooms 1), a priority conflict on a shared section, a setpoint change, a JSON snapshot round trip and an invalid layout. |
 
 Runnable standalone: `python -m heatingsystem.allocator.allocator`, once the package is
 installed.
