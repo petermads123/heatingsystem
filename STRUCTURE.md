@@ -236,7 +236,8 @@ being in `sys.modules` is the expected consequence of the subpackage re-exportin
 
 ## Script: `test.py`
 
-Closed-loop simulation of `PIController` against a first-order thermal model of a room,
+Closed-loop simulation of `PIController` against a first-order thermal model of a room
+(with a configurable delay, `HEAT_DELAY_STEPS`, before a command's heat reaches the room),
 once per `HeatingMode`, with a fixed-output hold once the room has settled (hatched on the
 plot, so the sag during it and the burst at release are visible) and a setpoint step
 halfway through, drawn as two stacked matplotlib subplots and saved as `simulation.png`

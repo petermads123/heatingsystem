@@ -7,6 +7,11 @@ duty-cycle modulation).  For each mode it draws a plot showing the measured room
 temperature, the (stepped) setpoint, and the controller's actuator state encoded
 as a blue (off) -> red (on) background hue.
 
+Heat does not reach the room the moment the actuator turns on: the command is
+applied to the room model ``HEAT_DELAY_STEPS`` steps later, as with a floor or a
+radiator that first has to warm up.  Set it to ``0`` for the old, immediate
+response.
+
 Two events are injected: a fixed-output hold (the valve held shut, as during a
 price spike) once the room has settled, so the temperature sag and the demand
 burst at release are visible; and a setpoint change halfway through the run so
@@ -15,6 +20,8 @@ produce the figure::
 
     .venv/Scripts/python.exe test.py
 """
+
+from collections import deque
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -45,6 +52,9 @@ KI: float = 0.1  # integral gain (per 5-minute step)
 AMBIENT_TEMP: float = 17.0  # °C the room drifts toward with the heater off
 HEAT_GAIN: float = 2.0  # °C/step added at full actuator output
 LOSS_COEFF: float = 0.2  # fraction of the room-to-ambient gap lost per step
+HEAT_DELAY_STEPS: int = (
+    2  # steps before a command's heat reaches the room; 0 = immediate
+)
 
 # Diverging colormap: 0.0 (off) -> blue, 1.0 (full on) -> red.
 CONTROL_CMAP: Colormap = matplotlib.colormaps["coolwarm"]
@@ -94,6 +104,11 @@ def run_simulation(
     commands: list[float] = []
     setpoints: list[float] = []
 
+    # Commands still on their way to the room: the oldest one is applied each
+    # step, so a command issued now heats the room HEAT_DELAY_STEPS steps later.
+    # Pre-filled with 0.0 (heater off before the simulation starts).
+    in_transit: deque[float] = deque([0.0] * HEAT_DELAY_STEPS)
+
     temp = START_TEMP
     for step in range(N_STEPS):
         # Apply the setpoint change once we pass the halfway point.
@@ -111,8 +126,10 @@ def run_simulation(
         commands.append(command)
         setpoints.append(setpoint)
 
-        # Evolve the room for the next step using the chosen command.
-        temp = step_temperature(temp, command)
+        # Evolve the room using the command issued HEAT_DELAY_STEPS steps ago.
+        in_transit.append(command)
+        applied = in_transit.popleft()
+        temp = step_temperature(temp, applied)
 
     return temps, commands, setpoints
 
@@ -226,8 +243,8 @@ def main() -> None:
     colorbar.set_label("Control state (0 = off / blue, 1 = on / red)")
 
     fig.suptitle(
-        "PIController closed-loop simulation with a fixed-output hold "
-        "and a setpoint change",
+        "PIController closed-loop simulation with a fixed-output hold, "
+        f"a setpoint change and a {HEAT_DELAY_STEPS}-step heat delay",
         fontsize=13,
     )
 
