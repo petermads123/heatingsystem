@@ -17,7 +17,7 @@
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | in progress (halted, see Halted) |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -362,6 +362,26 @@ left open:
   file).
 - Environment: `.venv` created with Python 3.13.16; scipy 1.18.1, numpy 2.5.3 installed.
 
+Step 5 production changes (bugs the tests and the two readers found; all in
+`allocator.py`, signatures unchanged):
+
+- **Weight floor.** Dividing by the component's largest weight is exact only in real
+  arithmetic: a room whose priority was about 1e-15 of another's (or a fit row dwarfed by an
+  evenness weight) was dropped by `bvls`' rank cut, so its feasible demand stopped being met
+  (priority 1e-30 left R1 at 0.12 instead of 0.1; one room with evenness 1e40 returned duties
+  (0, 0)). The row weight is now `sqrt(max(weight / scale, 1e-12))`. Feasible demands are met
+  to about 1e-10 at any ratio; the minimiser changes only for a weight more than 1e12 below
+  the largest in its component.
+- **Solver status.** `bvls` caps iterations at the number of variables and can report status 0
+  on a problem it solved; `max_iter` is now 20 per section and a status below 1 raises
+  `ArithmeticError` (as for a non-finite result), restoring every room.
+- **Shared gain errors.** A bad top-level `kp`/`ki`/`setpoint` used to be reported as
+  `rooms['R1'].kp`. They are now validated first through a probe `PIController` and raised
+  exactly as `PIController` raises them, naming the argument. This moves the shared gains
+  ahead of the room checks in the validation order.
+- **`from_dict`.** A non-mapping `shares` is reported as `sections['HS1']['shares']`; the
+  docstring now says layout errors keep the constructor's own path.
+
 ---
 
 ## 4. Verification log
@@ -393,10 +413,36 @@ No code changed in this step.
 
 ## 5. Test log
 
+`tests/test_allocator.py`: 280 test cases (93 test functions), all passing; whole suite
+1009 passed; ruff, format and mypy clean.
+
 | Intent | Test names | Result |
 |---|---|---|
+| T1 (A1 refusals) | `test_construction_refuses_a_bad_share_naming_its_path`, `..._a_share_sum_above_one...`, `test_construction_accepts_share_sums_that_are_one_up_to_float_error`, `test_share_sum_tolerance_boundary_is_one_nanounit`, `..._unknown_room`, `..._uncovered_room...`, `..._a_bad_priority...`, `..._a_bad_evenness...`, `test_construction_accepts_the_edges_of_every_range`, `..._malformed_rooms_argument`, `..._malformed_sections_argument`, `test_error_order_...`, `test_bad_shared_gain_matches_pi_controller_and_names_the_argument`, `test_construction_refuses_a_bad_history_length_like_pi_controller`, `test_history_length_edges_...`, name-edge and aliasing tests | pass |
+| T2 (read-only) | `test_layout_and_state_attributes_cannot_be_assigned`, `test_rooms_view_rejects_item_assignment_and_deletion`, `test_returned_copies_do_not_reach_the_controller`, `test_room_does_not_expose_the_pi_controller_surface`, `test_to_dict_containers_are_fresh_and_do_not_reach_back` | pass |
+| T3 (A2 setters) | `test_room_setters_match_pi_controller_and_keep_the_old_value`, `..._accept_int_and_fraction...`, `test_room_setting_change_takes_effect_on_the_next_update_like_a_twin`, `test_a_setting_change_leaves_other_rooms_and_state_untouched`, `test_room_numeric_setters_normalise_negative_zero` | pass |
+| T4 (A3 update) | `test_update_returns_exactly_the_section_names_with_binary_values`, `..._fresh_dict...`, `test_duty_and_demand_are_none_before_...`, `test_update_refuses_bad_measurements_and_changes_nothing` (16 cases), `test_update_reports_a_missing_room_before_a_bad_value`, `..._does_not_mutate...`, `..._numeric_variants...`, `-0.0` and exact `+0.0` duty tests | pass |
+| T4b (solver failure) | `test_update_restores_every_room_and_keeps_the_previous_duty_on_solver_failure` (nan, inf, status 0, status -1, ValueError, LinAlgError), `test_update_failure_before_the_first_update_leaves_duty_none`, `test_update_restores_state_when_a_modulator_rejects_the_duty`, `test_extreme_but_uniform_weights_allocate_like_unit_weights` | pass; status-0 and status -1 cases failed before the status check was added |
+| T5 (A4) | `test_feasible_demands_are_delivered_exactly_with_evenness_zero`, `test_the_documented_example_...`, chain tests (3 rooms, 60 rooms), closed-form tests, `test_shared_components_use_least_squares_not_the_closed_form`, sqrt-priority weighting, rank-deficient and tiny-share tests, weight-floor tests (`test_feasible_demands_survive_an_extreme_priority_ratio`, evenness-ratio and inert-evenness tests) | pass; the extreme-ratio cases failed (1.2e-2 off) before the weight floor |
+| T6 (A5) | `test_raising_priority_never_increases_that_rooms_mismatch_shared_section`, `test_the_higher_priority_room_ends_with_the_smaller_mismatch`, `..._trade_off...`, sweep over four demand pairs, `test_documented_exception_saturated_section_ties_the_mismatches`, `test_documented_exception_unequal_shares_favour_the_larger_share`, `test_signed_mismatch_can_grow_when_priority_rises` | pass; uses absolute mismatch (see Halted) |
+| T7 (A6) | `test_raising_evenness_never_widens_the_rooms_spread_reference_layout`, `..._three_section_room`, `test_three_section_spread_is_...`, `test_hungry_r2_with_r1_evenness_meets_both_demands_evenly`, `test_evenness_on_a_shared_section_is_a_real_trade_off` | pass |
+| T8 (A7) | `test_dedicated_room_produces_the_command_sequence_of_a_standalone_controller` (windows 1, 6, 24, evenness 0 and large), `..._through_the_finite_guard`, `test_a_single_room_single_section_allocator_...`, `test_equivalence_needs_a_dedicated_share_of_one`, `test_other_rooms_do_not_leak_...` | pass (`==`, not approx) |
+| T9 (A8) | `test_scipy_and_numpy_are_declared_runtime_dependencies`, `test_package_and_models_import_together`, `test_public_names_are_identical_across_every_import_path`; existing suite untouched and green | pass |
+| T10 (A9) | `test_to_dict_has_exactly_the_documented_shape_and_order`, `test_a_restored_allocator_produces_the_same_next_fifty_commands` (direct/JSON x 0/3/30 steps), `test_from_dict_refuses_a_malformed_snapshot_naming_the_path` (35 cases), non-mapping, missing-before-unknown, mixed-type unknown keys, mapping types, subclass, fractional history, failed restore | pass |
+| showcase | `test_main_runs_and_reports_each_section`, `test_row_weight_never_vanishes_or_overflows` | pass |
 
 Edge cases considered and deliberately skipped, with reasons:
+
+- Idempotency of `update`: the windows and integrals advance by design.
+- Very long strings as names: names are only dict keys and appear in reprs.
+- The composed `PIController`'s one-slot radiator history is not restored when an allocation
+  fails: nothing public reads it, so it is unobservable (note for any future `Room.history`).
+- A 100-room chain as proposed by the input-space reader: its demands were infeasible (the
+  exact solution needs duties from -0.7 to 1.7), so a feasible 60-room chain is used instead.
+- A `from_dict` history of non-binary floor-heating values is accepted (the `Modulator`
+  contract) and pinned by a test, not rejected.
+- `Room` constructed directly with an empty name: unreachable through the allocator, which
+  rejects empty names first; construction is documented as internal.
 
 ---
 
@@ -445,3 +491,35 @@ taken back through steps 1 to 7 on the same branch.
 ---
 
 ## Halted
+
+Halted at step 5 on a question about section 1's wording. The suite is written, green and
+committed (1009 passed); four criteria read differently from what the code, the plan's test
+intents and the concept's own examples do. Tests follow the plan's test intents (T6 absolute
+mismatch, T8 share 1.0, share-sum tolerance 1e-9); only section 1 needs the user's decision.
+
+1. **A5 (signed mismatch).** A5 defines mismatch as "demand - delivered heat" and says raising
+   a room's priority "never increases" it. Read as signed that is false: shared section
+   `HS1 = {R1: 0.5, R2: 0.5}`, demands 0.2 / 0.6, R1 priority 1 -> 2 moves R1's signed mismatch
+   from -0.200 (over-served) to -0.133, an increase (checked by
+   `test_signed_mismatch_can_grow_when_priority_rises`). It is true of the absolute (or
+   squared) mismatch, which T6 uses. **Question:** reword A5 to "absolute mismatch
+   |demand - delivered|"?
+2. **A7 (dedicated share).** A7 says a room "with exactly one dedicated section" reproduces a
+   standalone `PIController`. That holds only for share 1.0 (R3 with HS4 in every example). With
+   a dedicated share of 0.5 the section is asked for `min(1, demand / 0.5)`, twice the standalone
+   duty, by the concept's own stage 2 (pinned by `test_equivalence_needs_a_dedicated_share_of_one`).
+   **Question:** reword A7 to "exactly one dedicated section with share 1.0", or should a
+   dedicated section with share below 1 also reproduce the standalone controller (which would
+   mean the allocator ignores the share there, contradicting A4)?
+3. **A1 (share-sum tolerance).** A1 says a section whose shares sum above 1 raises; the plan
+   (guide 3.2) accepts sums up to `1 + 1e-9` so `0.1`-style float sums pass. **Question:** state
+   the tolerance in A1 ("above 1 by more than 1e-9")?
+4. **A4 (extreme priority ratios, informational).** Found and fixed as a code defect (see
+   section 3, weight floor): a weight more than 1e12 below the largest in its connected
+   component is treated as 1e-12 of it. A4's "exact whenever one exists" now holds at any ratio
+   to about 1e-10, but a trade-off between rooms whose priorities differ by more than 1e12 is
+   decided as if they differed by exactly 1e12. **Question:** is that acceptable, or should
+   priorities beyond a ratio be refused at construction (an A1 change)?
+
+On the answers, `/build` resumes at step 5's close: amend section 1 as decided (no code or
+test change is expected for 1-3), mark step 5 done, set the marker to step 6.
