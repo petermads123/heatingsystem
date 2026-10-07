@@ -416,8 +416,10 @@ variants, and a failing or non-converged solver restoring every room. Allocation
 evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
 and tiny-share matrices), the weight floor against extreme priority ratios and subnormal
 priorities, the range refusals for priority in `(0, 1]` and evenness in `[0, 1]` (and in `from_dict`),
-A5's absolute-mismatch monotonicity at evenness 0 with its documented exceptions and the pinned
-evenness-above-0 counterexample, A6's spread monotonicity (including a three-section room) and the
+A5's absolute-mismatch monotonicity at evenness 0 with its documented exceptions, and its general
+clause (the combined cost `|d - h|^2 + e * spread` never rises with priority) on the halt's
+counterexample layout, a priority sweep and seeded random layouts, with the counterexample also
+pinned as the reason the absolute-mismatch clause needs evenness 0, A6's spread monotonicity (including a three-section room) and the
 hungry-R2 case, A7's bit-exact equivalence to a standalone floor-heating `PIController`, and A10-A12:
 the cost's KKT conditions and an independent solve over random layouts, priority-scaling invariance, and
 the worked examples A-G. Package exports, the declared scipy/numpy dependencies, and

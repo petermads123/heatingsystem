@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -17,7 +17,7 @@
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done (re-run after the step-5 halt) |
 | 4 | Verify | `/verify` | in `/build` | done (re-run after the step-5 halt) |
-| 5 | Test | `/test` | in `/build` | halted (re-run): A5 first clause, see Halted |
+| 5 | Test | `/test` | in `/build` | done (re-run; A5 amended, combined-cost test added) |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -513,9 +513,19 @@ added. Step 5 is **halted**, not done: A5's first clause is false when evenness 
 | T11 / A11 | `test_uniformly_scaled_priorities_allocate_like_unit_priorities` (equal priorities down to `5e-324`, 18), `test_scaling_every_priority_by_one_factor_leaves_the_duties_unchanged` (20 incl. the many-fits case A), `test_random_layouts_are_unchanged_by_scaling_every_priority` (60), `test_evenness_zero_ignores_the_priority_scale_exactly` (bit-identical) | pass |
 | T11 / A12 | `test_worked_examples_hold_within_a_thousandth` (B, C, D, E, G, also through `_allocate`), `test_worked_examples_with_many_exact_fits_deliver_each_demand` (A, F) | pass |
 | Subnormal regression | `test_evenness_survives_a_subnormal_priority` (5 cases; failed before the fix: (0.48, 0.24)), `test_tiny_positive_evenness_is_floored_not_dropped`, `test_row_weight_never_vanishes_or_overflows` (6) | pass |
-| T6 / A5 | the old sweeps rescaled to `(0, 1]`, `test_raising_priority_is_monotone_on_the_reference_layout_with_evenness_zero` (4 demand pairs), `test_the_higher_priority_room_ends_with_an_exact_mismatch_ratio` (0.08/0.32, ratio 0.25), `test_priority_with_evenness_pins_the_cost_minimiser_where_a5s_first_clause_fails` (characterises the counterexample, asserts no verdict on A5) | pass |
+| T6 / A5 | the old sweeps rescaled to `(0, 1]`, `test_raising_priority_is_monotone_on_the_reference_layout_with_evenness_zero` (4 demand pairs), `test_the_higher_priority_room_ends_with_an_exact_mismatch_ratio` (0.08/0.32, ratio 0.25), `test_priority_with_evenness_pins_the_cost_minimiser_where_a5s_first_clause_fails` (characterises the counterexample, asserts no verdict on A5; superseded by the third-pass rows below) | pass |
 | T7 / A6 | evenness sweeps over `[0, 1e-6, 0.01, 0.1, 0.5, 1]` with the competitor's priority 1, 1e-3, 1e-6; three-section room; `test_evenness_on_a_shared_section_is_a_real_trade_off` now worked example C | pass |
 | T8 / A7 | rescaled (evenness 1.0, `p3` 1e-6), plus `test_a_dedicated_share_one_room_matches_the_standalone_controller_in_a_conflict` (R3 priority 0.01, evenness 1) | pass |
+
+### Third pass (after the second halt's answer: A5 amended to both clauses)
+
+No production change. Whole suite 1377 passed; ruff, format and mypy clean.
+
+| Intent | Test names | Result |
+|---|---|---|
+| T6 / A5, general clause (combined cost `\|d - h\|**2 + e * spread` never rises with priority) | `test_raising_priority_never_increases_the_combined_cost_on_the_counterexample` (the halt's layout R1 {p, e}, R2 {1, 0}, R3 {1, 0}; HS1 {R1 .5, R2 .5}, HS2 {R1 .5, R3 .5}; demands .5/1/0; R1 priority swept 0.001 to 1.0 at evenness 0, 0.1, 0.5, 1.0), `test_raising_a_priority_never_increases_that_rooms_combined_cost_on_random_layouts` (40 seeded layouts from `random_layout`, a random room, every evenness raised to at least 0.05, five ascending priorities; tolerance `last * (1 + 1e-9) + 1e-12`) | pass; a wider offline run of 1500 seeds found 0 violations, worst increase 1.1e-16 |
+| T6 / A5, why the clauses are split | `test_priority_with_evenness_raises_the_mismatch_but_not_the_combined_cost` (renamed from `..._pins_the_cost_minimiser_where_a5s_first_clause_fails`; same numbers, now also asserts R1's absolute mismatch rises by more than 0.1 while its combined cost falls) | pass |
+| T6 / A5, evenness-0 clause | docstrings on the three evenness-0 monotonicity tests name the clause; `test_signed_mismatch_can_grow_when_priority_rises` docstring reworded; assertions unchanged | pass |
 
 Readers' cases judged: input-space 1 and 2 (subnormal underflow) **confirmed and fixed**; contract C1
 (A5 first clause) **confirmed, halted**; contract C2 / input-space 2 (A11 at non-unique minimisers)

@@ -1162,6 +1162,7 @@ def shared_only(p1: float, p2: float) -> SectionAllocator:
 
 
 def test_raising_priority_never_increases_that_rooms_mismatch_shared_section() -> None:
+    """A5, evenness-0 clause: absolute mismatch, shared section, evenness 0."""
     last = math.inf
     for p in (1e-8, 1e-7, 5e-7, 1e-6, 2e-6, 1e-5, 1e-3, 1.0):
         a = shared_only(p, 1e-6)
@@ -1187,6 +1188,7 @@ def test_the_higher_priority_room_ends_with_the_smaller_mismatch() -> None:
 def test_raising_priority_is_monotone_on_the_reference_layout_with_evenness_zero(
     demands: tuple[float, float],
 ) -> None:
+    """A5, evenness-0 clause: absolute mismatch on the reference layout."""
     last = math.inf
     for p in (0.05, 0.1, 0.2, 0.4, 0.7, 1.0):
         a = ref(p1=p)
@@ -1208,17 +1210,34 @@ def counterexample_allocator(p1: float, e1: float) -> SectionAllocator:
     return a
 
 
-def test_priority_with_evenness_pins_the_cost_minimiser_where_a5s_first_clause_fails() -> (
-    None
-):
-    """Characterises the exact J-minimiser (A10) where raising a priority raises |m|.
+def room_cost(
+    a: SectionAllocator, u: Mapping[str, float], room: str, demand: float
+) -> float:
+    """A5's per-room quantity: |d - h|^2 + evenness * spread (no priority factor)."""
+    serving = [s for s, shares in a.sections.items() if room in shares]
+    heat = sum(a.sections[s][room] * u[s] for s in serving)
+    mean = sum(u[s] for s in serving) / len(serving)
+    squares = sum((u[s] - mean) ** 2 for s in serving)
+    return (demand - heat) ** 2 + a.rooms[room].evenness * squares
 
-    Pending the user's decision on A5's wording (see the plan's Halted section):
-    with evenness 1 on R1 and HS1 pinned at 1, a larger priority also pulls HS2
-    harder towards HS1, over-serving R1, so its absolute mismatch grows. The
-    duties are the closed-form minimiser of A10's J, checked independently; the
-    test asserts the numbers, not that A5 holds or fails.
+
+def combined_cost(a: SectionAllocator, room: str, demand: float) -> float:
+    """``room_cost`` of the duties the allocator last issued."""
+    assert a.duty is not None
+    return room_cost(a, a.duty, room, demand)
+
+
+def test_priority_with_evenness_raises_the_mismatch_but_not_the_combined_cost() -> None:
+    """The halt's counterexample, as evidence for A5's two-part first clause.
+
+    With evenness 1 on R1 and HS1 pinned at 1, a larger priority pulls HS2 harder
+    towards HS1, over-serving R1, so its absolute mismatch grows: the evenness-0
+    clause cannot be stated for a room with evenness above 0. What still holds
+    (A5's general clause) is that R1's combined cost |d - h|^2 + e * spread
+    does not rise. The duties are the closed-form minimiser of A10's J.
     """
+    mismatches = []
+    costs = []
     for p, hs2, miss in (
         (0.1, 0.1538461538, 0.0769230769),
         (0.4, 0.3636363636, 0.1818181818),
@@ -1229,15 +1248,54 @@ def test_priority_with_evenness_pins_the_cost_minimiser_where_a5s_first_clause_f
         assert a.duty["HS2"] == pytest.approx(hs2, abs=1e-8)
         assert mismatch(a, "R1", 0.5) == pytest.approx(miss, abs=1e-8)
         assert a.duty["HS2"] == pytest.approx(p / (1.5 * p + 0.5), abs=1e-9)
+        mismatches.append(mismatch(a, "R1", 0.5))
+        costs.append(combined_cost(a, "R1", 0.5))
+    assert mismatches[1] > mismatches[0] + 0.1  # the absolute mismatch rises ...
+    assert costs[1] < costs[0]  # ... while the combined cost falls
     # Control: with evenness 0 R1's demand is met at both priorities.
     for p in (0.1, 0.4):
         assert mismatch(counterexample_allocator(p, 0.0), "R1", 0.5) < 1e-9
+
+
+def test_raising_priority_never_increases_the_combined_cost_on_the_counterexample() -> (
+    None
+):
+    """A5, general clause, on the halt's layout: a sweep over R1's priority."""
+    sweep = [0.001, 0.01, 0.05, 0.1, 0.2, 0.4, 0.7, 1.0]
+    for evenness in (0.0, 0.1, 0.5, 1.0):
+        last = math.inf
+        for p in sweep:
+            current = combined_cost(counterexample_allocator(p, evenness), "R1", 0.5)
+            assert current <= last * (1 + 1e-9) + 1e-12
+            last = current
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_raising_a_priority_never_increases_that_rooms_combined_cost_on_random_layouts(
+    seed: int,
+) -> None:
+    """A5, general clause, over random layouts with evenness above 0."""
+    rng = np.random.default_rng(5000 + seed)
+    a, demand = random_layout(rng, subnormal=False)
+    room = str(rng.choice(sorted(a.rooms)))
+    rooms = {
+        name: {"priority": r.priority, "evenness": max(r.evenness, 0.05)}
+        for name, r in a.rooms.items()
+    }
+    last = math.inf
+    for p in sorted(float(x) for x in rng.uniform(0.01, 1.0, size=5)):
+        rooms[room]["priority"] = p
+        b = SectionAllocator(rooms, a.sections, kp=1.0, ki=0.0)
+        current = room_cost(b, b._allocate(demand), room, demand[room])
+        assert current <= last * (1 + 1e-9) + 1e-12
+        last = current
 
 
 @pytest.mark.parametrize("demands", [(0.3, 0.9), (0.0, 1.0), (1.0, 0.0), (0.5, 0.5)])
 def test_priority_sweep_is_monotone_for_both_rooms_on_a_shared_section(
     demands: tuple[float, float],
 ) -> None:
+    """A5, evenness-0 clause: both demands, priority sweep across the competitor's."""
     last = math.inf
     for p in (0.001, 0.01, 0.02, 0.06, 1.0):  # ratios 0.05 ... 50 to p2 = 0.02
         a = shared_only(p, 0.02)
@@ -1269,7 +1327,7 @@ def test_documented_exception_unequal_shares_favour_the_larger_share() -> None:
 
 
 def test_signed_mismatch_can_grow_when_priority_rises() -> None:
-    """Pins the algebra behind A5's wording: only the absolute mismatch shrinks."""
+    """Pins why A5 speaks of the absolute mismatch: the signed one can grow."""
     signed = []
     for p in (0.5, 1.0):
         a = shared_only(p, 0.5)
