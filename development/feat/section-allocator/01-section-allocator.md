@@ -131,7 +131,7 @@ shared section (C, D, E).
 | A2 | Lets each room's setpoint, `kp` and `ki` be changed at any time, with the same validation (exception class and attribute named) as `PIController`, taking effect on the next `update`. |
 | A3 | `update` takes a temperature for every room and returns a `0.0`/`1.0` command for every section, keyed by section name. A missing or unknown room, or a non-finite or non-numeric temperature, raises before any state changes. The last allocated duty per section and the last demand per room are readable afterwards. |
 | A4 | With evenness weight 0, when some duties in `[0, 1]` deliver every room's demand exactly, the allocation delivers them within a numerical tolerance — e.g. with HS2 split 50/50 between R1 and R2, demands 0.1 and 0.6 are met exactly. |
-| A5 | Raising one room's priority never increases that room's absolute mismatch `|demand − delivered heat|`. When demands cannot all be met, the competing rooms receive equal shares from the sections they share, their evenness weights are 0 and no section ends at 0 or 1, the higher-priority room ends with the smaller mismatch. |
+| A5 | With a room's evenness 0, raising its priority never increases its absolute mismatch `|demand − delivered heat|`; in general (any evenness), raising a room's priority never increases its combined cost `|demand − delivered|² + evenness × spread`. When demands cannot all be met, the competing rooms receive equal shares from the sections they share, their evenness weights are 0 and no section ends at 0 or 1, the higher-priority room ends with the smaller mismatch. |
 | A6 | Raising one room's evenness weight never widens that room's own spread of duty among its sections. In the "R2 always hungry" case (demands R1 0.1, R2 0.6, HS2 split 50/50, HS3 not saturated), evenness 0 may leave HS1 at 0 while HS2 heats R1 (which exact fit is returned is the solver's choice), and R1's evenness 0.1 with R2's at 0 (priorities 1) gives HS1 = HS2 ≈ 0.067 and HS3 ≈ 0.567, with both demands met. |
 | A7 | A room with exactly one dedicated section of share 1.0 (R3 with HS4) produces exactly the command sequence of a standalone `PIController` in floor-heating mode with the same gains, setpoint and window length, regardless of the other rooms or the evenness weight. |
 | A8 | `scipy` (bringing `numpy`) is a declared runtime dependency; the package installs and imports with it; `PIController` and `Modulator` behave exactly as before and the existing suite stays green. |
@@ -661,3 +661,12 @@ One production defect found and fixed meanwhile (section 3): the subnormal-prior
 
 On the answer, `/build` resumes at step 5's close: amend A5 (and optionally A10's wording), adjust
 the one pinned test's docstring if needed, mark step 5 done and set the marker to step 6.
+
+### Answer (user, at the second step-5 halt)
+
+A5's first clause → **both**: "With a room's evenness 0, raising its priority never increases
+its absolute mismatch; in general, raising a room's priority never increases its combined cost
+`|d − h|² + evenness × spread`." The second clause is unchanged. No code change. A10's
+absolute tolerance is left as written; the tests normalise `J` by the largest priority, as
+recorded in section 5. Step 5 resumes to add a test for the combined-cost clause, then closes.
+
