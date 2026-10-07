@@ -144,7 +144,11 @@ form, `duty = min(1, demand / share)` — exact, which is what makes A7 hold bit
 every other component is one `scipy.optimize.lsq_linear(..., bounds=(0, 1), method="bvls")`
 call on a stacked matrix: fit rows `√priority_r · (Σ share·u − demand_r)` and, for each room
 with ≥ 2 sections and evenness `e_r > 0`, spread rows `√e_r · (u_s − mean of the room's
-sections' u)`. A5's and A6's monotonicity are properties of any exact minimiser of
+sections' u)`. A room's **spread** is defined as exactly the penalised quantity,
+`Σ_{s ∈ room} (u_s − mean)²` (for two sections, `gap² / 2`); A6 and T7 use this metric and
+no other. Before the square roots, each component's priorities and evenness weights are
+divided by the largest of them — the minimiser is unchanged and `1e300`-sized weights
+cannot overflow. A5's and A6's monotonicity are properties of any exact minimiser of
 `fit + λ·term` (compare the two optimality inequalities), so they hold by construction; the
 tests check them numerically to a tolerance.
 
@@ -166,7 +170,7 @@ does for private helpers.
 | `src/heatingsystem/allocator/__init__.py` | new | Subpackage entry point; re-exports `SectionAllocator`, `Room`. |
 | `src/heatingsystem/allocator/allocator.py` | new | `Room`, `SectionAllocator`, the private layout validation, component split and solver, and `main()`. |
 | `src/heatingsystem/__init__.py` | changed | Re-export `SectionAllocator` and `Room`; add both to `__all__`. |
-| `pyproject.toml` | changed | `dependencies = ["scipy>=1.11,<2"]` (numpy comes with it). Nothing else; mypy already has `ignore_missing_imports = true`. |
+| `pyproject.toml` | changed | `dependencies = ["numpy>=2", "scipy>=1.14,<2"]` — scipy ships Python 3.13 wheels from 1.14; numpy is declared because the module imports it directly. Nothing else; mypy already has `ignore_missing_imports = true`. |
 | `tests/test_allocator.py` | new | The suite for this round (step 5). |
 | `STRUCTURE.md` | changed | Tree line, `__init__` export table, both new modules with signature tables, the test file. Stays flat — see Risks. |
 | `README.md` | changed | A short `SectionAllocator` usage section after "PIController usage", and the scipy dependency under install. |
@@ -178,7 +182,7 @@ does for private helpers.
 
 | Signature | Module | Purpose | Covers |
 |---|---|---|---|
-| `Room(name: str, *, priority: float = 1.0, evenness: float = 0.0, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0)` | `allocator.py` | One room: its fixed priority and evenness weight, and a composed radiator-mode `PIController(kp, ki, "radiator", setpoint, history_length=1)`. Built by `SectionAllocator`; constructible on its own. `name` must be a non-empty `str` (`TypeError`/`ValueError` naming `name`); `priority` finite and `> 0`, `evenness` finite and `>= 0` (`ValueError` naming `priority`/`evenness`; non-numeric/`bool` → `TypeError`, huge `int` → `OverflowError`, via `_validation.finite`). | A1, A2 |
+| `Room(name: str, *, priority: float, evenness: float, kp: float, ki: float, setpoint: float)` | `allocator.py` | One room: its fixed priority and evenness weight, and a composed radiator-mode `PIController(kp, ki, "radiator", setpoint, history_length=1)`. A handle type: built by `SectionAllocator`, construction documented as internal (no defaults; not tested standalone beyond what the allocator surfaces). `name` must be a non-empty `str` (`TypeError`/`ValueError` naming `name`); `priority` finite and `> 0`, `evenness` finite and `>= 0` (`ValueError` naming `priority`/`evenness`; non-numeric/`bool` → `TypeError`, huge `int` → `OverflowError`, via `_validation.finite`). | A1, A2 |
 | `Room.name -> str` | | Read-only. | A1 |
 | `Room.priority -> float` | | Read-only. | A1, A5 |
 | `Room.evenness -> float` | | Read-only. | A1, A6 |
@@ -188,7 +192,7 @@ does for private helpers.
 | `Room.integral -> float` | | Read-only. Delegates to `PIController.integral`. | A9 |
 | `Room.demand -> float \| None` | | Read-only. The clamped PI demand of the last `update` (`PIController.pi_output`); `None` before the first and after `from_dict`. | A3 |
 | `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | `allocator.py` | The controller. `rooms` maps each room name to a mapping with exactly the keys `"priority"` and `"evenness"`; `sections` maps each section name to `{room name: share}`. `kp`/`ki`/`setpoint` are every room's initial values. Validation order and errors are listed in the implementation guide, step 3. | A1 |
-| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | | One step: `measured` must be a `Mapping` with exactly the room names (`TypeError` naming `measured` for a non-mapping; `ValueError` naming the missing keys, else the unknown ones); each value via `_validation.finite("measured['R1']", v)`. All of that before any state changes. Then each room's demand, the allocation, each section's `Modulator.command(duty)`. Returns a fresh dict `{section: 0.0 \| 1.0}` in the constructor's section order. | A3, A4, A5, A6, A7 |
+| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | | One step: `measured` must be a `Mapping` with exactly the room names (`TypeError` naming `measured` for a non-mapping; `ValueError` naming the missing keys, else the unknown ones); each value via `_validation.finite("measured['R1']", v)`. All of that before any state changes. Then each room's demand, the allocation, each section's `Modulator.command(duty)`; if the allocation raises, every room's integral and demand are restored to their values before the call and the error propagates (no command, no `duty` written). Returns a fresh dict `{section: 0.0 \| 1.0}` in the constructor's section order. | A3, A4, A5, A6, A7 |
 | `SectionAllocator.rooms -> Mapping[str, Room]` | | Read-only view (`MappingProxyType`) of the `Room` handles in constructor order. | A2, A3 |
 | `SectionAllocator.sections -> dict[str, dict[str, float]]` | | Read-only layout: a fresh deep copy of the shares, as floats. | A1 |
 | `SectionAllocator.history_length -> int` | | Read-only. | A1, A9 |
@@ -228,11 +232,15 @@ does for private helpers.
       multi-variable component, the dense share matrix.
 4. Private `_allocate(demand: Mapping[str, float]) -> dict[str, float]`: per component —
    1 room × 1 section: `min(1.0, d / share) + 0.0`; otherwise build `A`, `b` as in Approach,
-   `lsq_linear(A, b, bounds=(0.0, 1.0), method="bvls")`, then `float(min(1.0, max(0.0,
-   x))) + 0.0` per entry (guards round-off at the bounds; `Modulator.command` rejects
+   `lsq_linear(A, b, bounds=(0.0, 1.0), method="bvls")` (weights normalised per component
+   first, see Approach); if any entry of the result is not finite, raise `ArithmeticError`
+   naming the component's sections (never clamp a nan — `max(0.0, nan)` returns `0.0`);
+   then `float(min(1.0, max(0.0, x))) + 0.0` per entry (guards round-off at the bounds; `Modulator.command` rejects
    anything outside `[0, 1]`). Cast every numpy value to `float` before it leaves the
    function so mypy's `warn_return_any` stays clean.
-5. `update`: validate as in the table → `demand = {r: room._step(m)}` → `_allocate` →
+5. `update`: validate as in the table → record each room's `(integral, pi_output)` →
+   `demand = {r: room._step(m)}` → `_allocate` (on any exception: write the recorded
+   values back into each composed `PIController`'s `_integral`/`_pi_output`, re-raise) →
    commands from each section's modulator → store `duty` → return commands.
 6. Read-only properties, `to_dict`, `from_dict` (as in the table; `from_dict` builds via
    `cls(...)` so a subclass round-trips as itself).
@@ -252,10 +260,11 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
 | T1 | Every A1 refusal raises the documented class naming the offender, for both `rooms` and `sections` (share 0, share > 1, shares summing to 1 + 1e-6, unknown room, uncovered room, priority 0 and negative, evenness negative, nan/inf/`bool`/str values, empty mappings, non-str names, wrong room-spec keys); a share sum of exactly 1.0 from `0.1`-style float sums is accepted. | A1 |
 | T2 | Layout is read-only: `rooms`, `sections`, `history_length`, `Room.priority`/`evenness` cannot be assigned, and mutating returned copies does not reach the controller. | A1 |
 | T3 | A room's `setpoint`/`kp`/`ki` setters raise the same class and message as `PIController`'s for the same bad values, leave the old value on failure, and a valid change alters the very next `update`'s demand exactly as a standalone `PIController` with the same change would. | A2 |
+| T4b | A monkeypatched solver that raises (and one returning nan) makes `update` raise and leaves the whole `to_dict()` and every `Room.demand` exactly as before the call; weights of `1e300` and `1e-300` still allocate finite duties equal to the same layout with weights scaled to 1. | A3 |
 | T4 | `update` returns exactly the section names with values in `{0.0, 1.0}`; a missing room, an unknown room, a non-mapping, a nan/inf/str/`bool`/huge-int temperature each raise naming it, and leave every room's integral and demand, `duty`, and every section history unchanged (whole `to_dict()` equal before/after); `duty`/`demand` read `None` before the first update and are populated after. | A3 |
-| T5 | Evenness 0, feasible demands: delivered heat (`Σ share × duty`) equals demand per room within tolerance — (0.1, 0.6), (0.3, 0.8), (0, 0), and a component with three rooms in a chain; all duties in `[0, 1]`. | A4 |
+| T5 | Evenness 0, feasible demands: delivered heat (`Σ share × duty`) equals demand per room within tolerance — (0.1, 0.6), (0.3, 0.8), (0, 0), and a component with three rooms in a chain; all duties in `[0, 1]`. The closed-form branch: a one-room, one-section component with share 0.5 at demands 0, 0.3 and 0.6 gives duty 0.0, 0.6 and 1.0 exactly; a single section covering two rooms (and a room with one section that also covers another room) goes through least squares, not the closed form. | A4 |
 | T6 | Priority: for the conflict layouts (R1, R2 sharing only HS2 with demands (0.2, 0.6); and the reference layout with infeasible demands), raising a room's priority over a sweep never increases its absolute mismatch (allowing 1e-9); when no duty is at 0 or 1, the higher-priority room's mismatch is the smaller; the saturated shared-only case (demands 0, 1) is the documented exception and is tested as such. | A5 |
-| T7 | Evenness: on the reference layout, sweeping one room's evenness weight upward never increases that room's duty spread (several demand pairs, other room's weight 0 and > 0); the hungry-R2 case (0.1, 0.6) gives HS1 = 0 with all weights 0, and with R1 = 0.1, R2 = 0 gives HS1 > 0, a smaller HS1–HS2 gap and both demands met within tolerance. | A6 |
+| T7 | Evenness: spread is `Σ (u_s − mean)²` over the room's sections. On the reference layout and on a room served by three sections, sweeping one room's evenness weight upward never increases that room's spread (several demand pairs, other room's weight 0 and > 0); the hungry-R2 case (0.1, 0.6) gives HS1 = 0 with all weights 0, and with R1 = 0.1, R2 = 0 gives HS1 > 0, a smaller HS1–HS2 gap and both demands met within tolerance. | A6 |
 | T8 | R3/HS4 (share 1.0) yields a command sequence identical (`==`, not approx) to `PIController(kp, ki, "floor_heating", setpoint, history_length=n)` over a long varied measurement sequence including saturation both ways and a mid-run setpoint/gain change, regardless of R1/R2's measurements and evenness weights; also a single-room, single-section allocator. | A7 |
 | T9 | `scipy` is in `[project] dependencies`; the package, `heatingsystem.allocator` and `heatingsystem` import; `SectionAllocator`/`Room` are the identical objects from every import path and in both `__all__`; the existing suite passes untouched. | A8 |
 | T10 | `to_dict` has exactly the documented shape and order and `json.dumps`-able types, fresh containers; `from_dict(to_dict())` and the JSON round trip give an allocator whose next 50 commands equal the original's, mid-run with partly filled and full windows; every malformed snapshot (missing/unknown keys at each level, bad values, over-long history, invalid layout, non-mapping) raises naming the path and produces nothing; a subclass round-trips as itself. | A9 |
@@ -266,7 +275,7 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
   layout), A2 (`Room` setters), A3 (`update`, `duty`, `Room.demand`), A4–A6 (`update`,
   `duty`), A7 (`update`, `history`), A8 (`pyproject.toml`, the package exports), A9
   (`to_dict`/`from_dict`, `Room.integral`).
-- Every criterion has at least one test intent: A1 T1–T2, A2 T3, A3 T4, A4 T5, A5 T6, A6 T7,
+- Every criterion has at least one test intent: A1 T1–T2, A2 T3, A3 T4/T4b, A4 T5, A5 T6, A6 T7,
   A7 T8, A8 T9, A9 T10.
 - Nothing in the Public API lacks a criterion; `main()` is the repo's module convention.
 
@@ -289,6 +298,16 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
   what the stop gate and session brief read, mid-build); STRUCTURE.md stays flat, and R6's
   entry is reworded to say the trigger has now arrived. Step 8 decides whether it is the
   next round.
+- **Non-unique minimisers.** With evenness 0 a component can have a whole line of exact
+  fits; which one is returned is the solver's choice, and A6's "evenness 0" example
+  depends on `bvls`'s. `bvls` is therefore required for such components, and the `trf`
+  fallback above may be used only where it does not change T7's evenness-0 result. If
+  `bvls` stops returning the documented evenness-0 point, halt — the example, not the code,
+  would be wrong.
+- **`Modulator._from_dict` called from another module.** Deliberate for this round:
+  `SectionAllocator` is the first caller restoring a standalone `Modulator`, which is
+  `DEVELOPMENT.md` round-4 R7's trigger. Not promoted here; R7's entry is reworded to say
+  its trigger has arrived, alongside R6's.
 - **`Room` exposing `PIController`'s `mode`/`fixed_output`.** It must not: only the
   properties in the table are public; the composed controller is `_pi`.
 
