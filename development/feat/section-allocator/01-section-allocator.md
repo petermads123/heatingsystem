@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,7 +18,7 @@
 | 3 | Implement | `/implement` | in `/build` | done (re-run after the step-5 halt) |
 | 4 | Verify | `/verify` | in `/build` | done (re-run after the step-5 halt) |
 | 5 | Test | `/test` | in `/build` | done (re-run; A5 amended, combined-cost test added) |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -543,16 +543,33 @@ check on the float-converted value: a `Fraction` just above 1 that rounds to 1.0
 
 ## 6. Concept check
 
+Run on the tree as step 5 left it: ruff, format and mypy clean, `pytest` 1377 passed.
+
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| A1 | Layout validation, read-only layout | met | `Room`/constructor range checks (`allocator.py`); tests `test_construction_refuses_a_bad_share_naming_its_path`, `..._a_share_sum_above_one...`, `test_share_sum_tolerance_boundary_is_one_nanounit` (1e-9 stated), `..._a_priority_outside_zero_exclusive_to_one`, `..._an_evenness_outside_zero_to_one`, `test_layout_and_state_attributes_cannot_be_assigned`. Showcase refusal: `rooms['R1'].priority must be in (0, 1], got 2.0.` |
+| A2 | Room setpoint/kp/ki, PIController validation, next update | met | `test_room_setters_match_pi_controller_and_keep_the_old_value`, `test_room_setting_change_takes_effect_on_the_next_update_like_a_twin`; `Room` setters delegate to the composed `PIController` |
+| A3 | `update` shape, errors before state change, `duty`/`demand` readable | met | `test_update_returns_exactly_the_section_names_with_binary_values`, `test_update_refuses_bad_measurements_and_changes_nothing` (16 cases, whole `to_dict()` unchanged), `test_duty_and_demand_are_none_before_...`; solver-failure restore test |
+| A4 | Evenness 0, feasible demands met exactly | met | `test_feasible_demands_are_delivered_exactly_with_evenness_zero`, chain tests, `test_worked_examples_with_many_exact_fits_deliver_each_demand`; showcase hungry-R2 run delivers 0.1/0.6 (HS2 0.2 x 0.5 + HS1 0 = 0.1; HS2 0.1 + HS3 0.5 = 0.6) |
+| A5 | Priority monotonicity, both clauses | met | evenness-0 absolute mismatch: `test_raising_priority_is_monotone_on_the_reference_layout_with_evenness_zero`, `..._shared_section`; combined cost: `test_raising_priority_never_increases_the_combined_cost_on_the_counterexample`, `test_raising_a_priority_never_increases_that_rooms_combined_cost_on_random_layouts`; equal-share ordering: `test_the_higher_priority_room_ends_with_an_exact_mismatch_ratio` |
+| A6 | Evenness never widens own spread; hungry-R2 example | met | `test_raising_evenness_never_widens_the_rooms_spread_reference_layout`, `..._three_section_room`, `test_hungry_r2_with_r1_evenness_meets_both_demands_evenly`; showcase example B: 0.067/0.067/0.567 |
+| A7 | Dedicated share-1.0 room equals standalone floor-heating `PIController` | met | `test_dedicated_room_produces_the_command_sequence_of_a_standalone_controller` (`==`, windows 1, 6, 24), `test_equivalence_needs_a_dedicated_share_of_one`, conflict variant |
+| A8 | scipy declared, imports, existing suite green | met | `pyproject.toml:16` `dependencies = ["numpy>=2", "scipy>=1.14,<2"]`; `test_scipy_and_numpy_are_declared_runtime_dependencies`; pi_controller/modulator source untouched in `git diff main --stat`; full suite 1377 passed |
+| A9 | Snapshot shape, round trip, malformed snapshot raises naming the key | met | `test_to_dict_has_exactly_the_documented_shape_and_order`, `test_a_restored_allocator_produces_the_same_next_fifty_commands` (direct and JSON), `test_from_dict_refuses_a_malformed_snapshot_naming_the_path` (35 cases). Run by hand on six corruptions: bad share `sections['HS1']['R1'] must be in (0, 1], got 2.0.`; priority `rooms['R1'].priority ...`; missing `rooms['R1']: snapshot is missing keys ['kp']`; integral `rooms['R1'].integral ...`; history `sections['HS1'].history[0] ...`; unknown top key `snapshot has unknown keys ['extra']` |
+| A10 | Duties minimise exactly `J` | met | `test_allocation_satisfies_the_kkt_conditions_of_the_documented_cost` (60 layouts), `test_allocation_cost_is_not_beaten_by_an_independent_solve` (60; J normalised by the largest priority, as recorded in section 5, A10's absolute tolerance being vacuous for tiny priorities) |
+| A11 | Only priority ratios matter | met | `test_scaling_every_priority_by_one_factor_leaves_the_duties_unchanged`, `test_random_layouts_are_unchanged_by_scaling_every_priority`, `test_evenness_zero_ignores_the_priority_scale_exactly` |
+| A12 | Worked examples within 1e-3 | met | `test_worked_examples_hold_within_a_thousandth` (B, C, D, E, G); A and F deliver demands exactly; showcase B and C reproduce 0.067/0.067/0.567 and 0.067/0.233/0.400 |
 
 Drift found, and what was done about it:
 
+- Out of scope checked: no room min/max limits, prices, thermal model, cap on active sections, AppDaemon glue, firing coordination, or runtime layout change was built. `Room` exposes only the planned properties.
+- Connections: `Room` composes a radiator-mode `PIController` and each section a floor-heating `Modulator`; neither module changed.
+- Structure auditor (one finding, judged): `STRUCTURE.md`'s `from_dict` row said "errors keep their class with the path prefixed", which suggests every error carries a snapshot path. The code and docstring say a layout error is the constructor's and names the constructor's path. Wording corrected in `STRUCTURE.md` (the auditor's suggested text, with the exact history example). No code change.
+- A9 and the constructor path: A9 says a malformed snapshot "raises naming the offending key, validated as the constructor would". A layout error naming `sections['HS1']['R1']` names the offending key, and is exactly what the constructor raises, so both halves are met literally. Not ambiguous, so not a halt.
+
 ### Earlier rounds still hold
 
-| Round | # | Criterion | Still met | Evidence |
-|---|---|---|---|---|
+None: this is the first round.
 
 ---
 
