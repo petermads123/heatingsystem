@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,7 +19,7 @@
 | 4 | Verify | `/verify` | in `/build` | done (re-run after the step-5 halt) |
 | 5 | Test | `/test` | in `/build` | done (re-run; A5 amended, combined-cost test added) |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -577,8 +577,10 @@ None: this is the first round.
 
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits | Concept: Section allocator; Plan: Section allocator (x3, plus draft and Plan accepted); WIP step 3 (x3) and Add SectionAllocator and Room; Verify: Section allocator; WIP step 5 (x3, plus two halt-answer commits); WIP step 3/4 re-run; Test: Section allocator; Concept check: Section allocator; Ship: Section allocator (this commit) |
+| Pushed to | `origin/feat/section-allocator` |
+
+Whole-tree gates at ship: `ruff check .` clean, `ruff format --check .` 53 files formatted, `mypy` no issues in 21 files, `pytest` 1377 passed. Diff against `main` reviewed: nine files, all intended (package, tests, plan, docs, `pyproject.toml`); no stray or scratch files. Every step from 1 to 6 left a commit naming the round.
 
 ---
 
