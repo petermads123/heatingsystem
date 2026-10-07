@@ -472,7 +472,8 @@ mode coercion identically for `PIController.mode`, `Modulator.mode` and
 ### `tests/test_validation.py`
 
 Covers `heatingsystem._validation`, the private module the numeric contract is stated in
-once and that both `PIController` and `Modulator` call through by name (D5). `finite`:
+once and that `PIController`, `Modulator` and the allocator (`Room`, `SectionAllocator`) call
+through by name (D5). `finite`:
 accepts a plain number and returns `float`, normalises `-0.0` to `+0.0`, accepts `int` and
 `Fraction`, rejects every non-finite value and every non-`numbers.Real` type (`bool`
 included) naming the attribute and the offending type, and raises `OverflowError` naming the

@@ -217,7 +217,7 @@ does for private helpers.
 | `SectionAllocator.history -> dict[str, tuple[float, ...]]` | | Each section's command window, oldest first (its `Modulator.history`). | A7, A9 |
 | `SectionAllocator.to_dict() -> dict[str, object]` | | Snapshot, exactly `{"history_length": int, "rooms": {name: {"priority", "evenness", "setpoint", "kp", "ki", "integral"}}, "sections": {name: {"shares": {room: float}, "history": [float, ...]}}}` in constructor order; fresh containers, `json.dumps`-ready. | A9 |
 | `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | | Rebuild: every level's key set checked with `_validation.snapshot_mapping` (missing before unknown); the layout goes through the constructor (same errors); then each room's `setpoint`/`kp`/`ki` through its setters and `integral` through `PIController.integral`; each section's window through `Modulator._from_dict({"mode": "floor_heating", "history_length": n, "fixed_output": None, "history": h})`. Any error is re-raised as the same class with the path prefixed (`rooms['R1'].integral: ...`, `sections['HS2'].history: ...`). No controller on failure. | A9 |
-| `main() -> None` | `allocator.py` | Showcase: the R1/R2/R3 example layout; the hungry-R2 run with R1 evenness 0 vs 0.1; a priority change; a setpoint change; a JSON snapshot round trip with identical next commands; an invalid layout refused. | — (convention) |
+| `main() -> None` | `allocator.py` | Showcase: the R1/R2/R3 example layout; the hungry-R2 run with R1 evenness 0 vs 0.1; a priority conflict on a shared section; a setpoint change; a JSON snapshot round trip with identical next commands; an invalid layout refused. | — (convention) |
 
 ### Implementation guide
 
