@@ -263,11 +263,11 @@ def test_construction_accepts_the_edges_of_every_range() -> None:
     assert a.rooms["R1"].priority == 5e-324
     assert math.copysign(1.0, a.rooms["R1"].evenness) == 1.0
     assert a.sections["HS1"]["R1"] == 5e-324
-    build(rooms=one_room(evenness=1e300), sections={"HS1": {"R1": 1}})
+    build(rooms=one_room(evenness=1.0), sections={"HS1": {"R1": 1}})
 
 
 def test_construction_stores_int_inputs_as_float() -> None:
-    a = build(rooms=one_room(priority=2, evenness=1), sections={"HS1": {"R1": 1}})
+    a = build(rooms=one_room(priority=1, evenness=1), sections={"HS1": {"R1": 1}})
     assert type(a.sections["HS1"]["R1"]) is float
     assert type(a.rooms["R1"].priority) is float
     assert type(a.rooms["R1"].evenness) is float
@@ -831,14 +831,15 @@ def test_update_restores_state_when_a_modulator_rejects_the_duty(
     assert a.duty == before[1]
 
 
-@pytest.mark.parametrize("weight", [1e300, 1e-300])
-@pytest.mark.parametrize(("e1", "e2"), [(0.0, 0.0), (0.4, 0.2)])
-def test_extreme_but_uniform_weights_allocate_like_unit_weights(
+@pytest.mark.parametrize("weight", [0.5, 1e-6, 1e-300, 1e-308, 1e-320, 5e-324])
+@pytest.mark.parametrize(("e1", "e2"), [(0.0, 0.0), (0.4, 0.2), (1.0, 0.1)])
+def test_uniformly_scaled_priorities_allocate_like_unit_priorities(
     weight: float, e1: float, e2: float
 ) -> None:
+    """A11 for equal priorities, down to the smallest subnormal (ratio taken first)."""
     demand = {"R1": 0.1, "R2": 0.6, "R3": 0.3}
     scaled = SectionAllocator(
-        ref_rooms(e1 * weight, e2 * weight, 0.0, weight, weight, weight),
+        ref_rooms(e1, e2, 0.0, weight, weight, weight),
         ref_sections(),
         kp=1.0,
         ki=0.0,
@@ -848,6 +849,72 @@ def test_extreme_but_uniform_weights_allocate_like_unit_weights(
     want = unit._allocate(demand)
     assert all(math.isfinite(v) for v in got.values())
     assert got == pytest.approx(want, abs=1e-9)
+
+
+@pytest.mark.parametrize("factor", [0.3, 0.7, 1e-3, 1e-9])
+@pytest.mark.parametrize(
+    ("p1", "p2", "e1", "e2"),
+    [
+        (1.0, 1.0, 1.0, 1.0),  # worked example C
+        (0.3, 1.0, 1.0, 1.0),  # worked example E
+        (1.0, 1.0, 1.0, 0.1),  # worked example D
+        (1.0, 0.5, 0.0, 0.0),  # many exact fits: the tie-break must not move
+        (0.8, 1.0, 0.3, 0.7),
+    ],
+)
+def test_scaling_every_priority_by_one_factor_leaves_the_duties_unchanged(
+    factor: float, p1: float, p2: float, e1: float, e2: float
+) -> None:
+    demand = {"R1": 0.1, "R2": 0.6, "R3": 0.3}
+    base = SectionAllocator(
+        ref_rooms(e1, e2, p1=p1, p2=p2, p3=1.0), ref_sections(), kp=1.0, ki=0.0
+    )
+    scaled = SectionAllocator(
+        ref_rooms(e1, e2, p1=p1 * factor, p2=p2 * factor, p3=factor),
+        ref_sections(),
+        kp=1.0,
+        ki=0.0,
+    )
+    assert scaled._allocate(demand) == pytest.approx(base._allocate(demand), abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("priority", "evenness"),
+    [(5e-324, 0.4), (5e-324, 0.2), (1e-323, 0.2), (1e-300, 0.4), (1.0, 0.4)],
+)
+def test_evenness_survives_a_subnormal_priority(
+    priority: float, evenness: float
+) -> None:
+    """Regression: priority * evenness underflowed to 0 and dropped the spread rows."""
+    sections = {"HS1": {"R1": 1.0}, "HS2": {"R1": 0.5}}
+    a = SectionAllocator(one_room(priority, evenness), sections, kp=1.0, ki=0.0)
+    got = a._allocate({"R1": 0.6})
+    assert got["HS1"] == pytest.approx(0.4, abs=1e-9)
+    assert got["HS2"] == pytest.approx(0.4, abs=1e-9)
+
+
+@pytest.mark.parametrize("priority", [1.0, 0.5, 1e-300, 5e-324])
+def test_evenness_zero_ignores_the_priority_scale_exactly(priority: float) -> None:
+    demand = {"R1": 0.1, "R2": 0.6, "R3": 0.0}
+    base = SectionAllocator(ref_rooms(), ref_sections(), kp=1.0, ki=0.0)
+    scaled = SectionAllocator(
+        ref_rooms(p1=priority, p2=priority, p3=priority),
+        ref_sections(),
+        kp=1.0,
+        ki=0.0,
+    )
+    assert scaled._allocate(demand) == base._allocate(demand)  # bit-identical
+
+
+@pytest.mark.parametrize("evenness", [5e-324, 1e-13, 1e-12])
+def test_tiny_positive_evenness_is_floored_not_dropped(evenness: float) -> None:
+    a = SectionAllocator(ref_rooms(e1=evenness), ref_sections(), kp=1.0, ki=0.0)
+    component = next(c for c in a._components if c.matrix is not None)
+    assert component.matrix is not None
+    assert component.matrix.shape[0] == 2 + 2  # two fit rows, two spread rows
+    got = a._allocate({"R1": 0.1, "R2": 0.6, "R3": 0.0})
+    assert got["HS1"] == pytest.approx(got["HS2"], abs=1e-6)
+    assert got["HS1"] == pytest.approx(1 / 15, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -980,9 +1047,9 @@ def test_components_are_independent_of_each_others_demands() -> None:
 
 def test_single_shared_section_weights_fit_rows_by_square_root_priority() -> None:
     rooms = {
-        "R1": {"priority": 1.0, "evenness": 0.0},
-        "R2": {"priority": 1.0, "evenness": 0.0},
-        "R3": {"priority": 4.0, "evenness": 0.0},
+        "R1": {"priority": 0.25, "evenness": 0.0},
+        "R2": {"priority": 0.25, "evenness": 0.0},
+        "R3": {"priority": 1.0, "evenness": 0.0},
     }
     third = 1 / 3
     sections = {"HS": {"R1": third, "R2": third, "R3": third}}
@@ -1026,14 +1093,15 @@ def test_tiny_shares_stay_finite_and_in_range() -> None:
 @pytest.mark.parametrize(
     ("p1", "p2"),
     [
-        (1e300, 1e-300),
-        (1e-300, 1e300),
-        (1e40, 1.0),
-        (1.0, 1e40),
+        (5e-324, 1.0),
+        (1.0, 5e-324),
+        (1e-300, 1.0),
+        (1.0, 1e-300),
         (1e-30, 1.0),
         (1e-150, 1.0),
         (1e-12, 1.0),
         (1.0, 1e-12),
+        (math.nextafter(1e-12, 0.0), 1.0),
     ],
 )
 def test_feasible_demands_survive_an_extreme_priority_ratio(
@@ -1051,11 +1119,10 @@ def test_feasible_demands_survive_an_extreme_priority_ratio(
     ("priority", "evenness"),
     [
         (1.0, 1.0),
-        (1.0, 1e6),
-        (1.0, 1e40),
+        (1.0, 1e-6),
         (1e-300, 1.0),
-        (1e-300, 1e300),
-        (1e300, 1e-300),
+        (5e-324, 1.0),
+        (1e-300, 1e-12),
     ],
 )
 def test_one_room_two_sections_with_evenness_gives_equal_duties(
@@ -1068,7 +1135,7 @@ def test_one_room_two_sections_with_evenness_gives_equal_duties(
     assert got["HS2"] == pytest.approx(0.4, abs=1e-9)
 
 
-@pytest.mark.parametrize("evenness", [0.0, 1.0, 1e300])
+@pytest.mark.parametrize("evenness", [0.0, 1.0, math.nextafter(1.0, 0.0), 5e-324])
 def test_evenness_of_a_single_section_room_is_inert(evenness: float) -> None:
     rooms = ref_rooms(e2=evenness)
     sections = {"HS1": {"R1": 1.0}, "HS2": {"R1": 0.5, "R2": 0.5}}
@@ -1096,8 +1163,8 @@ def shared_only(p1: float, p2: float) -> SectionAllocator:
 
 def test_raising_priority_never_increases_that_rooms_mismatch_shared_section() -> None:
     last = math.inf
-    for p in (0.01, 0.1, 0.5, 1.0, 2.0, 10.0, 1e3, 1e6):
-        a = shared_only(p, 1.0)
+    for p in (1e-8, 1e-7, 5e-7, 1e-6, 2e-6, 1e-5, 1e-3, 1.0):
+        a = shared_only(p, 1e-6)
         a.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
         current = mismatch(a, "R1", 0.2)
         assert current <= last + 1e-9
@@ -1105,25 +1172,66 @@ def test_raising_priority_never_increases_that_rooms_mismatch_shared_section() -
 
 
 def test_the_higher_priority_room_ends_with_the_smaller_mismatch() -> None:
-    a = shared_only(2.0, 1.0)
+    a = shared_only(1.0, 0.5)
     a.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
     assert a.duty is not None
     assert a.duty["HS1"] == pytest.approx(2 / 3, abs=1e-9)
     assert mismatch(a, "R1", 0.2) == pytest.approx(1 / 3 - 0.2, abs=1e-9)
     assert mismatch(a, "R1", 0.2) < mismatch(a, "R2", 0.6)
-    b = shared_only(1.0, 2.0)
+    b = shared_only(0.5, 1.0)
     b.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
     assert mismatch(b, "R2", 0.6) < mismatch(b, "R1", 0.2)
 
 
-def test_raising_priority_is_monotone_when_evenness_creates_a_trade_off() -> None:
+@pytest.mark.parametrize("demands", [(0.1, 0.6), (0.9, 0.9), (0.9, 0.2), (0.0, 1.0)])
+def test_raising_priority_is_monotone_on_the_reference_layout_with_evenness_zero(
+    demands: tuple[float, float],
+) -> None:
     last = math.inf
-    for p in (0.001, 0.1, 1.0, 5.0, 100.0, 1e5):
-        a = ref(e1=0.5, e2=0.5, p1=p)
-        a.update(meas(0.1, 0.6, 0.0))
-        current = mismatch(a, "R1", 0.1)
-        assert current <= last + 1e-7
+    for p in (0.05, 0.1, 0.2, 0.4, 0.7, 1.0):
+        a = ref(p1=p)
+        a.update(meas(demands[0], demands[1], 0.0))
+        current = mismatch(a, "R1", demands[0])
+        assert current <= last + 1e-12
         last = current
+
+
+def counterexample_allocator(p1: float, e1: float) -> SectionAllocator:
+    rooms = {
+        "R1": {"priority": p1, "evenness": e1},
+        "R2": {"priority": 1.0, "evenness": 0.0},
+        "R3": {"priority": 1.0, "evenness": 0.0},
+    }
+    sections = {"HS1": {"R1": 0.5, "R2": 0.5}, "HS2": {"R1": 0.5, "R3": 0.5}}
+    a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
+    a.update({"R1": 20.5, "R2": 20.0, "R3": 21.0})  # demands 0.5 / 1.0 / 0.0
+    return a
+
+
+def test_priority_with_evenness_pins_the_cost_minimiser_where_a5s_first_clause_fails() -> (
+    None
+):
+    """Characterises the exact J-minimiser (A10) where raising a priority raises |m|.
+
+    Pending the user's decision on A5's wording (see the plan's Halted section):
+    with evenness 1 on R1 and HS1 pinned at 1, a larger priority also pulls HS2
+    harder towards HS1, over-serving R1, so its absolute mismatch grows. The
+    duties are the closed-form minimiser of A10's J, checked independently; the
+    test asserts the numbers, not that A5 holds or fails.
+    """
+    for p, hs2, miss in (
+        (0.1, 0.1538461538, 0.0769230769),
+        (0.4, 0.3636363636, 0.1818181818),
+    ):
+        a = counterexample_allocator(p, 1.0)
+        assert a.duty is not None
+        assert a.duty["HS1"] == pytest.approx(1.0, abs=1e-9)
+        assert a.duty["HS2"] == pytest.approx(hs2, abs=1e-8)
+        assert mismatch(a, "R1", 0.5) == pytest.approx(miss, abs=1e-8)
+        assert a.duty["HS2"] == pytest.approx(p / (1.5 * p + 0.5), abs=1e-9)
+    # Control: with evenness 0 R1's demand is met at both priorities.
+    for p in (0.1, 0.4):
+        assert mismatch(counterexample_allocator(p, 0.0), "R1", 0.5) < 1e-9
 
 
 @pytest.mark.parametrize("demands", [(0.3, 0.9), (0.0, 1.0), (1.0, 0.0), (0.5, 0.5)])
@@ -1131,8 +1239,8 @@ def test_priority_sweep_is_monotone_for_both_rooms_on_a_shared_section(
     demands: tuple[float, float],
 ) -> None:
     last = math.inf
-    for p in (0.05, 0.5, 1.0, 3.0, 50.0):
-        a = shared_only(p, 1.0)
+    for p in (0.001, 0.01, 0.02, 0.06, 1.0):  # ratios 0.05 ... 50 to p2 = 0.02
+        a = shared_only(p, 0.02)
         a.update({"R1": SETPOINT - demands[0], "R2": SETPOINT - demands[1]})
         current = mismatch(a, "R1", demands[0])
         assert current <= last + 1e-9
@@ -1150,8 +1258,8 @@ def test_documented_exception_saturated_section_ties_the_mismatches() -> None:
 
 def test_documented_exception_unequal_shares_favour_the_larger_share() -> None:
     rooms = {
-        "R1": {"priority": 2.0, "evenness": 0.0},
-        "R2": {"priority": 1.0, "evenness": 0.0},
+        "R1": {"priority": 1.0, "evenness": 0.0},
+        "R2": {"priority": 0.5, "evenness": 0.0},
     }
     a = SectionAllocator(rooms, {"HS1": {"R1": 0.2, "R2": 0.8}}, kp=1.0, ki=0.0)
     a.update({"R1": SETPOINT - 1.0, "R2": SETPOINT - 0.0})
@@ -1163,8 +1271,8 @@ def test_documented_exception_unequal_shares_favour_the_larger_share() -> None:
 def test_signed_mismatch_can_grow_when_priority_rises() -> None:
     """Pins the algebra behind A5's wording: only the absolute mismatch shrinks."""
     signed = []
-    for p in (1.0, 2.0):
-        a = shared_only(p, 1.0)
+    for p in (0.5, 1.0):
+        a = shared_only(p, 0.5)
         a.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
         signed.append(0.2 - delivered(a, "R1"))
     assert signed[0] == pytest.approx(-0.2, abs=1e-9)
@@ -1192,12 +1300,13 @@ def three_section_layout() -> tuple[
 
 @pytest.mark.parametrize("demands", [(0.1, 0.6), (0.9, 0.2), (0.3, 0.3), (0.0, 1.0)])
 @pytest.mark.parametrize("other", [0.0, 0.5])
+@pytest.mark.parametrize("competitor", [1.0, 1e-3, 1e-6])  # R2's priority
 def test_raising_evenness_never_widens_the_rooms_spread_reference_layout(
-    demands: tuple[float, float], other: float
+    demands: tuple[float, float], other: float, competitor: float
 ) -> None:
     last = math.inf
-    for e in (0.0, 0.01, 0.1, 1.0, 10.0, 1e6):
-        a = ref(e1=e, e2=other)
+    for e in (0.0, 1e-6, 0.01, 0.1, 0.5, 1.0):
+        a = ref(e1=e, e2=other, p2=competitor)
         a.update(meas(demands[0], demands[1], 0.0))
         current = spread(a, "R1")
         assert current <= last + 1e-8
@@ -1212,7 +1321,7 @@ def test_raising_evenness_never_widens_the_spread_of_a_three_section_room(
     rooms, sections = three_section_layout()
     rooms["R2"]["evenness"] = other
     last = math.inf
-    for e in (0.0, 0.01, 0.1, 1.0, 10.0, 1e6):
+    for e in (0.0, 1e-6, 0.01, 0.1, 0.5, 1.0):
         rooms["R1"]["evenness"] = e
         a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
         a.update({"R1": SETPOINT - demands[0], "R2": SETPOINT - demands[1]})
@@ -1225,9 +1334,9 @@ def test_three_section_spread_is_the_sum_of_squares_about_the_mean() -> None:
     # One room, three sections, demand 0.3: with strong evenness all duties
     # equalise at demand / (sum of shares) = 0.3 / 1.5 = 0.2, spread 0.
     sections = {"A": {"R1": 0.5}, "B": {"R1": 0.5}, "C": {"R1": 0.5}}
-    strong = SectionAllocator(one_room(1.0, 1e3), sections, kp=1.0, ki=0.0)
+    strong = SectionAllocator(one_room(1.0, 1.0), sections, kp=1.0, ki=0.0)
     got = strong._allocate({"R1": 0.3})
-    assert list(got.values()) == pytest.approx([0.2, 0.2, 0.2], abs=1e-5)
+    assert list(got.values()) == pytest.approx([0.2, 0.2, 0.2], abs=1e-9)
     # Hand-computed: evenness 0, two dedicated sections: spread of (1.0, 0.0).
     # Pin the metric: sum((u - mean)^2) = 0.5 for u = (1, 0).
     values = [1.0, 0.0]
@@ -1255,12 +1364,17 @@ def test_hungry_r2_with_r1_evenness_meets_both_demands_evenly() -> None:
 
 
 def test_evenness_on_a_shared_section_is_a_real_trade_off() -> None:
-    """A positive weight may pull the fit off exact demand (A6's contrast)."""
-    a = ref(e1=5.0, e2=0.0)
+    """A positive weight may pull the fit off exact demand (worked example C)."""
+    a = ref(e1=1.0, e2=1.0)
     a.update(meas(0.1, 0.6, 0.0))
     assert a.duty is not None
-    assert delivered(a, "R1") + delivered(a, "R2") == pytest.approx(0.7, abs=1e-6)
-    assert abs(a.duty["HS1"] - a.duty["HS2"]) < 1e-6
+    assert a.duty["HS1"] == pytest.approx(0.067, abs=1e-3)
+    assert a.duty["HS2"] == pytest.approx(0.233, abs=1e-3)
+    assert a.duty["HS3"] == pytest.approx(0.400, abs=1e-3)
+    assert delivered(a, "R2") == pytest.approx(0.517, abs=1e-3)
+    assert delivered(a, "R2") < 0.6 - 0.05
+    assert delivered(a, "R1") == pytest.approx(0.183, abs=1e-3)
+    assert delivered(a, "R1") > 0.1 + 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -1281,7 +1395,7 @@ def varied_temperatures(n: int) -> list[float]:
 
 
 @pytest.mark.parametrize("window", [1, 6, 24])
-@pytest.mark.parametrize(("e3", "e1"), [(0.0, 0.0), (5.0, 0.3)])
+@pytest.mark.parametrize(("e3", "e1"), [(0.0, 0.0), (1.0, 0.3)])
 def test_dedicated_room_produces_the_command_sequence_of_a_standalone_controller(
     window: int, e3: float, e1: float
 ) -> None:
@@ -1354,7 +1468,7 @@ def test_equivalence_needs_a_dedicated_share_of_one() -> None:
 
 
 def test_other_rooms_do_not_leak_into_a_dedicated_rooms_duty() -> None:
-    a = ref(e1=2.0, e2=2.0)
+    a = ref(e1=1.0, e2=1.0)
     a.update(meas(0.9, 0.9, 0.35))
     assert a.duty is not None
     assert a.duty["HS4"] == pytest.approx(0.35, abs=1e-12)
@@ -1705,6 +1819,326 @@ def test_a_failed_from_dict_produces_nothing_and_leaves_the_source_alone() -> No
 
 
 # ---------------------------------------------------------------------------
+# A1 ranges: priority in (0, 1], evenness in [0, 1]
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        0,
+        0.0,
+        -0.0,
+        -1,
+        math.nextafter(1.0, 2.0),
+        1.0000001,
+        1.5,
+        2,
+        Fraction(3, 2),
+        1e300,
+    ],
+    ids=repr,
+)
+def test_construction_refuses_a_priority_outside_zero_exclusive_to_one(
+    value: object,
+) -> None:
+    rooms = ref_rooms()
+    rooms["R1"]["priority"] = value  # type: ignore[assignment]  # deliberate misuse
+    expected = f"rooms['R1'].priority must be in (0, 1], got {value!r}."
+    with pytest.raises(ValueError, match=re.escape(expected)):
+        build(rooms=rooms)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [-5e-324, -1, math.nextafter(1.0, 2.0), 2, Fraction(3, 2), 1e6, 1e300],
+    ids=repr,
+)
+def test_construction_refuses_an_evenness_outside_zero_to_one(value: object) -> None:
+    rooms = ref_rooms()
+    rooms["R2"]["evenness"] = value  # type: ignore[assignment]  # deliberate misuse
+    expected = f"rooms['R2'].evenness must be in [0, 1], got {value!r}."
+    with pytest.raises(ValueError, match=re.escape(expected)):
+        build(rooms=rooms)
+
+
+@pytest.mark.parametrize(
+    "priority",
+    [1.0, 1, Fraction(1, 1), Fraction(1, 3), 5e-324, math.nextafter(1.0, 0.0)],
+    ids=repr,
+)
+@pytest.mark.parametrize(
+    "evenness",
+    [0.0, -0.0, 0, 1.0, 1, 5e-324, math.nextafter(1.0, 0.0)],
+    ids=repr,
+)
+def test_construction_accepts_every_range_edge_and_stores_floats(
+    priority: float, evenness: float
+) -> None:
+    a = build(
+        rooms=one_room(priority, evenness),
+        sections={"HS1": {"R1": 1}},
+        kp=1.0,
+        ki=0.0,
+    )
+    room = a.rooms["R1"]
+    assert type(room.priority) is float
+    assert type(room.evenness) is float
+    assert room.priority == float(priority)
+    assert room.evenness == float(evenness)
+    assert math.copysign(1.0, room.evenness) == 1.0
+    assert set(a.update({"R1": 20.9}).values()) <= {0.0, 1.0}
+
+
+def test_room_built_directly_reports_the_range_without_a_path() -> None:
+    kwargs = {"kp": 0.3, "ki": 0.0, "setpoint": 21.0}
+    with pytest.raises(ValueError) as priority_error:
+        Room("R1", priority=0.0, evenness=0.0, **kwargs)
+    assert str(priority_error.value) == "priority must be in (0, 1], got 0.0."
+    with pytest.raises(ValueError) as evenness_error:
+        Room("R1", priority=1.0, evenness=1.5, **kwargs)
+    assert str(evenness_error.value) == "evenness must be in [0, 1], got 1.5."
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("priority", 2.0), ("priority", 0.0), ("evenness", math.nextafter(1.0, 2.0))]
+    + [("evenness", -0.1), ("priority", 1.5), ("evenness", 2)],
+)
+def test_from_dict_refuses_an_out_of_range_weight_naming_the_path(
+    key: str, value: float
+) -> None:
+    """A snapshot saved before the ranges were defined is refused cleanly."""
+    source = ref(history_length=4)
+    run_some(source, 3)
+    before = source.to_dict()
+    bad = source.to_dict()
+    bad["rooms"]["R1"][key] = value  # type: ignore[index]  # object-typed snapshot
+    with pytest.raises(ValueError, match=re.escape(f"rooms['R1'].{key} must be in")):
+        SectionAllocator.from_dict(bad)
+    assert source.to_dict() == before
+
+
+# ---------------------------------------------------------------------------
+# A10 / A11 / A12 (T11): the cost, the ratio property, the worked examples
+# ---------------------------------------------------------------------------
+
+
+def cost(
+    a: SectionAllocator, u: Mapping[str, float], demand: Mapping[str, float]
+) -> float:
+    """A10's J written independently from a layout's public surface."""
+    total = 0.0
+    for name, room in a.rooms.items():
+        serving = [s for s, shares in a.sections.items() if name in shares]
+        heat = sum(a.sections[s][name] * u[s] for s in serving)
+        total += room.priority * (demand[name] - heat) ** 2
+        if len(serving) > 1:
+            mean = sum(u[s] for s in serving) / len(serving)
+            total += (
+                room.priority * room.evenness * sum((u[s] - mean) ** 2 for s in serving)
+            )
+    return total
+
+
+def gradient(
+    a: SectionAllocator, u: Mapping[str, float], demand: Mapping[str, float]
+) -> dict[str, float]:
+    """Analytic gradient of ``cost`` divided by the largest priority.
+
+    Priorities are normalised first so subnormal ones do not lose their digits.
+    """
+    top = max(room.priority for room in a.rooms.values())
+    grad = {s: 0.0 for s in a.sections}
+    for name, room in a.rooms.items():
+        serving = [s for s, shares in a.sections.items() if name in shares]
+        heat = sum(a.sections[s][name] * u[s] for s in serving)
+        mean = sum(u[s] for s in serving) / len(serving)
+        for s in serving:
+            grad[s] += (
+                -2 * (room.priority / top) * (demand[name] - heat) * a.sections[s][name]
+            )
+            if len(serving) > 1:
+                grad[s] += 2 * (room.priority / top) * room.evenness * (u[s] - mean)
+    return grad
+
+
+A12_CASES = {
+    # name: (demands R1/R2, p1, p2, e1, e2, (HS1, HS2, HS3))
+    "B": ((0.1, 0.6), 1.0, 1.0, 0.1, 0.0, (1 / 15, 1 / 15, 17 / 30)),
+    "C": ((0.1, 0.6), 1.0, 1.0, 1.0, 1.0, (1 / 15, 7 / 30, 0.4)),
+    "D": ((0.1, 0.6), 1.0, 1.0, 1.0, 0.1, (0.067, 0.108, 0.525)),
+    "E": ((0.1, 0.6), 0.3, 1.0, 1.0, 1.0, (0.067, 0.323, 0.400)),
+    "G": ((0.3, 1.0), 1.0, 1.0, 0.1, 0.0, (0.2, 0.2, 0.9)),
+}
+
+
+@pytest.mark.parametrize("case", A12_CASES)
+def test_worked_examples_hold_within_a_thousandth(case: str) -> None:
+    demands, p1, p2, e1, e2, want = A12_CASES[case]
+    a = ref(e1=e1, e2=e2, p1=p1, p2=p2)
+    a.update(meas(demands[0], demands[1], 0.0))
+    assert a.duty is not None
+    got = (a.duty["HS1"], a.duty["HS2"], a.duty["HS3"])
+    assert got == pytest.approx(want, abs=1e-3)
+    assert a.duty["HS4"] == 0.0
+    # The same duties through the private allocation path, with the exact demands.
+    assert a._allocate(
+        {"R1": demands[0], "R2": demands[1], "R3": 0.0}
+    ) == pytest.approx(
+        {"HS1": want[0], "HS2": want[1], "HS3": want[2], "HS4": 0.0}, abs=1e-3
+    )
+
+
+@pytest.mark.parametrize("case", ["A", "F"])
+def test_worked_examples_with_many_exact_fits_deliver_each_demand(case: str) -> None:
+    demands = {"A": (0.1, 0.6), "F": (0.3, 1.0)}[case]
+    a = ref()
+    a.update(meas(demands[0], demands[1], 0.0))
+    assert a.duty is not None
+    assert all(0.0 <= v <= 1.0 for v in a.duty.values())
+    assert delivered(a, "R1") == pytest.approx(demands[0], abs=1e-9)
+    assert delivered(a, "R2") == pytest.approx(demands[1], abs=1e-9)
+
+
+def random_layout(
+    rng: np.random.Generator, subnormal: bool = True
+) -> tuple[SectionAllocator, dict[str, float]]:
+    """A random valid layout and demands, covering every A10 corner."""
+    while True:
+        n_rooms = int(rng.integers(2, 6))
+        n_sections = int(rng.integers(2, 7))
+        names = [f"R{i}" for i in range(n_rooms)]
+        rooms = {}
+        for name in names:
+            kind = int(rng.integers(0, 4 if subnormal else 3))
+            priority = (
+                1.0,
+                float(rng.uniform(0.01, 1.0)),
+                10 ** float(rng.uniform(-6, 0)),
+                5e-324,
+            )[kind]
+            evenness = (0.0, 1.0, float(rng.random()), float(rng.random()))[
+                int(rng.integers(0, 4))
+            ]
+            rooms[name] = {"priority": min(priority, 1.0), "evenness": evenness}
+        sections: dict[str, dict[str, float]] = {}
+        for j in range(n_sections):
+            covered = rng.choice(
+                names, size=int(rng.integers(1, min(3, n_rooms) + 1)), replace=False
+            )
+            weights = rng.dirichlet(np.ones(len(covered))) * float(
+                rng.uniform(0.2, 1.0)
+            )
+            sections[f"S{j}"] = {
+                str(r): float(max(w, 1e-3))
+                for r, w in zip(covered, weights, strict=True)
+            }
+        if any(sum(shares.values()) > 1.0 for shares in sections.values()):
+            continue
+        if not all(any(r in shares for shares in sections.values()) for r in names):
+            continue
+        demand = {n: float(rng.choice([0.0, 1.0, rng.random()])) for n in names}
+        return SectionAllocator(rooms, sections, kp=1.0, ki=0.0), demand
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_allocation_satisfies_the_kkt_conditions_of_the_documented_cost(
+    seed: int,
+) -> None:
+    """J is a convex quadratic, so KKT is necessary and sufficient (A10)."""
+    a, demand = random_layout(np.random.default_rng(seed))
+    u = a._allocate(demand)
+    grad = gradient(a, u, demand)
+    for section, value in u.items():
+        assert 0.0 <= value <= 1.0
+        scaled = grad[section]  # already divided by the largest priority
+        if 1e-9 < value < 1 - 1e-9:
+            assert abs(scaled) <= 1e-6
+        elif value <= 1e-9:
+            assert scaled >= -1e-6
+        else:
+            assert scaled <= 1e-6
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_allocation_cost_is_not_beaten_by_an_independent_solve(seed: int) -> None:
+    from scipy.optimize import minimize
+
+    a, demand = random_layout(np.random.default_rng(1000 + seed))
+    u = a._allocate(demand)
+    names = list(u)
+    top = max(room.priority for room in a.rooms.values())
+
+    def objective(x: np.ndarray) -> float:
+        return cost(a, dict(zip(names, x, strict=True)), demand)
+
+    starts = [np.array([u[n] for n in names]), np.full(len(names), 0.5)]
+    best = min(
+        minimize(
+            objective,
+            x0,
+            method="L-BFGS-B",
+            bounds=[(0.0, 1.0)] * len(names),
+            options={"ftol": 1e-15, "gtol": 1e-12},
+        ).fun
+        for x0 in starts
+    )
+    # J is normalised by the largest priority: with every priority tiny, an
+    # absolute 1e-9 would pass for any duties (A10's tolerance would be vacuous).
+    assert (objective(np.array([u[n] for n in names])) - best) / top <= 1e-9
+
+
+@pytest.mark.parametrize("seed", range(20))
+@pytest.mark.parametrize("factor", [0.3, 0.7, 1e-3])
+def test_random_layouts_are_unchanged_by_scaling_every_priority(
+    seed: int, factor: float
+) -> None:
+    a, demand = random_layout(np.random.default_rng(2000 + seed), subnormal=False)
+    rooms = {
+        name: {"priority": room.priority * factor, "evenness": room.evenness}
+        for name, room in a.rooms.items()
+    }
+    scaled = SectionAllocator(rooms, a.sections, kp=1.0, ki=0.0)
+    assert scaled._allocate(demand) == pytest.approx(a._allocate(demand), abs=1e-9)
+
+
+def test_the_higher_priority_room_ends_with_an_exact_mismatch_ratio() -> None:
+    rooms = {
+        "R1": {"priority": 0.8, "evenness": 0.0},
+        "R2": {"priority": 0.2, "evenness": 0.0},
+    }
+    a = SectionAllocator(rooms, {"HS1": {"R1": 0.5, "R2": 0.5}}, kp=1.0, ki=0.0)
+    a.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
+    assert a.duty is not None
+    assert a.duty["HS1"] == pytest.approx(0.56, abs=1e-9)
+    assert mismatch(a, "R1", 0.2) == pytest.approx(0.08, abs=1e-9)
+    assert mismatch(a, "R2", 0.6) == pytest.approx(0.32, abs=1e-9)
+    assert mismatch(a, "R1", 0.2) / mismatch(a, "R2", 0.6) == pytest.approx(0.25)
+
+
+def test_a_dedicated_share_one_room_matches_the_standalone_controller_in_a_conflict() -> (
+    None
+):
+    """A7 at the low end of the priority range, with R1 and R2 in conflict."""
+    rooms = {
+        "R1": {"priority": 1.0, "evenness": 1.0},
+        "R2": {"priority": 1.0, "evenness": 1.0},
+        "R3": {"priority": 0.01, "evenness": 1.0},
+    }
+    a = SectionAllocator(rooms, ref_sections(), kp=0.4, ki=0.02)
+    twin = PIController(0.4, 0.02, "floor_heating", 21.0, history_length=24)
+    for step in range(60):
+        t3 = 19.0 + 3.0 * ((step * 7) % 11) / 10
+        if step == 30:
+            a.rooms["R3"].setpoint = 20.0
+            twin.setpoint = 20.0
+        commands = a.update({"R1": 18.0, "R2": 17.0, "R3": t3})
+        assert commands["HS4"] == twin.update(t3)
+    assert a.history["HS4"] == twin.history
+
+
+# ---------------------------------------------------------------------------
 # main(): the showcase runs
 # ---------------------------------------------------------------------------
 
@@ -1717,15 +2151,20 @@ def test_main_runs_and_reports_each_section(capsys: pytest.CaptureFixture[str]) 
     assert "Invalid layout" in out
 
 
-def test_row_weight_never_vanishes_or_overflows() -> None:
-    weights: Mapping[str, tuple[float, float]] = {
-        "underflow": (1e-300, 1e300),
-        "overflow-safe": (1e300, 1e300),
-        "equal": (1.0, 1.0),
-    }
-    for pair in weights.values():
-        value = allocator_module._row_weight(*pair)
-        assert 0.0 < value <= 1.0
-    assert allocator_module._row_weight(1e-300, 1e300) == math.sqrt(
-        allocator_module._MIN_WEIGHT_RATIO
-    )
+@pytest.mark.parametrize(
+    ("weight", "scale", "want"),
+    [
+        (5e-324, 1.0, math.sqrt(1e-12)),
+        (1e-12, 1.0, 1e-6),
+        (math.nextafter(1e-12, 0.0), 1.0, 1e-6),  # one ULP below the floor
+        (5e-324, 5e-324, 1.0),
+        (1.0, 1.0, 1.0),
+        (0.25, 1.0, 0.5),
+    ],
+)
+def test_row_weight_never_vanishes_or_overflows(
+    weight: float, scale: float, want: float
+) -> None:
+    value = allocator_module._row_weight(weight, scale)
+    assert 0.0 < value <= 1.0
+    assert value == pytest.approx(want, rel=1e-12)

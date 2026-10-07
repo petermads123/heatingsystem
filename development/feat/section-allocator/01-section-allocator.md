@@ -17,7 +17,7 @@
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done (re-run after the step-5 halt) |
 | 4 | Verify | `/verify` | in `/build` | done (re-run after the step-5 halt) |
-| 5 | Test | `/test` | in `/build` | pending (re-run) |
+| 5 | Test | `/test` | in `/build` | halted (re-run): A5 first clause, see Halted |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -429,6 +429,17 @@ Step 5 production changes (bugs the tests and the two readers found; all in
 - **`from_dict`.** A non-mapping `shares` is reported as `sections['HS1']['shares']`; the
   docstring now says layout errors keep the constructor's own path.
 
+Step 5 re-run production change (after the amendment; `allocator.py` only, signatures
+unchanged):
+
+- **Subnormal priorities.** The spread weight was computed as `priority * evenness` before being
+  divided by the component's largest priority; for a priority near `5e-324` the product
+  underflowed to 0 and the spread rows were silently dropped (priority `5e-324`, evenness 0.4 gave
+  duties (0.48, 0.24) instead of (0.4, 0.4)). The ratio is now taken first,
+  `(priority / scale) * evenness`, so A11 holds down to the smallest subnormal. The comment above
+  `_MIN_WEIGHT_RATIO` now says it applies to any row weight (a priority or priority times evenness)
+  below 1e-12 of the largest priority, not only to priorities 1e12 apart.
+
 ---
 
 ## 4. Verification log
@@ -487,6 +498,36 @@ Edge cases considered and deliberately skipped, with reasons:
   contract) and pinned by a test, not rejected.
 - `Room` constructed directly with an empty name: unreachable through the allocator, which
   rejects empty names first; construction is documented as internal.
+
+### Re-run after the amendment (step 5, second pass)
+
+`tests/test_allocator.py`: 1336 tests pass in the whole suite (ruff, format and mypy clean); the 42
+tests that used out-of-range weights were rescaled into `(0, 1]` keeping what each proves (by
+A11, dividing every priority by one factor keeps every expected value), and these groups were
+added. Step 5 is **halted**, not done: A5's first clause is false when evenness is above 0 (below).
+
+| Intent | Test names | Result |
+|---|---|---|
+| T1 / A1 ranges | `test_construction_refuses_a_priority_outside_zero_exclusive_to_one` (10 values incl. `Fraction(3, 2)` repeated verbatim), `..._an_evenness_outside_zero_to_one` (7), `test_construction_accepts_every_range_edge_and_stores_floats` (6 x 7 edges, `-0.0` normalised), `test_room_built_directly_reports_the_range_without_a_path`, `test_from_dict_refuses_an_out_of_range_weight_naming_the_path` (6) | pass |
+| T11 / A10 | `test_allocation_satisfies_the_kkt_conditions_of_the_documented_cost` (60 random layouts, independent gradient of J, solved jointly), `test_allocation_cost_is_not_beaten_by_an_independent_solve` (60, L-BFGS-B from the returned duties and from 0.5; J normalised by the largest priority) | pass |
+| T11 / A11 | `test_uniformly_scaled_priorities_allocate_like_unit_priorities` (equal priorities down to `5e-324`, 18), `test_scaling_every_priority_by_one_factor_leaves_the_duties_unchanged` (20 incl. the many-fits case A), `test_random_layouts_are_unchanged_by_scaling_every_priority` (60), `test_evenness_zero_ignores_the_priority_scale_exactly` (bit-identical) | pass |
+| T11 / A12 | `test_worked_examples_hold_within_a_thousandth` (B, C, D, E, G, also through `_allocate`), `test_worked_examples_with_many_exact_fits_deliver_each_demand` (A, F) | pass |
+| Subnormal regression | `test_evenness_survives_a_subnormal_priority` (5 cases; failed before the fix: (0.48, 0.24)), `test_tiny_positive_evenness_is_floored_not_dropped`, `test_row_weight_never_vanishes_or_overflows` (6) | pass |
+| T6 / A5 | the old sweeps rescaled to `(0, 1]`, `test_raising_priority_is_monotone_on_the_reference_layout_with_evenness_zero` (4 demand pairs), `test_the_higher_priority_room_ends_with_an_exact_mismatch_ratio` (0.08/0.32, ratio 0.25), `test_priority_with_evenness_pins_the_cost_minimiser_where_a5s_first_clause_fails` (characterises the counterexample, asserts no verdict on A5) | pass |
+| T7 / A6 | evenness sweeps over `[0, 1e-6, 0.01, 0.1, 0.5, 1]` with the competitor's priority 1, 1e-3, 1e-6; three-section room; `test_evenness_on_a_shared_section_is_a_real_trade_off` now worked example C | pass |
+| T8 / A7 | rescaled (evenness 1.0, `p3` 1e-6), plus `test_a_dedicated_share_one_room_matches_the_standalone_controller_in_a_conflict` (R3 priority 0.01, evenness 1) | pass |
+
+Readers' cases judged: input-space 1 and 2 (subnormal underflow) **confirmed and fixed**; contract C1
+(A5 first clause) **confirmed, halted**; contract C2 / input-space 2 (A11 at non-unique minimisers)
+**refuted** — cases A and F, and C, D, E scaled by 0.3, 0.7, 1e-3, 1e-9 and 1e-100, give identical
+duties (difference 0.0), so A11 stands as written for equal or normally-scaled priorities (a
+subnormal factor applied to *unequal* priorities rounds the caller's own input, which no
+implementation can undo; tested with equal priorities); A10's absolute tolerance (input-space 3) is
+vacuous when all priorities are tiny, so the A10 tests normalise J by the largest priority
+(worst measured gap 1e-16); contract C3 (an unrelated component's solver failure refuses the
+dedicated room's command) is the documented atomicity and untested as a contradiction; C4 (a range
+check on the float-converted value: a `Fraction` just above 1 that rounds to 1.0 is accepted) matches
+`_validation.level` across the repo and is left.
 
 ---
 
@@ -589,3 +630,34 @@ above 1 (e.g. 1e40, 1e300, priorities 2/4/1e6 in A5 sweeps → rescale into `(0,
 what each test proves), adds the range refusals to T1, and checks A6's monotonicity under the
 new weighting. The 1009-test suite as committed is the starting point, not discarded.
 
+### Halted again at step 5 (re-run, after the amendment)
+
+The suite is complete, green (1336 passed) and committed; one criterion is wrong as written.
+
+**A5, first clause ("raising one room's priority never increases that room's absolute mismatch")
+is false when that room's evenness is above 0**, because the amended cost weights the spread by
+`p_r * e_r`: raising `p_r` scales `m_r**2 + e_r * spread_r` together, and only that sum is
+guaranteed not to rise. Counterexample (run, and the duties are the exact J-minimiser, KKT-checked
+and matched by an independent solver): rooms R1 {priority p, evenness 1}, R2 {1, 0}, R3 {1, 0};
+sections HS1 {R1 0.5, R2 0.5}, HS2 {R1 0.5, R3 0.5}; demands 0.5 / 1.0 / 0. HS1 sits at 1.0 in
+both runs and HS2 = p / (1.5 p + 0.5): p = 0.1 gives HS2 0.1538 and |m1| 0.0769; p = 0.4 gives
+HS2 0.3636 and |m1| 0.1818. R1's absolute mismatch **rises** with its priority. With R1's
+evenness 0 it is 0 at both priorities, and a random search (3000 layouts on the reference layout
+with evenness 0) found no violation. Pinned by
+`test_priority_with_evenness_pins_the_cost_minimiser_where_a5s_first_clause_fails`; the evenness-0
+monotonicity is tested separately.
+
+**Question:** reword A5's first clause to (a) "with the room's evenness 0, raising its priority
+never increases its absolute mismatch", or (b) "raising a room's priority never increases
+`|d - h|**2 + e * spread` for that room" (true by comparing the two optimality inequalities), or
+(c) both. The second clause is unchanged. Also for the record, no decision needed: A10's absolute
+1e-9 tolerance is vacuous when every priority is tiny (J is then below 1e-9 for any duties), so
+the tests normalise J by the largest priority; the user may want A10 to say "relative to the
+largest priority". A11 and A12 are unaffected (A11's non-unique-minimiser worry was refuted by
+running it).
+
+One production defect found and fixed meanwhile (section 3): the subnormal-priority underflow of
+`priority * evenness`.
+
+On the answer, `/build` resumes at step 5's close: amend A5 (and optionally A10's wording), adjust
+the one pinned test's docstring if needed, mark step 5 done and set the marker to step 6.

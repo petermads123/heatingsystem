@@ -45,9 +45,11 @@ from heatingsystem.pi_controller.pi_controller import PIController
 # exactly 1.0 are accepted.
 _SHARE_SUM_TOLERANCE: float = 1e-9
 
-# Smallest weight, relative to the largest in a component, that still reaches
-# the solver. A safety net for priorities that differ by more than 1e12:
-# with priorities in (0, 1] and evenness in [0, 1] it is otherwise inert.
+# Smallest weight, relative to the largest priority in a component, that still
+# reaches the solver. A safety net: it applies to any row weight (a priority,
+# or priority times evenness) below 1e-12 of the largest priority, so a
+# priority more than 1e12 below the largest, or a priority-times-evenness
+# product that small, acts as 1e-12 (about 1e-12 of change in J).
 # Dividing by the largest weight is exact in real arithmetic, but a
 # row weighted below about 1e-15 of the rest is lost to round-off (and one below
 # 1e-300 underflows to zero), so a feasible demand of a very low-priority room
@@ -529,10 +531,11 @@ class SectionAllocator:
             rows.append(row)
         for room in rooms:
             covering = serving[room]
-            spread_weight = self._rooms[room].priority * self._rooms[room].evenness
-            if len(covering) < 2 or spread_weight <= 0.0:
+            evenness = self._rooms[room].evenness
+            if len(covering) < 2 or evenness <= 0.0:
                 continue
-            weight = _row_weight(spread_weight, scale)
+            # Ratio first: priority * evenness underflows for subnormal priorities.
+            weight = _row_weight((self._rooms[room].priority / scale) * evenness, 1.0)
             for s in covering:
                 row = np.zeros(len(sections))
                 for other in covering:

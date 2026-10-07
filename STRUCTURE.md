@@ -414,10 +414,13 @@ setters identical to `PIController`'s and effective on the next `update`. `updat
 binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, numeric
 variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
 evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
-and tiny-share matrices), the weight floor against extreme priority and evenness ratios, A5's
-absolute-mismatch monotonicity and its documented exceptions, A6's spread monotonicity (including a
-three-section room) and the hungry-R2 case, and A7's bit-exact equivalence to a standalone
-floor-heating `PIController`. Package exports, the declared scipy/numpy dependencies, and
+and tiny-share matrices), the weight floor against extreme priority ratios and subnormal
+priorities, the range refusals for priority in `(0, 1]` and evenness in `[0, 1]` (and in `from_dict`),
+A5's absolute-mismatch monotonicity at evenness 0 with its documented exceptions and the pinned
+evenness-above-0 counterexample, A6's spread monotonicity (including a three-section room) and the
+hungry-R2 case, A7's bit-exact equivalence to a standalone floor-heating `PIController`, and A10-A12:
+the cost's KKT conditions and an independent solve over random layouts, priority-scaling invariance, and
+the worked examples A-G. Package exports, the declared scipy/numpy dependencies, and
 `to_dict`/`from_dict`: shape and order, identical next 50 commands (direct and through JSON, empty,
 partial and full windows), every malformed snapshot naming its path, subclass round trip.
 
