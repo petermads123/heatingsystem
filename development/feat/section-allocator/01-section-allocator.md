@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,7 +16,7 @@
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done (re-run after the step-5 halt) |
-| 4 | Verify | `/verify` | in `/build` | pending (re-run) |
+| 4 | Verify | `/verify` | in `/build` | done (re-run after the step-5 halt) |
 | 5 | Test | `/test` | in `/build` | pending (re-run) |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -433,26 +433,23 @@ Step 5 production changes (bugs the tests and the two readers found; all in
 
 ## 4. Verification log
 
+Re-run after the step-5 halt (step 3 re-run: weight scales, A10-A12). The first run's log is superseded.
+
 | Check | Result |
 |---|---|
 | `ruff check .` | All checks passed! |
-| `ruff format --check .` | 52 files already formatted |
-| `mypy` | Success: no issues found in 20 source files |
-| `pytest` | 730 passed (existing suite; `tests/test_allocator.py` is step 5's) |
-| Plan completeness | every signature in the Public API table exists as written (checked with `inspect`: `Room` and its 8 properties, `SectionAllocator.__init__`, `update`, `rooms`, `sections`, `history_length`, `duty`, `history`, `to_dict`, `from_dict`, `main`); no Missing, Deviation or Unplanned. `Room`, `SectionAllocator` in both `__all__`; `pyproject.toml` declares `numpy>=2`, `scipy>=1.14,<2`. |
-| `STRUCTURE.md` | in sync after four auditor edits (below) |
-| `python -m heatingsystem.allocator.allocator` | exit 0; six labelled sections (hungry R2 at evenness 0 vs 0.1 giving HS1 0.0 vs 0.067, priority conflict, setpoint change, JSON round trip with identical commands, invalid layout refused). Showcase is in the required three-phase form. Expected `RuntimeWarning` only. |
+| `ruff format --check .` | 53 files already formatted |
+| `mypy` | Success: no issues found in 21 source files |
+| `pytest` | 42 failed, 967 passed. All 42 are in `tests/test_allocator.py` and are exactly the set listed in section 3 for step 5 (out-of-range weights or the old spread weighting in tests written before the amendment); no failure outside that list. Not counted as this step's gate failure; step 5 fixes them. |
+| Plan completeness | checked with `inspect`: `Room(name, *, priority, evenness, kp, ki, setpoint)` and its 8 properties, `SectionAllocator.__init__`, `update`, `rooms`, `sections`, `history_length`, `duty`, `history`, `to_dict`, `from_dict`, `main` all match the Public API table; no Missing, Deviation or Unplanned. |
+| `STRUCTURE.md` | in sync after one auditor edit (below) |
+| `python -m heatingsystem.allocator.allocator` | exit 0; labelled sections: hungry R2 at evenness 0 (HS1 0.0), example B (0.067/0.067/0.567), example C (0.067/0.233/0.400), priority conflict, setpoint change, JSON round trip with identical commands, invalid layout refused (`rooms['R1'].priority must be in (0, 1], got 2.0.`). Required three-phase form. Expected `RuntimeWarning` only. |
 
-Auditor findings (all four applied, each checked against the code as it stands):
+Auditor findings (one, applied after checking it against the code):
 
-1. `from_dict` row named private `Modulator._from_dict`: reworded to "restored into a fresh floor-heating `Modulator`".
-2. Purpose paragraph named private `_allocate`: reworded to private helpers omitted per convention.
-3. `_validation.py` purpose was stale: now names `Room`, `SectionAllocator` and `allocator.py` as callers.
-4. `update` row named no exceptions: now lists `TypeError`/`ValueError`/`OverflowError` and `ArithmeticError` plus the restore and no-write guarantees (matches the code's `Raises:`).
+1. `update` row Raises wording: `measured['<room>']` applies only to per-value errors; a missing or unknown room is reported as a list of names and a non-mapping names `measured`. Reworded in `STRUCTURE.md`.
 
-Left alone: older test sections naming private names (`tests/test_modulator.py`,
-`tests/test_pi_controller.py`) describe what those tests target; not this round's.
-Step 5 must add a `### tests/test_allocator.py` entry.
+The auditor's `tests/test_allocator.py` entry matches the current file; step 5 revises both.
 
 No code changed in this step.
 
