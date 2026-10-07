@@ -107,7 +107,10 @@ each room's PI keeps today's conditional-integration anti-windup unchanged.
 Amended at step 2, with the user: evenness changed from one global weight to a weight per
 room, and A5/A6 reworded, after the prototype showed the original A5 ("higher priority
 always wins") failing when a section saturates and the original A6 failing with a global
-weight.
+weight. Reworded again after the plan-critic: A5's second clause scoped to equal shares,
+zero evenness and no saturation (at an interior optimum mismatch scales with priority ×
+share, e.g. shares 0.2/0.8 with priorities 2/1 leave the higher-priority room worse off);
+A6's evenness-0 example softened to "may", since it depends on the solver's tie-break.
 
 ### Acceptance criteria
 
@@ -117,8 +120,8 @@ weight.
 | A2 | Lets each room's setpoint, `kp` and `ki` be changed at any time, with the same validation (exception class and attribute named) as `PIController`, taking effect on the next `update`. |
 | A3 | `update` takes a temperature for every room and returns a `0.0`/`1.0` command for every section, keyed by section name. A missing or unknown room, or a non-finite or non-numeric temperature, raises before any state changes. The last allocated duty per section and the last demand per room are readable afterwards. |
 | A4 | With evenness weight 0, when some duties in `[0, 1]` deliver every room's demand exactly, the allocation delivers them within a numerical tolerance — e.g. with HS2 split 50/50 between R1 and R2, demands 0.1 and 0.6 are met exactly. |
-| A5 | Raising one room's priority never increases that room's mismatch (demand − delivered heat). When demands cannot all be met and no section ends at 0 or 1, the higher-priority room ends with the smaller mismatch. |
-| A6 | Raising one room's evenness weight never widens that room's own spread of duty among its sections. In the "R2 always hungry" case (demands R1 0.1, R2 0.6, HS2 split 50/50, HS3 not saturated), evenness 0 leaves HS1 at 0 while HS2 heats R1, and R1's evenness weight > 0 with R2's at 0 gives HS1 a duty > 0, a narrower HS1–HS2 gap, and both demands still met. |
+| A5 | Raising one room's priority never increases that room's mismatch (demand − delivered heat). When demands cannot all be met, the competing rooms receive equal shares from the sections they share, their evenness weights are 0 and no section ends at 0 or 1, the higher-priority room ends with the smaller mismatch. |
+| A6 | Raising one room's evenness weight never widens that room's own spread of duty among its sections. In the "R2 always hungry" case (demands R1 0.1, R2 0.6, HS2 split 50/50, HS3 not saturated), evenness 0 may leave HS1 at 0 while HS2 heats R1 (which exact fit is returned is the solver's choice), and R1's evenness weight > 0 with R2's at 0 gives HS1 a duty > 0, a narrower HS1–HS2 gap, and both demands still met. |
 | A7 | A room with exactly one dedicated section (R3 with HS4) produces exactly the command sequence of a standalone `PIController` in floor-heating mode with the same gains, setpoint and window length, regardless of the other rooms or the evenness weight. |
 | A8 | `scipy` (bringing `numpy`) is a declared runtime dependency; the package installs and imports with it; `PIController` and `Modulator` behave exactly as before and the existing suite stays green. |
 | A9 | `to_dict()` returns layout (rooms, priorities, evenness weights, section shares), window length, each room's setpoint, `kp`, `ki` and integral, and each section's command history as `json.dumps`-accepted built-in types; `from_dict(to_dict())`, also through a JSON round trip, yields a controller producing identical commands thereafter; a malformed or invalid snapshot raises naming the offending key, validated as the constructor would, and produces no controller. |
@@ -263,8 +266,8 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
 | T4b | A monkeypatched solver that raises (and one returning nan) makes `update` raise and leaves the whole `to_dict()` and every `Room.demand` exactly as before the call; weights of `1e300` and `1e-300` still allocate finite duties equal to the same layout with weights scaled to 1. | A3 |
 | T4 | `update` returns exactly the section names with values in `{0.0, 1.0}`; a missing room, an unknown room, a non-mapping, a nan/inf/str/`bool`/huge-int temperature each raise naming it, and leave every room's integral and demand, `duty`, and every section history unchanged (whole `to_dict()` equal before/after); `duty`/`demand` read `None` before the first update and are populated after. | A3 |
 | T5 | Evenness 0, feasible demands: delivered heat (`Σ share × duty`) equals demand per room within tolerance — (0.1, 0.6), (0.3, 0.8), (0, 0), and a component with three rooms in a chain; all duties in `[0, 1]`. The closed-form branch: a one-room, one-section component with share 0.5 at demands 0, 0.3 and 0.6 gives duty 0.0, 0.6 and 1.0 exactly; a single section covering two rooms (and a room with one section that also covers another room) goes through least squares, not the closed form. | A4 |
-| T6 | Priority: for the conflict layouts (R1, R2 sharing only HS2 with demands (0.2, 0.6); and the reference layout with infeasible demands), raising a room's priority over a sweep never increases its absolute mismatch (allowing 1e-9); when no duty is at 0 or 1, the higher-priority room's mismatch is the smaller; the saturated shared-only case (demands 0, 1) is the documented exception and is tested as such. | A5 |
-| T7 | Evenness: spread is `Σ (u_s − mean)²` over the room's sections. On the reference layout and on a room served by three sections, sweeping one room's evenness weight upward never increases that room's spread (several demand pairs, other room's weight 0 and > 0); the hungry-R2 case (0.1, 0.6) gives HS1 = 0 with all weights 0, and with R1 = 0.1, R2 = 0 gives HS1 > 0, a smaller HS1–HS2 gap and both demands met within tolerance. | A6 |
+| T6 | Priority: for the conflict layouts (R1, R2 sharing only HS2 with demands (0.2, 0.6); and the reference layout with infeasible demands), raising a room's priority over a sweep never increases its absolute mismatch (allowing 1e-9); with equal shares, evenness 0 and no duty at 0 or 1, the higher-priority room's mismatch is the smaller; the saturated shared-only case (demands 0, 1) and the unequal-share case (one section, shares R1 0.2 / R2 0.8, priorities 2 / 1, demands 1 / 0 → R1 mismatch ≈ 0.889 > R2 ≈ 0.444) are documented exceptions, tested as such. | A5 |
+| T7 | Evenness: spread is `Σ (u_s − mean)²` over the room's sections. On the reference layout and on a room served by three sections, sweeping one room's evenness weight upward never increases that room's spread (several demand pairs, other room's weight 0 and > 0); the hungry-R2 case (0.1, 0.6) with R1 = 0.1, R2 = 0 gives HS1 > 0, an HS1–HS2 gap smaller than the weights-0 result's, and both demands met within tolerance (the weights-0 HS1 value itself is not asserted). | A6 |
 | T8 | R3/HS4 (share 1.0) yields a command sequence identical (`==`, not approx) to `PIController(kp, ki, "floor_heating", setpoint, history_length=n)` over a long varied measurement sequence including saturation both ways and a mid-run setpoint/gain change, regardless of R1/R2's measurements and evenness weights; also a single-room, single-section allocator. | A7 |
 | T9 | `scipy` is in `[project] dependencies`; the package, `heatingsystem.allocator` and `heatingsystem` import; `SectionAllocator`/`Room` are the identical objects from every import path and in both `__all__`; the existing suite passes untouched. | A8 |
 | T10 | `to_dict` has exactly the documented shape and order and `json.dumps`-able types, fresh containers; `from_dict(to_dict())` and the JSON round trip give an allocator whose next 50 commands equal the original's, mid-run with partly filled and full windows; every malformed snapshot (missing/unknown keys at each level, bad values, over-long history, invalid layout, non-mapping) raises naming the path and produces nothing; a subclass round-trips as itself. | A9 |
@@ -299,11 +302,9 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
   entry is reworded to say the trigger has now arrived. Step 8 decides whether it is the
   next round.
 - **Non-unique minimisers.** With evenness 0 a component can have a whole line of exact
-  fits; which one is returned is the solver's choice, and A6's "evenness 0" example
-  depends on `bvls`'s. `bvls` is therefore required for such components, and the `trf`
-  fallback above may be used only where it does not change T7's evenness-0 result. If
-  `bvls` stops returning the documented evenness-0 point, halt — the example, not the code,
-  would be wrong.
+  fits; which one is returned is the solver's choice. A6 says "may", so no test asserts
+  the evenness-0 point — only that it fits exactly (T5) and that a positive weight narrows
+  the gap relative to it (T7).
 - **`Modulator._from_dict` called from another module.** Deliberate for this round:
   `SectionAllocator` is the first caller restoring a standalone `Modulator`, which is
   `DEVELOPMENT.md` round-4 R7's trigger. Not promoted here; R7's entry is reworded to say
@@ -311,6 +312,25 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
 - **`Room` exposing `PIController`'s `mode`/`fixed_output`.** It must not: only the
   properties in the table are public; the composed controller is `_pi`.
 
+
+### Critique
+
+`plan-critic` findings and what was done:
+
+1. A5 clause 2 false for unequal shares → **applied**, put to the user: scoped to equal
+   shares, zero evenness, no saturation; counterexample tested as an exception (T6).
+2. A6 evenness-0 point is the solver's tie-break → **applied**, put to the user: softened
+   to "may"; T7 no longer asserts it; Risks updated.
+3. "Spread" undefined → **applied**: defined as `Σ (u_s − mean)²` in Approach and T7; a
+   three-section room added to T7.
+4. Partial state on solver raise; nan clamped to 0; weight overflow → **applied**: per-
+   component weight normalisation, non-finite result raises `ArithmeticError`, room state
+   restored on any allocation failure (guide 4–5, `update` row, T4b).
+5. `Room` constructor defaults → **applied**: keywords required, construction internal.
+6. `Modulator._from_dict` is R7's trigger → **applied**: Risks entry; R7 reworded.
+7. `scipy>=1.11` has no 3.13 wheels → **applied**: `scipy>=1.14,<2`, `numpy>=2` declared.
+8. Closed-form branch untested → **applied**: T5 rows for share 0.5 and for shared
+   sections taking the least-squares path.
 
 ---
 
