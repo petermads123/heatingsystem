@@ -16,6 +16,9 @@ Or in `dependencies` in `pyproject.toml`:
 "heatingsystem @ git+https://github.com/petermads123/heatingsystem.git@main"
 ```
 
+The package depends on `numpy` and `scipy` (used by `SectionAllocator`); pip installs
+both with it.
+
 ## PIController usage
 
 Install the package (see above), then:
@@ -136,6 +139,49 @@ result. It needs matplotlib, which is installed with the `sim` extra:
 pip install -e ".[dev,sim]"
 python test.py
 ```
+
+## SectionAllocator usage
+
+`hs.SectionAllocator` controls on/off heating sections that may each heat more than one
+room. It is built once from a fixed layout: rooms with a priority and an evenness weight,
+and sections with the share of their heat that reaches each room they cover. Each `update`
+takes one temperature per room and returns a `0.0`/`1.0` command per section.
+
+```python
+import heatingsystem as hs
+
+# HS2 gives half its heat to R1 and half to R2. Evenness 0 means that room's floor
+# evenness does not matter; a weight above 0 pulls its sections' duty cycles together.
+rooms = {
+    "R1": {"priority": 1.0, "evenness": 0.1},
+    "R2": {"priority": 1.0, "evenness": 0.0},
+}
+sections = {
+    "HS1": {"R1": 1.0},
+    "HS2": {"R1": 0.5, "R2": 0.5},
+    "HS3": {"R2": 1.0},
+}
+allocator = hs.SectionAllocator(rooms, sections, kp=0.3, ki=0.015, setpoint=21.0)
+
+# Every 5 minutes: one temperature per room in, one command per section out.
+commands = allocator.update({"R1": 20.9, "R2": 20.4})  # {"HS1": 1.0, "HS2": 1.0, ...}
+print(allocator.duty)  # last allocated duty per section, in [0, 1]
+print(allocator.rooms["R2"].demand)  # last PI demand of R2
+
+# Setpoint and gains are adjustable per room, effective at the next update.
+allocator.rooms["R1"].setpoint = 19.0
+allocator.rooms["R1"].kp = 0.5
+
+# Snapshot and restore, as for PIController.
+state = allocator.to_dict()
+allocator = hs.SectionAllocator.from_dict(state)
+```
+
+The layout (rooms, priorities, evenness weights, shares) cannot change after construction;
+build a new allocator instead, which from Home Assistant's side is a full reset. A section's
+shares may sum to less than 1 (the rest heats something unmeasured) but not more. A room
+that has exactly one dedicated section behaves like a standalone floor-heating
+`PIController`.
 
 ## Layout
 

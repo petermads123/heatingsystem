@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
@@ -335,6 +335,32 @@ layout is R1 ← HS1 (1.0) + HS2 (0.5); R2 ← HS2 (0.5) + HS3 (1.0); R3 ← HS4
 ---
 
 ## 3. Implementation notes
+
+The Public API table is unchanged; the code matches it. Departures and decisions the plan
+left open:
+
+- `lsq_linear` is called with `# type: ignore[operator]`: mypy resolves
+  `scipy.optimize.lsq_linear` to the submodule rather than the function ("Module not
+  callable"). The reason is on the same line; `scipy-stubs` was not added (Risks).
+- No `method="trf"` fallback was written: `bvls` did not raise on any layout tried (the
+  reference layout, a chain, a shared-only section), so the Risks fallback is not needed
+  yet. If step 5 finds a degenerate matrix that raises, add it then and record it here.
+- A private `_Component` holder class stores each component's rooms, sections, stacked
+  matrix (`None` for the closed-form case), share and weight `scale`. The matrix is built
+  once at construction; `_allocate` only builds the demand vector.
+- Room spec key checks reuse `_validation.snapshot_mapping`, prefixed `rooms['R1']: `, so
+  their message reads "rooms['R1']: snapshot is missing keys [...]". An error from
+  building a `Room` (including the shared `kp`/`ki`/`setpoint` defaults) is prefixed
+  `rooms['R1'].`, e.g. `rooms['R1'].kp must be a real number...`.
+- `from_dict` prefixes mapping-shape errors `rooms['R1']: ` / `sections['HS1']: ` and
+  value errors `rooms['R1'].` / `sections['HS1'].` (the modulator's own message already
+  starts `history...`, so the section path reads `sections['HS2'].history[0] ...`).
+- `update` restores room state on any `BaseException` from the demand/allocation block.
+- `DEVELOPMENT.md` R6 and R7 reworded to say their triggers have arrived (third
+  subpackage; first standalone `Modulator` restore); neither is done. `STRUCTURE.md` stays
+  flat, and `tests/test_allocator.py` is not yet listed there (step 5 adds it with the
+  file).
+- Environment: `.venv` created with Python 3.13.16; scipy 1.18.1, numpy 2.5.3 installed.
 
 ---
 

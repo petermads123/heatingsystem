@@ -34,17 +34,19 @@ one line per subpackage in this file, and move per-subpackage detail into
 when Claude works in that subpackage. Split rather than delete — there is no length limit
 here, but everything in this file is in context every session.
 
-The package now has two subpackages (`modulator/`, `pi_controller/`) plus the private
+The package now has three subpackages (`allocator/`, `modulator/`, `pi_controller/`) plus the private
 `_validation.py` module at its root, but the per-subpackage split described above has
 deliberately not been applied yet — doing it inside an unattended build changes what the
 stop gate and the session brief see, which is not a change to make mid-round. It is
-deferred until a third subpackage arrives (see `DEVELOPMENT.md`).
+deferred; the third subpackage (`allocator/`) has now arrived and the split is still open
+(see `DEVELOPMENT.md`).
 
 ## Tree
 
 ```
 src/                    everything installable; nothing outside it is packaged
   heatingsystem/        the package: heating-system models
+    allocator/         subpackage: multi-room control of on/off sections (PI per room, bounded least-squares allocation)
     modulator/         subpackage: the actuator mapping (mode, window, duty cycle, hold)
     pi_controller/     subpackage: the discrete-time PI controller
 tests/                  pytest suite, one test_<module>.py per module
@@ -71,6 +73,8 @@ Every new model subpackage is re-exported from here.
 | Export | From |
 |---|---|
 | `HeatingMode` | `heatingsystem.modulator` |
+| `Room` | `heatingsystem.allocator` |
+| `SectionAllocator` | `heatingsystem.allocator` |
 | `Modulator` | `heatingsystem.modulator` |
 | `PIController` | `heatingsystem.pi_controller` |
 | `OUTPUT_MIN` | `heatingsystem.modulator` |
@@ -98,6 +102,49 @@ shadowed by a local or a parameter (`finite`/`level` are called as `_validation.
 | `main() -> None` | Showcase: `finite` normalising `-0.0`, a `level` range refusal and a `snapshot_mapping` missing-key refusal. |
 
 Runnable standalone: `python -m heatingsystem._validation`.
+
+### `src/heatingsystem/allocator/__init__.py`
+
+Subpackage entry point. Re-exports `SectionAllocator` and `Room` from `allocator.py`.
+
+### `src/heatingsystem/allocator/allocator.py`
+
+Multi-room control of on/off heating sections that may each serve several rooms. Built
+once from a fixed layout (rooms with a priority and an evenness weight; sections with a
+share per covered room). Every `update` runs, per room, a composed radiator-mode
+`PIController` (`history_length=1`) for the demand; allocates section duty cycles by
+bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`: priority-weighted
+demand mismatch plus per-room evenness times the spread `sum((u_s - mean)**2)`), split by
+connected component of the room-section graph with a closed form `min(1, demand / share)`
+for a one-room, one-section component; and turns each duty into 0.0/1.0 through one
+floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
+`scipy`). The component split, matrix assembly, `_allocate` and the layout validation are
+private.
+
+| Signature | Description |
+|---|---|
+| `Room(name: str, *, priority: float, evenness: float, kp: float, ki: float, setpoint: float)` | One room, built by `SectionAllocator` (construction is internal). Validates `name` (non-empty `str`), `priority` (finite, `> 0`), `evenness` (finite, `>= 0`); composes the radiator-mode `PIController`. |
+| `Room.name -> str` | Read-only. |
+| `Room.priority -> float` | Read-only. |
+| `Room.evenness -> float` | Read-only. |
+| `Room.setpoint -> float` (settable) | Delegates to the composed `PIController`; same contract and message. |
+| `Room.kp -> float` (settable) | Delegates to the composed `PIController`. |
+| `Room.ki -> float` (settable) | Delegates to the composed `PIController`. |
+| `Room.integral -> float` | Read-only; the PI integral. |
+| `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last `update`, `None` before the first and after `from_dict`. |
+| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority", "evenness"}`; `sections` maps name to `{room: share}`. Every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
+| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes; if the allocation fails, every room's integral and demand are restored and the error propagates. |
+| `SectionAllocator.rooms -> Mapping[str, Room]` | Read-only `MappingProxyType` of the `Room` handles. |
+| `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the shares. |
+| `SectionAllocator.history_length -> int` | Read-only. |
+| `SectionAllocator.duty -> dict[str, float] \| None` | Last allocated duty per section; `None` before the first `update` and after `from_dict`. |
+| `SectionAllocator.history -> dict[str, tuple[float, ...]]` | Each section's command window, oldest first. |
+| `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`shares`, `history`), fresh containers. |
+| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor, settings through the setters, each window through `Modulator._from_dict`; errors keep their class with the path prefixed. |
+| `main() -> None` | Showcase: the reference layout with evenness 0 vs 0.1, a priority conflict on a shared section, a setpoint change, a JSON snapshot round trip and an invalid layout. |
+
+Runnable standalone: `python -m heatingsystem.allocator.allocator`, once the package is
+installed.
 
 ### `src/heatingsystem/modulator/__init__.py`
 
