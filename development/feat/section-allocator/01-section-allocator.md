@@ -1,6 +1,6 @@
 # Section allocator
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=3 status=active -->
 
 | Field | Value |
 |---|---|
@@ -15,9 +15,9 @@
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | in progress (halted, see Halted) |
+| 3 | Implement | `/implement` | in `/build` | in progress (re-run after the step-5 halt) |
+| 4 | Verify | `/verify` | in `/build` | pending (re-run) |
+| 5 | Test | `/test` | in `/build` | pending (re-run) |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -48,7 +48,7 @@ temperature per room and returns a `0.0`/`1.0` command per section, in three sta
 2. **Allocation.** Section duty cycles `u` in `[0, 1]` are chosen by bounded weighted least
    squares: minimise the priority-weighted squared mismatch between each room's demand and
    the heat it receives (Σ share × duty over its sections), plus, per room, that room's
-   evenness weight times the spread of duty among the sections serving it. Solved with
+   priority × evenness weight times the spread of duty among the sections serving it. Solved with
    `scipy.optimize.lsq_linear`, the evenness term stacked as extra rows.
 3. **Actuation.** Each section owns a floor-heating `Modulator` that turns its allocated duty
    into on/off commands over the rolling window.
@@ -112,17 +112,24 @@ zero evenness and no saturation (at an interior optimum mismatch scales with pri
 share, e.g. shares 0.2/0.8 with priorities 2/1 leave the higher-priority room worse off);
 A6's evenness-0 example softened to "may", since it depends on the solver's tie-break.
 
+Amended at the step-5 halt, with the user: A5's mismatch is the absolute one; A7 applies to a
+dedicated share of 1.0; A1 states the 1e-9 share-sum tolerance. And the weights get defined
+scales: **priority ∈ (0, 1]** (1 = most important; only ratios between rooms matter), and
+**evenness ∈ [0, 1], applied as priority × evenness × spread** — 0 = floor evenness does not
+matter, 1 = an uneven floor costs as much as the same-sized temperature miss for that room,
+and a low-priority room's evenness counts correspondingly less.
+
 ### Acceptance criteria
 
 | # | The finished feature... |
 |---|---|
-| A1 | Is built from rooms (each with a priority and an evenness weight) and sections (each with shares per covered room). A share outside `(0, 1]`, a section whose shares sum above 1, a section naming an unknown room, a room no section covers, a priority ≤ 0, or a negative evenness weight each raises `ValueError` naming the offender (a non-numeric or non-finite value raises as `PIController`'s settings do), and no controller is produced. The layout — rooms, priorities, evenness weights, shares — is read-only afterwards. |
+| A1 | Is built from rooms (each with a priority and an evenness weight) and sections (each with shares per covered room). A share outside `(0, 1]`, a section whose shares sum above 1 by more than a rounding tolerance of 1e-9, a section naming an unknown room, a room no section covers, a priority outside `(0, 1]`, or an evenness weight outside `[0, 1]` each raises `ValueError` naming the offender (a non-numeric or non-finite value raises as `PIController`'s settings do), and no controller is produced. The layout — rooms, priorities, evenness weights, shares — is read-only afterwards. |
 | A2 | Lets each room's setpoint, `kp` and `ki` be changed at any time, with the same validation (exception class and attribute named) as `PIController`, taking effect on the next `update`. |
 | A3 | `update` takes a temperature for every room and returns a `0.0`/`1.0` command for every section, keyed by section name. A missing or unknown room, or a non-finite or non-numeric temperature, raises before any state changes. The last allocated duty per section and the last demand per room are readable afterwards. |
 | A4 | With evenness weight 0, when some duties in `[0, 1]` deliver every room's demand exactly, the allocation delivers them within a numerical tolerance — e.g. with HS2 split 50/50 between R1 and R2, demands 0.1 and 0.6 are met exactly. |
-| A5 | Raising one room's priority never increases that room's mismatch (demand − delivered heat). When demands cannot all be met, the competing rooms receive equal shares from the sections they share, their evenness weights are 0 and no section ends at 0 or 1, the higher-priority room ends with the smaller mismatch. |
+| A5 | Raising one room's priority never increases that room's absolute mismatch `|demand − delivered heat|`. When demands cannot all be met, the competing rooms receive equal shares from the sections they share, their evenness weights are 0 and no section ends at 0 or 1, the higher-priority room ends with the smaller mismatch. |
 | A6 | Raising one room's evenness weight never widens that room's own spread of duty among its sections. In the "R2 always hungry" case (demands R1 0.1, R2 0.6, HS2 split 50/50, HS3 not saturated), evenness 0 may leave HS1 at 0 while HS2 heats R1 (which exact fit is returned is the solver's choice), and R1's evenness weight > 0 with R2's at 0 gives HS1 a duty > 0, a narrower HS1–HS2 gap, and both demands still met. |
-| A7 | A room with exactly one dedicated section (R3 with HS4) produces exactly the command sequence of a standalone `PIController` in floor-heating mode with the same gains, setpoint and window length, regardless of the other rooms or the evenness weight. |
+| A7 | A room with exactly one dedicated section of share 1.0 (R3 with HS4) produces exactly the command sequence of a standalone `PIController` in floor-heating mode with the same gains, setpoint and window length, regardless of the other rooms or the evenness weight. |
 | A8 | `scipy` (bringing `numpy`) is a declared runtime dependency; the package installs and imports with it; `PIController` and `Modulator` behave exactly as before and the existing suite stays green. |
 | A9 | `to_dict()` returns layout (rooms, priorities, evenness weights, section shares), window length, each room's setpoint, `kp`, `ki` and integral, and each section's command history as `json.dumps`-accepted built-in types; `from_dict(to_dict())`, also through a JSON round trip, yields a controller producing identical commands thereafter; a malformed or invalid snapshot raises naming the offending key, validated as the constructor would, and produces no controller. |
 
@@ -146,7 +153,7 @@ objective separates exactly): a component of one room and one section is solved 
 form, `duty = min(1, demand / share)` — exact, which is what makes A7 hold bit-for-bit — and
 every other component is one `scipy.optimize.lsq_linear(..., bounds=(0, 1), method="bvls")`
 call on a stacked matrix: fit rows `√priority_r · (Σ share·u − demand_r)` and, for each room
-with ≥ 2 sections and evenness `e_r > 0`, spread rows `√e_r · (u_s − mean of the room's
+with ≥ 2 sections and evenness `e_r > 0`, spread rows `√(p_r · e_r) · (u_s − mean of the room's
 sections' u)`. A room's **spread** is defined as exactly the penalised quantity,
 `Σ_{s ∈ room} (u_s − mean)²` (for two sections, `gap² / 2`); A6 and T7 use this metric and
 no other. Before the square roots, each component's priorities and evenness weights are
@@ -185,7 +192,7 @@ does for private helpers.
 
 | Signature | Module | Purpose | Covers |
 |---|---|---|---|
-| `Room(name: str, *, priority: float, evenness: float, kp: float, ki: float, setpoint: float)` | `allocator.py` | One room: its fixed priority and evenness weight, and a composed radiator-mode `PIController(kp, ki, "radiator", setpoint, history_length=1)`. A handle type: built by `SectionAllocator`, construction documented as internal (no defaults; not tested standalone beyond what the allocator surfaces). `name` must be a non-empty `str` (`TypeError`/`ValueError` naming `name`); `priority` finite and `> 0`, `evenness` finite and `>= 0` (`ValueError` naming `priority`/`evenness`; non-numeric/`bool` → `TypeError`, huge `int` → `OverflowError`, via `_validation.finite`). | A1, A2 |
+| `Room(name: str, *, priority: float, evenness: float, kp: float, ki: float, setpoint: float)` | `allocator.py` | One room: its fixed priority and evenness weight, and a composed radiator-mode `PIController(kp, ki, "radiator", setpoint, history_length=1)`. A handle type: built by `SectionAllocator`, construction documented as internal (no defaults; not tested standalone beyond what the allocator surfaces). `name` must be a non-empty `str` (`TypeError`/`ValueError` naming `name`); `priority` finite and in `(0, 1]`, `evenness` finite and in `[0, 1]` (`ValueError` naming `priority`/`evenness`; non-numeric/`bool` → `TypeError`, huge `int` → `OverflowError`, via `_validation.finite`). | A1, A2 |
 | `Room.name -> str` | | Read-only. | A1 |
 | `Room.priority -> float` | | Read-only. | A1, A5 |
 | `Room.evenness -> float` | | Read-only. | A1, A6 |
@@ -523,3 +530,21 @@ mismatch, T8 share 1.0, share-sum tolerance 1e-9); only section 1 needs the user
 
 On the answers, `/build` resumes at step 5's close: amend section 1 as decided (no code or
 test change is expected for 1-3), mark step 5 done, set the marker to step 6.
+
+### Answer (user, at the step-5 halt)
+
+1. A5 → **absolute mismatch** `|demand − delivered|`. 2. A7 → **share 1.0**. 3. A1 → **state
+the 1e-9 tolerance**. 4. Instead of only accepting the weight floor, the user asked for
+properly defined weight scales; agreed: **priority ∈ (0, 1]**, **evenness ∈ [0, 1] applied as
+priority × evenness × spread**; values outside raise `ValueError` naming the attribute; the
+internal 1e-12 weight floor stays as a safety net.
+
+What changed: section 1 (A1, A5, A7, the stage-2 description, an amendment note) and
+section 2 (spread-row weight `√(p_r·e_r)`, `Room` validation ranges). This is a code change,
+so the build goes back to **step 3**: `Room` range checks, spread rows weighted by
+`priority × evenness`, docstrings, `STRUCTURE.md`/`README.md` wording, and the showcase; then
+steps 4 and 5 re-run — step 5 updates every test that used a priority above 1 or an evenness
+above 1 (e.g. 1e40, 1e300, priorities 2/4/1e6 in A5 sweeps → rescale into `(0, 1]`, keeping
+what each test proves), adds the range refusals to T1, and checks A6's monotonicity under the
+new weighting. The 1009-test suite as committed is the starting point, not discarded.
+
