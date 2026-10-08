@@ -64,3 +64,19 @@ Noted at step 8; nothing critical. Details in `development/feat/section-allocato
   not its composed `PIController`'s one-slot radiator history (unobservable today); and
   `from_dict` accepts a non-binary floor-heating section history (the `Modulator` contract).
   Revisit both if `Room` ever exposes a history or the snapshot format is tightened.
+
+## `feat/allocator-home-assistant` round 1 — 2026-10-08
+
+Noted at step 8; nothing critical. Details in `development/feat/allocator-home-assistant/01-coverage-and-holds.md` §5, §6.
+
+- **A6 wording** — a fractional hold is realised only to within about one slot of the level
+  (the `Modulator` rule; window 2 at 0.5 gives 1/3), so A6's parenthetical "averaging the
+  level over a window" is loose; the tests pin equality with a standalone `Modulator` twin.
+  Reword it if the criterion is revisited.
+- **Docstrings** — `from_dict` says holds go through "the same setters" (they are validated
+  as `sections['HS1'].hold`, not via `hold`); `hold`'s `Raises` reads as if a non-`str`
+  section names `holds[...]`; the constructor's "every error names the path" does not fit
+  the uncovered-rooms message. A `/small-change`.
+- **Late command raise** — `update` issues section commands outside the restore block, so a
+  `Modulator.command` raising for a later section would leave earlier windows and the room
+  integrals advanced; unreachable today (`_allocate` clamps, holds are validated).
