@@ -259,7 +259,11 @@ class Room:
 
     @property
     def demand(self) -> float | None:
-        """The clamped PI demand of the last update, or ``None`` before one."""
+        """The clamped PI demand of the last PI step, or ``None`` before one.
+
+        A ``None`` reading in :meth:`SectionAllocator.update` is not a PI
+        step, so it leaves this value unchanged.
+        """
         return self._pi.pi_output
 
     def _step(self, measured: float) -> float:
@@ -586,7 +590,7 @@ class SectionAllocator:
     # Public interface
     # ------------------------------------------------------------------
 
-    def update(self, measured: Mapping[str, float]) -> dict[str, float]:
+    def update(self, measured: Mapping[str, float | None]) -> dict[str, float]:
         """Run one control step and return a command for every section.
 
         Every temperature is validated before any state changes. If the
@@ -599,9 +603,15 @@ class SectionAllocator:
         keeps stepping during a hold, so its integral can wind up while a
         section is held and cause a demand burst after the release.
 
+        A room whose temperature is ``None`` has no reading this step: its
+        PI takes no step (integral and demand untouched), and the allocation
+        uses its last demand, or 0.0 if it has never had a reading. Every
+        other room steps normally and every section still gets a command.
+
         Args:
             measured: The temperature in degrees C of every room, keyed by
-                room name.
+                room name. ``None`` means no reading for that room; the key
+                itself must still be present.
 
         Returns:
             A fresh dict ``{section: 0.0 or 1.0}`` in the constructor's
@@ -609,8 +619,8 @@ class SectionAllocator:
 
         Raises:
             TypeError: If ``measured`` is not a ``Mapping``, or a
-                temperature is not a real number or is a ``bool``, naming
-                ``measured['R1']``.
+                temperature is neither ``None`` nor a real number, or is a
+                ``bool``, naming ``measured['R1']``.
             ValueError: If a room is missing or unknown (missing named
                 first), or a temperature is not finite.
             OverflowError: If a temperature is too large to represent as a
@@ -625,8 +635,12 @@ class SectionAllocator:
         unknown = sorted((k for k in values if k not in self._rooms), key=repr)
         if unknown:
             raise ValueError(f"measured has unknown rooms {unknown}.")
-        temperatures = {
-            name: _validation.finite(f"measured[{name!r}]", values[name])
+        temperatures: dict[str, float | None] = {
+            name: (
+                None
+                if values[name] is None
+                else _validation.finite(f"measured[{name!r}]", values[name])
+            )
             for name in self._rooms
         }
 
@@ -635,10 +649,15 @@ class SectionAllocator:
             for name, room in self._rooms.items()
         }
         try:
-            demand = {
-                name: room._step(temperatures[name])
-                for name, room in self._rooms.items()
-            }
+            demand: dict[str, float] = {}
+            for name, room in self._rooms.items():
+                reading = temperatures[name]
+                if reading is not None:
+                    demand[name] = room._step(reading)
+                elif room.demand is not None:
+                    demand[name] = room.demand
+                else:
+                    demand[name] = 0.0
             duty = self._allocate(demand)
         except BaseException:
             for name, (integral, pi_output) in saved.items():
@@ -962,6 +981,14 @@ def main() -> None:
 
     print(f"\n=== {held_section} released ===")
     print(f"  duty     = {allocator.duty}")
+
+    # A dead R3 sensor: None means no reading, so R3 keeps its last demand.
+    no_reading = {"R1": 21.0, "R2": 21.0, "R3": None, "R4": 21.0}
+    commands = allocator.update(no_reading)
+
+    print("\n=== R3 has no reading: its last demand is allocated again ===")
+    print(f"  R3 demand = {allocator.rooms['R3'].demand}")
+    print(f"  duty      = {allocator.duty}")
 
     # Example E3: demand is relative to the covered half of R1.
     measured = {"R1": 20.6, "R2": 21.0, "R3": 21.0, "R4": 21.0}

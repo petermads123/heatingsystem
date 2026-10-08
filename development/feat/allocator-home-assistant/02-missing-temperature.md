@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — a room without a temperature
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
@@ -192,6 +192,21 @@ plan-critic (verdict: accept with changes; approach confirmed against the code):
 ---
 
 ## 3. Implementation notes
+
+Guide entries 1-5 implemented as planned; no deviation from the Public API table.
+
+- B4 reversed one refusal: `tests/test_allocator.py` parametrize row
+  `{"R1": 20.0, "R2": 20.0, "R3": None}` -> `TypeError` was removed and replaced by
+  `test_update_accepts_none_as_no_reading_and_leaves_that_room_untouched` (R3 `None`, no raise,
+  R3's `integral`/`demand` unchanged). A replacement, not a deletion.
+- `update` builds `temperatures: dict[str, float | None]`; inside the `try` a `None` room skips
+  `_step` and allocates `room.demand` or 0.0. The save/restore block is unchanged.
+- Docstrings (`update`, `Room.demand`), `main()` (a `None` R3 case after the release), README
+  ("No reading" paragraph and a line in the example) and `STRUCTURE.md` (`update`, `Room.demand`,
+  `main` rows) updated.
+- Showcase output: R3 demand 0.5, duty HS3 1.0, HS4 0.2154 (E1 again).
+- Local run: ruff and format clean, mypy clean after dropping a now-unused `type: ignore`,
+  pytest 1517 passed.
 
 ---
 

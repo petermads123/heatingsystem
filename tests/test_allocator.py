@@ -688,7 +688,6 @@ def test_duty_and_demand_are_none_before_the_first_update_and_set_after() -> Non
         ),
         ({"R1": "20", "R2": 20.0, "R3": 20.0}, TypeError, re.escape("measured['R1']")),
         ({"R1": 20.0, "R2": True, "R3": 20.0}, TypeError, re.escape("measured['R2']")),
-        ({"R1": 20.0, "R2": 20.0, "R3": None}, TypeError, re.escape("measured['R3']")),
         (
             {"R1": 10**400, "R2": 20.0, "R3": 20.0},
             OverflowError,
@@ -709,6 +708,16 @@ def test_update_refuses_bad_measurements_and_changes_nothing(
         a.update(measured)  # type: ignore[arg-type]  # deliberate misuse
     assert snapshot(a) == before
     assert a.history == history
+
+
+def test_update_accepts_none_as_no_reading_and_leaves_that_room_untouched() -> None:
+    a = ref(e1=0.1, history_length=4)
+    a.update(meas(0.1, 0.6, 0.3))
+    room = a.rooms["R3"]
+    integral, demand = room.integral, room.demand
+    a.update({"R1": 20.0, "R2": 20.0, "R3": None})
+    assert room.integral == integral
+    assert room.demand == demand
 
 
 def test_update_reports_a_missing_room_before_a_bad_value() -> None:

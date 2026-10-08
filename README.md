@@ -170,6 +170,10 @@ commands = allocator.update({"R1": 20.9, "R2": 20.4})  # {"HS1": 1.0, "HS2": 1.0
 print(allocator.duty)  # last allocated duty per section, in [0, 1]
 print(allocator.rooms["R2"].demand)  # last PI demand of R2
 
+# A dead sensor: None means "no reading". R2's PI takes no step and the allocation
+# reuses its last demand (0.0 if it never had a reading); R1 steps as usual.
+commands = allocator.update({"R1": 20.9, "R2": None})
+
 # Setpoint and gains are adjustable per room, effective at the next update.
 allocator.rooms["R1"].setpoint = 19.0
 allocator.rooms["R1"].kp = 0.5
@@ -184,6 +188,13 @@ allocator.hold("HS1", None)
 state = allocator.to_dict()
 allocator = hs.SectionAllocator.from_dict(state)
 ```
+
+**No reading.** A room's temperature may be `None` ("no reading this step"; the key must still
+be present). That room's PI takes no step, so its `integral` and `demand` stay as they were,
+and the allocation uses its last demand, or 0.0 before its first reading (`demand` itself stays
+`None` until then, and after `from_dict`). Every other room steps normally and every section
+still gets a command. Deciding when a sensor has been dead too long, and closing its sections,
+is up to the caller, with `hold`.
 
 **Coverage.** `sections[s][r]` is the fraction of room `r`'s floor heating that section `s`
 provides. A room's coverages must sum to at most 1 (tolerance 1e-9); a section may cover
