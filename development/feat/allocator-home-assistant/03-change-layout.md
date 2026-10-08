@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — change the layout keeping state
 
-<!-- claude-plan step=2 status=active -->
+<!-- claude-plan step=3 status=active -->
 
 | Field | Value |
 |---|---|
@@ -105,11 +105,11 @@ and holds). `PIController`, `Modulator` and the snapshot format are unchanged.
 | # | The finished feature... |
 |---|---|
 | C1 | `with_layout()` with no arguments returns a different object whose `to_dict()`, `duty`, `holds` and every room's `demand` equal the original's, and the two issue identical commands and duties over the next 50 updates (including `None` readings). The original is unchanged by the call. |
-| C2 | Changing only priorities, evenness or coverages carries every room's `setpoint`, `kp`, `ki`, `integral` and `demand`, every section's window and hold, and `duty`; its next 50 commands equal those of `from_dict` on the same snapshot edited to the new layout. |
-| C3 | `history_length=n`: every window keeps its newest `min(len, n)` slots and `history_length` reads `n`; the next commands equal those of a `from_dict` rebuild with each window trimmed to its newest `n` slots and `history_length` `n`. |
+| C2 | Changing only priorities, evenness or coverages carries every room's `setpoint`, `kp`, `ki`, `integral` and `demand`, every section's window and hold, and `duty`; its next 50 commands, with a real reading for every room, equal those of `from_dict` on the same snapshot edited to the new layout; and on a `None` reading a carried room allocates its last demand (where that `from_dict` rebuild allocates 0.0). |
+| C3 | `history_length=n`: every window keeps its newest `min(len, n)` slots and `history_length` reads `n`; the next commands, with real readings, equal those of a `from_dict` rebuild with each window trimmed to its newest `n` slots and `history_length` `n`. |
 | C4 | Adding a room or section: matched names keep their state; a new room reads the constructor defaults with integral 0.0 and `demand` `None`; a new section has an empty window and no hold; `duty` is `None` when the section names changed. Removing a room or section drops its state. |
 | C5 | A layout or `history_length` the constructor refuses raises the constructor's exception (class and message) and leaves the original unchanged. |
-| C6 | Docstrings, `README.md` (the layout-change paragraph replaces the snapshot-editing advice) and `STRUCTURE.md` describe `with_layout`; rounds 1 and 2 still hold. |
+| C6 | Docstrings, `README.md` (in "SectionAllocator usage", the sentence that the layout cannot change after construction becomes the `with_layout` paragraph; the PIController window-trimming advice stays) and `STRUCTURE.md` describe `with_layout`, and nothing still says the allocator's layout is fixed; rounds 1 and 2 still hold. |
 
 ### Open questions
 
@@ -163,17 +163,24 @@ allocator through `to_dict`/`from_dict` internally (loses `demand`/`duty`, which
    history)[-n:]})`.
 5. `duty`: `new._duty = dict(self._duty)` when `self._duty is not None` and the section name
    lists are equal (order included); else stays `None`.
-6. Docstring with Args/Returns/Raises; README; STRUCTURE.md; showcase.
+6. Docstring with Args/Returns/Raises, including "adding or removing a room usually needs both
+   `rooms` and `sections`" and that errors are the constructor's, unchanged, even when the path
+   names a defaulted argument. README: in "SectionAllocator usage", replace the sentence that the
+   layout cannot change after construction (a new allocator being a full reset, around lines
+   220–221) with the `with_layout` paragraph; leave the PIController window-trimming bullets
+   (around lines 116–119) alone — `PIController.with_history_length` is out of scope. Also update
+   the `SectionAllocator` class docstring ("Built once from a fixed layout; … read-only") and
+   STRUCTURE.md's module description ("Built once from a fixed layout"). Showcase.
 
 ### Test intents
 
 | # | Must prove | Covers |
 |---|---|---|
 | T1 | No-arg call: new object, equal `to_dict`/`duty`/`holds`/demands, identical next 50 commands and duties (with `None` readings and a hold), original unchanged (snapshot before == after). | C1 |
-| T2 | Priority/evenness/coverage change: everything carried; next 50 commands == `from_dict` of the edited snapshot; a `None`-reading room uses its carried demand (contrast: the `from_dict` rebuild allocates 0.0 for it). | C2 |
-| T3 | `history_length` shorter (newest slots kept), longer (all kept, not full), equal; `history_length` reads the new value; next commands == trimmed `from_dict` rebuild; a fractional hold continues the same pattern as the trimmed rebuild. | C3 |
-| T4 | Add/remove rooms and sections: matched state kept, new room defaults (`kp` 0.3, `ki` 0.015, `setpoint` 21.0, integral 0.0, demand `None`), new section empty and unheld, `duty` `None` when names change (and carried when only reordered? — no: order is part of the names list, so reordering gives `None`), removed state gone. | C4 |
-| T5 | Every constructor refusal through `with_layout` (room sum > 1, unknown room in sections, uncovered room, bad `history_length` incl. `bool` and 0) raises the identical class and message; original `to_dict()` unchanged. | C5 |
+| T2 | Priority/evenness/coverage change: everything carried; (a) next 50 commands, real readings for every room, == `from_dict` of the edited snapshot; (b) separately, one `None` step for a carried room: `with_layout` allocates its last demand, the `from_dict` rebuild allocates 0.0. | C2 |
+| T3 | `history_length` shorter (newest slots kept), longer (all kept, not full), equal; `history_length` reads the new value; next commands (real readings only) == trimmed `from_dict` rebuild; a fractional hold continues the same pattern as the trimmed rebuild. | C3 |
+| T4 | Add/remove rooms and sections: matched state kept, new room defaults (`kp` 0.3, `ki` 0.015, `setpoint` 21.0, integral 0.0, demand `None`), new section empty and unheld, `duty` `None` when names change, and a reordered section list also gives `duty` `None`; removed state gone. | C4 |
+| T5 | Every constructor refusal through `with_layout` (room sum > 1, unknown room in sections, uncovered room, bad `history_length` incl. `bool` and 0) raises the identical class and message; `rooms` without R3 plus the default `sections` raises the constructor's unknown-room error (its path names `sections[...]` though the caller did not pass it — unchanged, by C5); original `to_dict()` unchanged. | C5 |
 | T6 | Subclass: `with_layout` returns the subclass; showcase runs; rounds 1–2 suites green. | C6 |
 
 Coverage: C1–C6 each have a Public API row and test intents; every row cites a criterion.
@@ -185,6 +192,20 @@ Coverage: C1–C6 each have a Public API row and test intents; every row cites a
   is not `from_dict`.
 - If a reordered-but-equal section set should carry `duty`, that is a concept question — the
   concept says the name lists must be equal including order; follow it.
+### Critique
+
+plan-critic (verdict: accept with changes):
+
+1. T2/T3 compared against `from_dict` while also feeding `None` readings, which differ by
+   design — **applied**: C2/C3 and T2/T3 compare with real readings only; C2 gains the separate
+   `None` contrast (carried demand vs 0.0). C2's substance is unchanged; this pins it.
+2. C6 did not name which README text changes — **applied**: the "SectionAllocator usage" fixed-
+   layout sentence, the class docstring and STRUCTURE.md's description; the PIController
+   trimming advice stays.
+3. Defaulted-argument error paths — **applied**: documented as the constructor's, unchanged;
+   docstring line on passing both `rooms` and `sections`; T5 case added.
+4. T4's open musing — **applied**: a reordered section list gives `duty` `None`.
+
 ---
 
 ## 3. Implementation notes
