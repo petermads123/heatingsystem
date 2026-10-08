@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — a room without a temperature
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,7 +18,7 @@
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -281,16 +281,48 @@ Edge cases considered and deliberately skipped:
 
 ## 6. Concept check
 
+Audited against section 1 and the code as it stands (`allocator.py` `update` lines 597-688, `Room.demand`
+lines 260-271, `main()`), not against section 2. Run: `pytest` 1557 passed; `python -m
+heatingsystem.allocator.allocator` runs (expected `RuntimeWarning`).
+
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| B1 | A `None` room keeps its integral and `demand`; others step like a twin | yes | `update` skips `room._step` for a `None` reading (`allocator.py:657-664`); `test_update_none_room_is_untouched_while_other_rooms_step_like_a_twin` (prior reading and fresh), `test_update_accepts_none_as_no_reading_and_leaves_that_room_untouched`. |
+| B2 | Allocation uses the last demand (E1 again); 0.0 before a first reading; `demand` stays `None` | yes | `allocator.py:661-664` (`room.demand`, else `0.0`); `test_update_none_reallocates_the_last_demand_on_the_e_layout`, `test_update_none_on_a_fresh_room_allocates_zero_and_reports_no_demand`, the two `from_dict` tests. Showcase output: R3 demand 0.5, duty HS3 1.0, HS4 0.2153846 (E1 again). |
+| B3 | Interleaved run equals a standalone `PIController` fed the real readings | yes | `test_update_none_room_matches_a_standalone_pi_fed_only_real_readings` (5 sequences), `test_update_single_room_none_at_start_and_end_matches_a_standalone_pi`. |
+| B4 | All `None` accepted; missing key still `ValueError`; other refusals unchanged | yes | `test_update_none_for_every_room_on_a_fresh_allocator_issues_closed_commands`, `test_update_all_none_still_applies_holds_and_reuses_last_demands`, `test_update_missing_key_is_not_no_reading_for_a_defaulting_mapping`, `test_update_refusals_with_none_rooms_present_are_unchanged_and_leave_no_trace`. Missing/unknown checks precede validation (`allocator.py:635-641`); the one 1.0.0 `None`-refusal row was replaced, as the concept's B4 requires. |
+| B5 | A raising `update` with `None` rooms leaves everything unchanged | yes | `test_update_solver_failure_with_a_none_room_restores_every_room`, `test_update_none_before_a_first_reading_leaks_nothing_on_solver_failure`, the refusal table (snapshot and history unchanged). Save/restore block unchanged (`allocator.py:652-676`). |
+| B6 | Docstrings, README, STRUCTURE.md describe `None`; A1-A11 hold | yes | `update` and `Room.demand` docstrings; README usage line 173-175 and the "No reading" paragraph (line 192); STRUCTURE.md `update`, `Room.demand`, `main` rows and the test summary (structure-auditor: in sync). Round-1 table below. |
 
-Drift found, and what was done about it:
+Out of scope, checked: no counting or timeout of missing readings, no automatic closing; `None` accepted
+only for a room temperature (`PIController`, `Room` setters and `main` setpoints untouched; `git diff main
+--stat` shows no `pi_controller/` or `modulator/` change); the snapshot keys and shape are unchanged and
+carry no last demand; no layout change and no P/I properties. Surface: the only public change is the
+widened `update` value type; no new API. Connection: `None` flows only through `update`; `from_dict`
+leaves `demand` `None` so a restored `None` room allocates 0.0, as the concept states. Showcase reads as a
+worked example (named inputs, one call, a labelled result) and shows the `None` case.
+
+Drift found, and what was done about it: none. One observation, not drift: the step 5 designers found
+`update` read each temperature twice from a live mapping; fixed in step 5 and pinned by
+`test_update_reads_each_temperature_once`. Step 5 also rebutted as out of scope a modulator that rejects a
+duty after the restore block (pre-existing, unreachable through valid input); it belongs in
+`DEVELOPMENT.md` at step 8, not here. Plan section 4 still has a stray table fragment (harmless, left).
 
 ### Earlier rounds still hold
 
 | Round | # | Criterion | Still met | Evidence |
 |---|---|---|---|---|
+| 1 | A1 | Reference layout constructs; room coverage sum above 1+1e-9 raises naming room and sum; several-room section may sum above 1; coverage outside `(0, 1]` names its path; other refusals unchanged | yes | Constructor untouched this round (diff only in `update`, `Room.demand` docstring, `main`); `test_construction_refuses_a_room_coverage_sum_above_one_naming_room_and_sum`, `test_coverage_sum_tolerance_boundary_is_one_nanounit`, `test_construction_refuses_a_bad_coverage_naming_its_path` green. |
+| 1 | A2 | Normalised by each room's controlled total (E1, E3) | yes | Showcase prints E1 (HS3 1.0, HS4 0.2154) and E3 (HS1 0.4); `test_normalisation_e1_free_allocation_of_the_reference_layout`, `test_normalisation_e3_closed_form_is_relative_to_the_covered_part`. |
+| 1 | A3 | One-section room `==` standalone floor-heating `PIController` | yes | `test_dedicated_room_produces_the_command_sequence_of_a_standalone_controller`, `test_equivalence_holds_for_a_dedicated_coverage_of_any_size`; real readings still go through `room._step` unchanged, `None` rooms are outside the comparison by design (B3). |
+| 1 | A4 | KKT, scaling invariance, A5/A6, worked examples in coverage terms | yes | `_allocate` untouched; `test_allocation_satisfies_the_kkt_conditions_of_the_documented_cost`, `test_worked_examples_hold_within_a_thousandth` green. |
+| 1 | A5 | `hold` validation, release, fresh `holds` | yes | `hold`/`holds` untouched; `test_hold_refuses_a_bad_level_naming_the_section_and_changes_nothing`, `test_hold_checks_the_section_before_the_level`, `test_holds_is_complete_fresh_and_in_constructor_order`. |
+| 1 | A6 | Held duty is its level; free sections compensate; release returns to E1 | yes | Showcase E2 (HS4 0.5385) then release back to E1; `test_release_reallocates_exactly_like_a_fresh_allocator_e1`; `test_update_all_none_still_applies_holds_and_reuses_last_demands` shows holds apply with `None` rooms. |
+| 1 | A7 | All-held component calls no solver | yes | `_allocate` untouched (`allocator.py:897-916`); no-solver test green. |
+| 1 | A8 | Room PIs unaffected by holds | yes | Hold twin tests green; a hold never changes whether a room steps, and `None` skipping is independent of holds. |
+| 1 | A9 | Raising `update` leaves holds, windows, rooms, `duty` unchanged | yes | `test_a_raising_update_leaves_holds_windows_rooms_and_duty_unchanged` green; the save/restore block is unchanged and a `None` room's saved state is its own. |
+| 1 | A10 | Snapshot `coverage`/`history`/`hold`, holds restored, identical next 50 commands, 1.0.0 refused | yes | `to_dict`/`from_dict` untouched; `test_a_restored_allocator_with_holds_produces_the_same_next_fifty`, `test_from_dict_refuses_a_1_0_0_snapshot_naming_the_missing_keys`, `test_to_dict_after_none_steps_round_trips_with_unchanged_integral`. |
+| 1 | A11 | Version 1.1.0; STRUCTURE.md and README describe coverage, normalisation, `hold`, burst | yes | `pyproject.toml` version 1.1.0, `test_the_package_version_is_1_1_0`; README coverage and hold paragraphs intact, `update` docstring still carries the burst note. |
 
 ---
 
