@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — a room without a temperature
 
-<!-- claude-plan step=2 status=active -->
+<!-- claude-plan step=3 status=active -->
 
 | Field | Value |
 |---|---|
@@ -98,7 +98,7 @@ Only `allocator.py` (`update`, `Room`'s private step). `PIController` is not cha
 | # | The finished feature... |
 |---|---|
 | B1 | Given `None` for a room, that room's integral and `demand` are exactly what they were before the call, while every other room steps exactly as it would without the `None` (twin comparison). |
-| B2 | The allocation uses a `None` room's last demand: on the round-1 reference layout, a step with R3 at demand 0.5 followed by a step with R3 `None` (other rooms unchanged) allocates E1 again (HS3 1.0, HS4 ≈ 0.215). Before the room's first reading it uses 0.0, and `demand` stays `None`. |
+| B2 | The allocation uses a `None` room's last demand: on the round-1 E layout (HS1–HS5 over R1–R4, as in `main()`, `kp=1.0`, `ki=0.0`, other rooms at the setpoint), a step with R3 at demand 0.5 followed by a step with R3 `None` (other rooms unchanged) allocates E1 again (HS3 1.0, HS4 ≈ 0.215). Before the room's first reading it uses 0.0, and `demand` stays `None`. |
 | B3 | A room's integral and demand sequence over a run with `None` steps interleaved equals a standalone `PIController` (same gains, setpoint) fed only that room's non-`None` readings. |
 | B4 | `None` for every room is accepted (each room keeps its last demand, every section still gets a command, holds still apply); a missing key still raises `ValueError`; every other `update` refusal is unchanged in class and message. |
 | B5 | A raising `update` with some rooms `None` (bad temperature elsewhere, or a failing solver) leaves every room, hold, window and `duty` unchanged. |
@@ -146,21 +146,24 @@ the mapping per room).
 1. `update`: build `temperatures: dict[str, float | None]`, `None` passed through, others via
    `_validation.finite` (same order, same paths).
 2. Inside the `try`: `demand[name] = room._step(t)` if `t is not None`, else
-   `room.demand if room.demand is not None else 0.0`.
+   `room.demand if room.demand is not None else 0.0`. In the same commit, remove only the
+   `None` row from the refusal parametrize list in `tests/test_allocator.py` (around line 691,
+   `{"R1": 20.0, "R2": 20.0, "R3": None}` → `TypeError`) and add a positive test in its place:
+   same allocator, R3 `None`, no raise, R3's `integral`/`demand` unchanged. Record in section 3
+   that B4 reversed this case (a replacement, not a deletion).
 3. Docstrings: `update` Args (`None` = no reading) and the `TypeError` line (a `None` is no
    longer refused); `Room.demand`.
 4. `main()`: one labelled case after E1 — the same allocator, R3 `None`, print duty.
 5. README usage section: one paragraph and a line of the example; `STRUCTURE.md` `update` row.
-6. Tests (step 5 extends): B1–B5 as below. Existing tests asserting `None` raises
-   `TypeError` for `measured` are reversed on purpose by this round — replace them with the
-   B4 refusal list minus `None` (a replacement, not a deletion).
+6. Tests (step 5 extends): B1–B5 as below. The one reversed refusal case is already
+   replaced at entry 2, so the tree stays green from step 3.
 
 ### Test intents
 
 | # | Must prove | Covers |
 |---|---|---|
-| T1 | `None` room: integral and demand identical before/after; other rooms equal an allocator fed the same readings for them (and any reading for the `None` room's twin is irrelevant to them only through the allocation — compare integrals/demands, not duty). | B1 |
-| T2 | Reference layout: R3 0.5 step then R3 `None` → E1 again; fresh allocator with R3 `None` → R3 allocated as demand 0.0, `demand` is `None`; same after `from_dict`. | B2 |
+| T1 | Twin = same allocator history; on the `None` step the twin gets the same readings for every other room and any finite reading for the `None` room. Every other room's `integral` and `demand` equal the twin's; the `None` room's `integral` and `demand` are identical (`==`, `is None` when `None`) to before the call. Duty is not compared (B2's job). | B1 |
+| T2 | E layout (not the test file's `ref()`), `kp=1.0`, `ki=0.0`, R1/R2/R4 at the setpoint, R3 20.5 then `None`: duty both steps HS3 1.0, HS4 ≈ 0.2154, HS5 0.0; fresh allocator with R3 `None` → R3 allocated as demand 0.0, `demand` is `None`; same after `from_dict`. | B2 |
 | T3 | Interleaved `None` run equals a standalone `PIController` fed only the real readings (integral and `pi_output` per real step). | B3 |
 | T4 | All rooms `None`; with holds; missing key still `ValueError`; every other refusal unchanged (class and message). | B4 |
 | T5 | Raising `update` with `None` rooms present (NaN elsewhere; failing solver) leaves `to_dict()`, `duty`, `holds`, `history` unchanged. | B5 |
@@ -170,10 +173,21 @@ Coverage: B1–B6 each have a Public API row and a test intent; every row cites 
 
 ### Risks
 
-- Existing tests that pass `None` expecting `TypeError` reverse under this round — replace by
-  intent as guide step 6 says; not a halt.
+- The existing test passing `None` expecting `TypeError` reverses under this round — replaced
+  at guide entry 2; not a halt.
 - If anything in the round-1 suite depends on `None` being refused beyond those tests, it is
   the same reversal; not a halt.
+
+### Critique
+
+plan-critic (verdict: accept with changes; approach confirmed against the code):
+
+1. B2/T2 underspecified the layout and gains (the test file's `ref()` gives HS4 0.5) —
+   **applied**: B2 and T2 name the E layout, `kp=1.0`, `ki=0.0`, other rooms at the setpoint.
+   B2's substance is unchanged; this pins the existing example.
+2. T1 did not say what the twin is fed — **applied**: T1 rewritten.
+3. The reversed refusal row goes red at step 3 — **applied**: moved to guide entry 2 with a
+   positive replacement test.
 
 ---
 
