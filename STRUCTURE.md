@@ -419,6 +419,16 @@ in `heatingsystem.__all__` and `heatingsystem.modulator.__all__` but not
 `setpoint` is passed in that call, since the setpoint setter runs before the modulator is
 reached and would otherwise store even on a raise — see plan round 4 section 5).
 
+Round 4 of `feat/allocator-home-assistant` (D1-D3, 35 cases): `error`, `p_term` and `i_term` of the last
+`update` against hand computation: the linear region over several steps, both saturation directions with `i_term`
+built from the tentative integral while the integral is held (including raw exactly on either clamp), a per-call
+setpoint, a gain change between steps, terms stored not recomputed after a setting change, floor-heating mode and a
+`fixed_output` hold matching an unfixed twin, `int`/`Fraction` inputs giving `float` terms, the non-finite cases
+reported as computed (finite terms with an overflowing sum, `nan`/`inf` from an overflowing error) with `pi_output`
+0.0, signed zero kept on `p_term`/`i_term` and never on `error`; `None` before the first `update`, after `reset()`
+and after `from_dict` (direct and JSON), read-only, `to_dict()` unchanged; a raising `update` (bad `measured`, bad
+per-call `setpoint`, a raising modulator, with and without a per-call setpoint) leaving the three untouched.
+
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file
 found anywhere else.
@@ -474,6 +484,14 @@ after its room is removed, exact-name matching); thirteen constructor refusals i
 with the original untouched (including `duty`, demands and next commands), empty mappings not read as "keep",
 keyword-only `history_length`, a failed first `update` after a carry, a subclass keeping its type and the README
 and docstrings no longer claiming a fixed layout.
+
+Round 4's `Room` terms suite (D4, 26 cases): `error`/`p_term`/`i_term` `None` before the first update, equal to a
+standalone `PIController` twin (NaN-aware, sign-of-zero-aware comparison) over 40 steps and under a hold and
+saturation, following the setpoint and gains in force per step and stored not recomputed, read-only, `float`; a
+`None` reading leaving them (and keeping them `None` before a first real reading); a failing solver (first update,
+later update, `KeyboardInterrupt`), a later room's step raising mid-loop and a validation failure restoring them;
+`with_layout` carrying them for matched rooms and `None` for new, renamed or re-added rooms, bit-for-bit for
+non-finite terms, as a copy; `from_dict` (direct and JSON) leaving them `None`; the snapshot not containing them.
 
 ### `tests/test_modulator.py`
 

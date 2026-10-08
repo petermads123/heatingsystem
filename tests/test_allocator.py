@@ -4317,3 +4317,282 @@ def test_with_layout_docs_no_longer_claim_a_fixed_layout() -> None:
     assert "same order" in readme
     assert "fixed layout" not in (SectionAllocator.__doc__ or "")
     assert "fixed physical layout" not in (allocator_module.__doc__ or "")
+
+
+# ---------------------------------------------------------------------------
+# Round 4 (D4): Room.error / p_term / i_term
+# ---------------------------------------------------------------------------
+
+Terms = tuple[float | None, float | None, float | None]
+
+
+def terms_of(room: Room) -> Terms:
+    return (room.error, room.p_term, room.i_term)
+
+
+def same_terms(a: Terms, b: Terms) -> bool:
+    """Equality that reads NaN as equal to NaN and keeps the sign of zero."""
+    for x, y in zip(a, b, strict=True):
+        if x is None or y is None:
+            if x is not y:
+                return False
+        elif math.isnan(x) or math.isnan(y):
+            if not (math.isnan(x) and math.isnan(y)):
+                return False
+        elif x != y or math.copysign(1.0, x) != math.copysign(1.0, y):
+            return False
+    return True
+
+
+def pi_terms(c: PIController) -> Terms:
+    return (c.error, c.p_term, c.i_term)
+
+
+def gain_ref() -> SectionAllocator:
+    """The reference layout with the default gains (kp 0.3, ki 0.015)."""
+    return SectionAllocator(ref_rooms(), ref_sections())
+
+
+def test_room_terms_are_none_before_the_first_update() -> None:
+    a = gain_ref()
+    assert all(terms_of(room) == (None, None, None) for room in a.rooms.values())
+
+
+def test_room_terms_equal_a_standalone_twin_over_many_steps() -> None:
+    a = gain_ref()
+    twin = PIController(kp=0.3, ki=0.015, setpoint=SETPOINT)
+    for k in range(40):
+        reading = 18.0 + 0.1 * k if k % 3 else 25.0
+        a.update({"R1": reading, "R2": 21.0, "R3": 21.0})
+        twin.update(reading)
+        assert same_terms(terms_of(a.rooms["R1"]), pi_terms(twin))
+        assert a.rooms["R1"].demand == twin.pi_output
+
+
+def test_room_terms_equal_the_twin_under_a_hold_and_saturation() -> None:
+    a = gain_ref()
+    a.hold("HS1", 0.0)
+    twin = PIController(kp=0.3, ki=0.015, setpoint=SETPOINT)
+    for reading in (10.0, 10.0, 10.0, 30.0, 30.0, 21.0):
+        a.update({"R1": reading, "R2": 21.0, "R3": 21.0})
+        twin.update(reading)
+        assert same_terms(terms_of(a.rooms["R1"]), pi_terms(twin))
+
+
+def test_room_terms_use_the_setpoint_and_gains_in_force_for_the_step() -> None:
+    a = gain_ref()
+    twin = PIController(kp=0.3, ki=0.015, setpoint=SETPOINT)
+    a.update({"R1": 20.0, "R2": 21.0, "R3": 21.0})
+    twin.update(20.0)
+    room = a.rooms["R1"]
+    room.setpoint = 22.0
+    room.kp = 2.0
+    room.ki = 0.5
+    twin.setpoint = 22.0
+    twin.kp = 2.0
+    twin.ki = 0.5
+    assert same_terms(terms_of(room), (1.0, 0.3, 0.015))  # stored, not recomputed
+    a.update({"R1": 20.0, "R2": 21.0, "R3": 21.0})
+    twin.update(20.0)
+    assert room.error == 2.0
+    assert room.p_term == 2.0 * 2.0
+    assert same_terms(terms_of(room), pi_terms(twin))
+
+
+@pytest.mark.parametrize("name", ["error", "p_term", "i_term"])
+def test_room_terms_are_read_only(name: str) -> None:
+    room = gain_ref().rooms["R1"]
+    with pytest.raises(AttributeError):
+        setattr(room, name, 1.0)
+
+
+def test_room_terms_are_floats() -> None:
+    a = gain_ref()
+    a.update({"R1": Fraction(41, 2), "R2": 21, "R3": 21})  # type: ignore[dict-item]  # Reals
+    room = a.rooms["R1"]
+    assert type(room.error) is type(room.p_term) is type(room.i_term) is float
+
+
+def test_a_none_reading_leaves_the_terms_unchanged() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 19.0, "R3": 21.0})
+    before = {n: terms_of(r) for n, r in a.rooms.items()}
+    assert before["R1"] == (1.0, 0.3, 0.015)
+    a.update({"R1": 18.0, "R2": None, "R3": None})
+    assert terms_of(a.rooms["R2"]) == before["R2"]
+    assert terms_of(a.rooms["R3"]) == before["R3"]
+    assert terms_of(a.rooms["R1"]) != before["R1"]
+
+
+def test_a_none_reading_before_any_real_reading_keeps_the_terms_none() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": None, "R3": None})
+    assert terms_of(a.rooms["R2"]) == (None, None, None)
+    assert a.rooms["R2"].demand is None
+    assert terms_of(a.rooms["R1"]) == (1.0, 0.3, 0.015)
+
+
+def test_a_none_reading_then_a_setting_change_applies_at_the_next_real_reading() -> (
+    None
+):
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 21.0, "R3": 21.0})
+    a.rooms["R1"].kp = 2.0
+    a.update({"R1": None, "R2": 21.0, "R3": 21.0})
+    assert terms_of(a.rooms["R1"]) == (1.0, 0.3, 0.015)
+    a.update({"R1": 20.0, "R2": 21.0, "R3": 21.0})
+    assert a.rooms["R1"].p_term == 2.0 * 1.0
+
+
+def test_a_failing_first_update_restores_the_terms_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a = gain_ref()
+    _patch_solver(monkeypatch, ArithmeticError("no convergence"))
+    with pytest.raises(ArithmeticError):
+        a.update({"R1": 20.0, "R2": 20.0, "R3": 20.0})
+    assert all(terms_of(r) == (None, None, None) for r in a.rooms.values())
+
+
+@pytest.mark.parametrize("failure", [ArithmeticError("x"), KeyboardInterrupt()])
+def test_a_failing_solver_restores_the_terms_to_the_previous_update(
+    failure: BaseException, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 20.0, "R3": 20.0})
+    before = {n: terms_of(r) for n, r in a.rooms.items()}
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise failure
+
+    monkeypatch.setattr(allocator_module, "lsq_linear", fail)
+    with pytest.raises(type(failure)):
+        a.update({"R1": 18.0, "R2": None, "R3": 15.0})
+    assert {n: terms_of(r) for n, r in a.rooms.items()} == before
+    assert before["R1"] == (1.0, 0.3, 0.015)
+
+
+def test_a_later_room_step_raising_restores_earlier_rooms_terms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 20.0, "R3": 20.0})
+    before = {n: terms_of(r) for n, r in a.rooms.items()}
+    original = PIController.update
+    calls: list[float] = []
+
+    def flaky(
+        self: PIController, measured: float, setpoint: float | None = None
+    ) -> float:
+        calls.append(measured)
+        if len(calls) == 2:
+            raise RuntimeError("second room fails")
+        return original(self, measured, setpoint)
+
+    monkeypatch.setattr(PIController, "update", flaky)
+    with pytest.raises(RuntimeError):
+        a.update({"R1": 18.0, "R2": 18.0, "R3": 18.0})
+    assert len(calls) == 2
+    assert {n: terms_of(r) for n, r in a.rooms.items()} == before
+
+
+def test_a_validation_failure_leaves_the_terms_unchanged() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 20.0, "R3": 20.0})
+    before = {n: terms_of(r) for n, r in a.rooms.items()}
+    with pytest.raises(ValueError):
+        a.update({"R1": 18.0, "R2": float("nan"), "R3": 18.0})
+    assert {n: terms_of(r) for n, r in a.rooms.items()} == before
+
+
+def test_with_layout_carries_the_terms_for_matched_rooms_and_none_for_new() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 19.0, "R3": 21.0})
+    rooms = ref_rooms()
+    rooms["R4"] = {"priority": 1.0, "evenness": 0.0}
+    sections = ref_sections()
+    sections["HS5"] = {"R4": 1.0}
+    b = a.with_layout(rooms, sections)
+    for name in ("R1", "R2", "R3"):
+        assert terms_of(b.rooms[name]) == terms_of(a.rooms[name])
+    assert terms_of(b.rooms["R1"]) == (1.0, 0.3, 0.015)
+    assert terms_of(b.rooms["R4"]) == (None, None, None)
+
+
+def test_with_layout_without_arguments_carries_every_room() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 19.0, "R3": 23.0})
+    b = a.with_layout()
+    assert {n: terms_of(r) for n, r in b.rooms.items()} == {
+        n: terms_of(r) for n, r in a.rooms.items()
+    }
+
+
+def test_with_layout_on_a_never_updated_allocator_has_none_terms() -> None:
+    b = gain_ref().with_layout()
+    assert all(terms_of(r) == (None, None, None) for r in b.rooms.values())
+
+
+@pytest.mark.parametrize("variant", ["renamed", "removed-then-readded"])
+def test_with_layout_does_not_leak_terms_to_a_renamed_or_readded_room(
+    variant: str,
+) -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 19.0, "R3": 21.0})
+    rooms = ref_rooms()
+    sections = ref_sections()
+    if variant == "renamed":
+        rooms["R2b"] = rooms.pop("R2")
+        sections["HS2"] = {"R1": 0.3, "R2b": 0.3}
+        sections["HS3"] = {"R2b": 0.7}
+        b = a.with_layout(rooms, sections)
+        assert terms_of(b.rooms["R2b"]) == (None, None, None)
+    else:
+        without = {k: v for k, v in rooms.items() if k != "R2"}
+        sections_without = {"HS1": {"R1": 0.7}, "HS4": {"R3": 1.0}}
+        mid = a.with_layout(without, sections_without)
+        b = mid.with_layout(rooms, sections)
+        assert terms_of(b.rooms["R2"]) == (None, None, None)
+    assert terms_of(b.rooms["R1"]) == (1.0, 0.3, 0.015)
+
+
+def test_with_layout_carries_non_finite_terms_bit_for_bit() -> None:
+    a = SectionAllocator({"R1": {"priority": 1, "evenness": 0}}, {"HS1": {"R1": 1.0}})
+    room = a.rooms["R1"]
+    room.setpoint = 1e308
+    room.kp = 0.0
+    a.update({"R1": -1e308})
+    assert room.error == math.inf
+    assert room.p_term is not None
+    assert math.isnan(room.p_term)
+    assert room.i_term == math.inf
+    b = a.with_layout()
+    assert same_terms(terms_of(b.rooms["R1"]), terms_of(room))
+    assert b.rooms["R1"].demand == 0.0
+
+
+def test_with_layout_carry_is_a_copy_not_shared_state() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 20.0, "R3": 20.0})
+    b = a.with_layout()
+    b.update({"R1": 15.0, "R2": 15.0, "R3": 15.0})
+    assert terms_of(a.rooms["R1"]) == (1.0, 0.3, 0.015)
+    assert terms_of(b.rooms["R1"]) != terms_of(a.rooms["R1"])
+
+
+def test_from_dict_leaves_the_terms_none_while_with_layout_carries_them() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 19.0, "R3": 21.0})
+    direct = SectionAllocator.from_dict(a.to_dict())
+    via_json = SectionAllocator.from_dict(json.loads(json.dumps(a.to_dict())))
+    carried = a.with_layout()
+    for restored in (direct, via_json):
+        assert all(terms_of(r) == (None, None, None) for r in restored.rooms.values())
+    assert terms_of(carried.rooms["R1"]) == (1.0, 0.3, 0.015)
+
+
+def test_the_snapshot_does_not_contain_the_terms() -> None:
+    a = gain_ref()
+    a.update({"R1": 20.0, "R2": 19.0, "R3": 21.0})
+    for room in a.to_dict()["rooms"].values():  # type: ignore[attr-defined]  # a dict of dicts
+        assert set(room) == {"priority", "evenness", "setpoint", "kp", "ki", "integral"}

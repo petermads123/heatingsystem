@@ -519,7 +519,8 @@ class PIController:
         """The error of the last :meth:`update`: ``setpoint - measured``.
 
         The setpoint is the one in force for that step, including a per-call
-        ``setpoint``. Stored as computed, ``-0.0`` included.
+        ``setpoint``. Stored as computed; it is never ``-0.0`` (both operands
+        are normalised), unlike :attr:`p_term` and :attr:`i_term`.
 
         Returns:
             The error, or ``None`` before the first :meth:`update` call and

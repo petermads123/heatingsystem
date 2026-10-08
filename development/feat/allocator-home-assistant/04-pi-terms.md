@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — P and I terms per room
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -17,7 +17,7 @@
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -234,10 +234,33 @@ Implemented as planned, guide entries 1-6; no deviation, Public API table unchan
 
 ## 5. Test log
 
+Readers: `input-space` designer ran (15 cases, 4 contradictions); the `contract` designer failed on an API rate
+limit, so the contract pass was done by the test author from D1-D6, the docstrings and the Public API table.
+
 | Intent | Test names | Result |
 |---|---|---|
+| T1 / D1 | `test_terms_linear_region_match_hand_computation_over_several_steps`, `..._saturated_high_use_the_tentative_integral_not_the_held_one`, `..._saturated_low_...`, `test_i_term_at_exact_upper_clamp_...`, `test_i_term_at_exact_lower_clamp_...`, `test_terms_follow_a_per_call_setpoint`, `test_terms_use_the_gains_in_force_for_each_step`, `test_terms_are_stored_not_recomputed_after_settings_change`, `test_terms_are_pi_values_not_the_actuator_command` (both modes), `test_terms_under_a_fixed_output_hold_match_an_unfixed_twin`, `test_terms_are_floats_for_int_and_fraction_inputs`, `test_terms_finite_while_the_raw_sum_overflows`, `test_terms_report_nan_and_inf_as_computed_when_the_error_overflows`, `test_zero_gain_with_negative_error_stores_a_negative_zero_p_term`, `test_signed_zero_terms_from_negative_gains_keep_their_sign` | pass |
+| T2 / D2 | `test_terms_are_none_before_the_first_update`, `..._after_reset`, `..._after_from_dict_directly_and_through_json`, `test_terms_are_read_only`, `test_to_dict_does_not_gain_the_terms` | pass |
+| T3 / D3 | `test_a_raising_update_leaves_the_terms_unchanged`, `test_a_raising_per_call_setpoint_...`, `test_a_raising_first_update_...`, `test_modulator_raise_leaves_the_terms_unchanged`, `test_modulator_raise_with_a_per_call_setpoint_stores_it_but_not_the_terms` | pass |
+| T4 / D4 | `test_room_terms_equal_a_standalone_twin_over_many_steps`, `..._under_a_hold_and_saturation`, `test_room_terms_use_the_setpoint_and_gains_in_force_for_the_step`, `test_room_terms_are_read_only`, `test_room_terms_are_floats`, `test_a_none_reading_*` (3), `test_a_failing_first_update_restores_the_terms_to_none`, `test_a_failing_solver_restores_the_terms_to_the_previous_update` (Exception and KeyboardInterrupt), `test_a_later_room_step_raising_restores_earlier_rooms_terms`, `test_a_validation_failure_leaves_the_terms_unchanged`, `test_with_layout_*` (carry, no-arg, never updated, renamed/re-added, non-finite bit-for-bit, copy), `test_from_dict_leaves_the_terms_none_while_with_layout_carries_them`, `test_the_snapshot_does_not_contain_the_terms` | pass |
+| T5 / D5 | whole suite, no existing assertion edited | 1673 passed (1612 before) |
+| D6 | contradictions 1 and 2 below (docstring fixes) | applied |
 
-Edge cases considered and deliberately skipped, with reasons:
+Designer cases: 1-15 applied (3 and 4 together; 5-7 as restore tests; 8 stored-not-recomputed; 9 modulator
+raise with setpoint; 10 signed zeros; 11-13 `with_layout`/`None`; 14 floor heating; 15 types).
+Contradictions: (1) `PIController.error` docstring promised `-0.0`, unreachable: reworded (production docstring
+fix, applied; `error` never `-0.0` is asserted). (2) `SectionAllocator.update` docstring omitted the restored terms:
+applied. (3) restore window does not cover `modulator.command(duty)` after the `try`: unreachable today (duty in
+[0, 1]); no test, noted here. (4) D1's `i_term` expression order: tests use `ki * (previous + error)` order.
+
+No production bug found. Only change outside tests: the two docstrings.
+
+Edge cases considered and deliberately skipped:
+
+- Contradiction 3 (restore gap after the try): unreachable with duty in [0, 1]; testing needs a monkeypatched
+  modulator and would pin an implementation detail.
+- Empty, text and malformed input for the properties: they take no input; bad input to `update` is T3.
+- Idempotency of reading a property: trivial.
 
 ---
 

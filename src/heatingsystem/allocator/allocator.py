@@ -629,8 +629,8 @@ class SectionAllocator:
         """Run one control step and return a command for every section.
 
         Every temperature is validated before any state changes. If the
-        allocation fails, every room's integral and demand are restored and
-        the error propagates; no command is issued and no duty is stored.
+        allocation fails, every room's integral, demand, ``error``, ``p_term``
+        and ``i_term`` are restored and the error propagates; no command is issued and no duty is stored.
         Holds are never written by an update. A held section's duty is its
         level whatever the demand, its command is the floor-heating
         modulation of that level (exactly the level for 0.0 and 1.0), and
