@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — coverage and holds
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,7 +19,7 @@
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -495,8 +495,10 @@ Not applicable: this is round 1 of the branch. (1.0.0's criteria were carried in
 
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits | `c5853bd` Concept; `953d77d` Plan; `b5f574a` Plan accepted: start build; `cc41e34` WIP step 3: allocator coverage semantics and holds; `9d58e94` WIP step 3: migrate allocator tests to coverage semantics; `1b174ae` Implement; `69052b6` Verify; `12f0a13` Test; `83c4a44` Concept check; plus the Ship commit that closes the round |
+| Pushed to | `origin/feat/allocator-home-assistant` |
+
+Whole-tree gates at ship: `ruff check .` clean, `ruff format --check .` 54 files formatted, `mypy` no issues in 21 source files, `pytest` 1517 passed. Diff against `main`: README.md, STRUCTURE.md, this plan file, `pyproject.toml`, `allocator.py`, `tests/test_allocator.py` only; no stray files. Every step 1 to 6 left a commit. Section 6 has no unmet row.
 
 ---
 
