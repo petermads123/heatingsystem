@@ -23,9 +23,11 @@ from heatingsystem.allocator.allocator import Room, SectionAllocator
 from heatingsystem.pi_controller.pi_controller import PIController
 
 # ---------------------------------------------------------------------------
-# Helpers and the reference layout: R1 <- HS1 (1.0) + HS2 (0.5);
-# R2 <- HS2 (0.5) + HS3 (1.0); R3 <- HS4 (1.0). kp=1, ki=0 makes a room's demand
-# exactly clamp(setpoint - measured).
+# Helpers and the reference layout, in coverage terms (the fraction of a room's
+# floor heating a section provides): R1 <- HS1 (0.7) + HS2 (0.3);
+# R2 <- HS2 (0.3) + HS3 (0.7); R3 <- HS4 (1.0). Every room's coverages sum to
+# 1, so a coverage is also its normalised coefficient. kp=1, ki=0 makes a
+# room's demand exactly clamp(setpoint - measured).
 # ---------------------------------------------------------------------------
 
 GAINS = {"kp": 1.0, "ki": 0.0}
@@ -49,9 +51,9 @@ def ref_rooms(
 
 def ref_sections() -> dict[str, dict[str, float]]:
     return {
-        "HS1": {"R1": 1.0},
-        "HS2": {"R1": 0.5, "R2": 0.5},
-        "HS3": {"R2": 1.0},
+        "HS1": {"R1": 0.7},
+        "HS2": {"R1": 0.3, "R2": 0.3},
+        "HS3": {"R2": 0.7},
         "HS4": {"R3": 1.0},
     }
 
@@ -73,12 +75,21 @@ def meas(*demands: float) -> dict[str, float]:
     return {f"R{i + 1}": SETPOINT - d for i, d in enumerate(demands)}
 
 
+def coef(a: SectionAllocator, section: str, room: str) -> float:
+    """Normalised coefficient: the coverage over the room's coverage total.
+
+    Written from the public ``sections`` only, so it is independent of the
+    allocator's own normalisation.
+    """
+    sections = a.sections
+    total = math.fsum(c[room] for c in sections.values() if room in c)
+    return sections[section].get(room, 0.0) / total
+
+
 def delivered(a: SectionAllocator, room: str) -> float:
     duty = a.duty
     assert duty is not None
-    return sum(
-        shares.get(room, 0.0) * duty[name] for name, shares in a.sections.items()
-    )
+    return sum(coef(a, name, room) * duty[name] for name in a.sections)
 
 
 def spread(a: SectionAllocator, room: str) -> float:
@@ -129,7 +140,7 @@ def build(
     )
 
 
-def with_share(
+def with_coverage(
     value: object, section: str = "HS1", room: str = "R1"
 ) -> dict[str, dict[str, float]]:
     sections = ref_sections()
@@ -153,35 +164,59 @@ def with_share(
         (10**400, OverflowError),
     ],
 )
-def test_construction_refuses_a_bad_share_naming_its_path(
+def test_construction_refuses_a_bad_coverage_naming_its_path(
     value: object, error: type[Exception]
 ) -> None:
     with pytest.raises(error, match=re.escape("sections['HS1']['R1']")):
-        build(sections=with_share(value))
+        build(sections=with_coverage(value))
 
 
-def test_construction_refuses_a_share_sum_above_one_naming_the_section() -> None:
+def test_construction_refuses_a_room_coverage_sum_above_one_naming_room_and_sum() -> (
+    None
+):
     sections = ref_sections()
-    sections["HS2"] = {"R1": 0.7, "R2": 0.3 + 1e-6}
-    with pytest.raises(ValueError, match=re.escape("sections['HS2'] shares must sum")):
+    sections["HS2"] = {"R1": 0.6, "R2": 0.3}  # R1: 0.7 + 0.6
+    total = math.fsum([0.7, 0.6])
+    with pytest.raises(ValueError) as caught:
         build(sections=sections)
+    assert str(caught.value) == f"rooms['R1'] coverages sum to {total}, more than 1."
 
 
-def test_construction_accepts_share_sums_that_are_one_up_to_float_error() -> None:
-    sections = ref_sections()
-    sections["HS2"] = {"R1": 0.1 * 3, "R2": 0.7}
+def test_construction_names_the_first_room_in_room_order_when_several_are_over() -> (
+    None
+):
+    sections = {"HS1": {"R1": 0.7, "R2": 0.7}, "HS2": {"R1": 0.6, "R2": 0.6}}
+    rooms = {k: ref_rooms()[k] for k in ("R2", "R1")}  # R2 comes first
+    with pytest.raises(ValueError, match=re.escape("rooms['R2']")):
+        build(rooms=rooms, sections=sections)
+
+
+def test_construction_accepts_a_section_covering_several_rooms_with_a_sum_above_one() -> (
+    None
+):
+    """Only a room's own coverages are limited; a section may cover many rooms."""
+    sections = {
+        "HS1": {"R1": 0.7, "R2": 0.7, "R3": 0.7},
+        "HS2": {"R1": 0.3, "R2": 0.3, "R3": 0.3},
+    }
     a = build(sections=sections)
-    assert a.sections["HS2"] == {"R1": 0.1 * 3, "R2": 0.7}
-    ten = {"HS1": {f"R{i}": 0.1 for i in range(10)}}
-    build(
-        rooms={f"R{i}": {"priority": 1, "evenness": 0} for i in range(10)}, sections=ten
-    )
-    thirds = {"HS1": {"R1": 1 / 3, "R2": 1 / 3, "R3": 1 / 3}}
-    build(sections=thirds)
+    assert a.sections["HS1"] == {"R1": 0.7, "R2": 0.7, "R3": 0.7}
+
+
+def test_construction_accepts_coverage_sums_that_are_one_up_to_float_error() -> None:
+    sections = ref_sections()
+    sections["HS1"] = {"R1": 0.7}
+    sections["HS2"] = {"R1": 0.1 * 3, "R2": 0.3}  # 0.7 + 0.30000000000000004
+    a = build(sections=sections)
+    assert a.sections["HS2"] == {"R1": 0.1 * 3, "R2": 0.3}
+    ten = {f"HS{i}": {"R0": 0.1} for i in range(10)}
+    build(rooms={"R0": {"priority": 1, "evenness": 0}}, sections=ten)
+    thirds = {f"HS{i}": {"R1": 1 / 3} for i in range(3)}
+    build(rooms=one_room(), sections=thirds)
 
 
 @pytest.mark.parametrize(("extra", "accepted"), [(1e-9, True), (2e-9, False)])
-def test_share_sum_tolerance_boundary_is_one_nanounit(
+def test_coverage_sum_tolerance_boundary_is_one_nanounit(
     extra: float, accepted: bool
 ) -> None:
     sections = {"HS1": {"R1": 1.0, "R2": extra}, "HS2": {"R2": 1.0}}
@@ -189,7 +224,7 @@ def test_share_sum_tolerance_boundary_is_one_nanounit(
     if accepted:
         build(rooms=rooms, sections=sections)
     else:
-        with pytest.raises(ValueError, match=re.escape("sections['HS1'] shares must")):
+        with pytest.raises(ValueError, match=re.escape("rooms['R2'] coverages sum")):
             build(rooms=rooms, sections=sections)
 
 
@@ -200,7 +235,7 @@ def test_construction_refuses_a_section_naming_an_unknown_room() -> None:
         build(sections=sections)
 
 
-def test_construction_refuses_a_non_string_room_in_a_share_mapping() -> None:
+def test_construction_refuses_a_non_string_room_in_a_coverage_mapping() -> None:
     with pytest.raises(ValueError, match="unknown room 1"):
         build(sections={"HS1": {1: 1.0}})
 
@@ -258,7 +293,7 @@ def test_construction_refuses_a_bad_evenness_naming_its_path(
 
 
 def test_construction_accepts_the_edges_of_every_range() -> None:
-    sections = {"HS1": {"R1": 5e-324}, "HS2": {"R1": 1.0}}
+    sections = {"HS1": {"R1": 5e-324}, "HS2": {"R1": 1.0}}  # sum 1.0 after rounding
     a = build(rooms=one_room(priority=5e-324, evenness=-0.0), sections=sections)
     assert a.rooms["R1"].priority == 5e-324
     assert math.copysign(1.0, a.rooms["R1"].evenness) == 1.0
@@ -321,7 +356,7 @@ def test_room_and_section_may_share_a_name_and_whitespace_names_are_accepted() -
     sections = {
         "R1": {"R1": 0.5, " ": 0.5},
         " ": {" ": 0.5, "Stue/Køkken ☀": 0.5},
-        "Stue/Køkken ☀": {"Stue/Køkken ☀": 1.0},
+        "Stue/Køkken ☀": {"Stue/Køkken ☀": 0.5},
         "S": {"R1": 0.5},
     }
     a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0, history_length=4)
@@ -378,13 +413,15 @@ def test_bad_shared_gain_matches_pi_controller_and_names_the_argument(
     assert "rooms[" not in str(allocator.value)
 
 
-def test_error_order_priority_before_share_and_share_before_history_length() -> None:
+def test_error_order_priority_before_coverage_and_coverage_before_history_length() -> (
+    None
+):
     rooms = ref_rooms()
     rooms["R1"]["priority"] = 0.0
     with pytest.raises(ValueError, match=re.escape("rooms['R1'].priority")):
-        build(rooms=rooms, sections=with_share(0.0))
+        build(rooms=rooms, sections=with_coverage(0.0))
     with pytest.raises(ValueError, match=re.escape("sections['HS1']['R1']")):
-        build(sections=with_share(0.0), history_length=0)
+        build(sections=with_coverage(0.0), history_length=0)
     with pytest.raises(ValueError, match="kp"):
         build(rooms=rooms, kp=float("nan"))
 
@@ -398,8 +435,8 @@ def test_construction_does_not_alias_the_callers_mappings() -> None:
     sections["HS2"]["R1"] = 0.9
     rooms["R1"]["priority"] = 9.0
     rooms["R1"]["evenness"] = 9.0
-    assert a.sections["HS1"]["R1"] == 1.0
-    assert a.sections["HS2"]["R1"] == 0.5
+    assert a.sections["HS1"]["R1"] == 0.7
+    assert a.sections["HS2"]["R1"] == 0.3
     assert a.rooms["R1"].priority == 1.0
     assert a.rooms["R1"].evenness == 0.0
     fresh = build(rooms=ref_rooms(), sections=ref_sections(), kp=1.0, ki=0.0)
@@ -463,7 +500,7 @@ def test_returned_copies_do_not_reach_the_controller() -> None:
     assert a.sections is not a.sections
     assert a.duty is not a.duty
     assert snapshot(a) == before
-    assert a.sections["HS2"]["R1"] == 0.5
+    assert a.sections["HS2"]["R1"] == 0.3
 
 
 def test_room_does_not_expose_the_pi_controller_surface() -> None:
@@ -477,7 +514,7 @@ def test_to_dict_containers_are_fresh_and_do_not_reach_back() -> None:
     a.update(meas(0.1, 0.6, 0.0))
     d = a.to_dict()
     d["sections"]["HS1"]["history"].append(1.0)  # type: ignore[index]  # object-typed snapshot
-    d["sections"]["HS1"]["shares"]["R1"] = 0.1  # type: ignore[index]  # object-typed snapshot
+    d["sections"]["HS1"]["coverage"]["R1"] = 0.1  # type: ignore[index]  # object-typed snapshot
     d["rooms"]["R1"]["kp"] = 99.0  # type: ignore[index]  # object-typed snapshot
     assert a.to_dict() != d
     assert a.to_dict() == ref_after_one_update()
@@ -886,11 +923,13 @@ def test_evenness_survives_a_subnormal_priority(
     priority: float, evenness: float
 ) -> None:
     """Regression: priority * evenness underflowed to 0 and dropped the spread rows."""
-    sections = {"HS1": {"R1": 1.0}, "HS2": {"R1": 0.5}}
+    # Two equal coverages: the room's heat is the mean duty, so demand 0.6 is
+    # met exactly (and with zero spread) only by 0.6 on both.
+    sections = {"HS1": {"R1": 0.5}, "HS2": {"R1": 0.5}}
     a = SectionAllocator(one_room(priority, evenness), sections, kp=1.0, ki=0.0)
     got = a._allocate({"R1": 0.6})
-    assert got["HS1"] == pytest.approx(0.4, abs=1e-9)
-    assert got["HS2"] == pytest.approx(0.4, abs=1e-9)
+    assert got["HS1"] == pytest.approx(0.6, abs=1e-9)
+    assert got["HS2"] == pytest.approx(0.6, abs=1e-9)
 
 
 @pytest.mark.parametrize("priority", [1.0, 0.5, 1e-300, 5e-324])
@@ -912,9 +951,13 @@ def test_tiny_positive_evenness_is_floored_not_dropped(evenness: float) -> None:
     component = next(c for c in a._components if c.matrix is not None)
     assert component.matrix is not None
     assert component.matrix.shape[0] == 2 + 2  # two fit rows, two spread rows
-    got = a._allocate({"R1": 0.1, "R2": 0.6, "R3": 0.0})
+    # R1: 0.7 u1 + 0.3 u2 = 0.1 and R2: 0.3 u2 + 0.7 u3 = 0.3 leave the exact
+    # fits u1 = (0.1 - 0.3 t) / 0.7, u2 = t; the spread of R1 is least at
+    # u1 = u2 = 0.1 (t = 0.1), and then u3 = (0.3 - 0.03) / 0.7.
+    got = a._allocate({"R1": 0.1, "R2": 0.3, "R3": 0.0})
     assert got["HS1"] == pytest.approx(got["HS2"], abs=1e-6)
-    assert got["HS1"] == pytest.approx(1 / 15, abs=1e-6)
+    assert got["HS1"] == pytest.approx(0.1, abs=1e-6)
+    assert got["HS3"] == pytest.approx(0.27 / 0.7, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -928,7 +971,7 @@ def test_tiny_positive_evenness_is_floored_not_dropped(evenness: float) -> None:
         (0.1, 0.6, 0.0),
         (0.3, 0.8, 0.5),
         (0.0, 0.0, 0.0),
-        (0.9, 0.2, 1.0),
+        (0.9, 0.2, 1.0),  # 0.7 u1 + 0.3 u2 = 0.9 with u2 = 2/3, u3 = 0
         (1.0, 1.0, 1.0),
     ],
 )
@@ -952,7 +995,7 @@ def test_the_documented_example_meets_both_demands_exactly() -> None:
 
 def test_a_chain_of_three_rooms_meets_feasible_demands() -> None:
     rooms = {f"R{i}": {"priority": 1.0, "evenness": 0.0} for i in (1, 2, 3)}
-    sections = {
+    sections = {  # every room's coverages sum to exactly 1
         "S1": {"R1": 0.5, "R2": 0.5},
         "S2": {"R2": 0.5, "R3": 0.5},
         "S3": {"R1": 0.5},
@@ -974,34 +1017,37 @@ def test_a_long_feasible_chain_is_solved_within_the_iteration_budget() -> None:
     sections: dict[str, dict[str, float]] = {}
     for i in range(n - 1):
         sections[f"S{i}"] = {f"R{i}": 0.5, f"R{i + 1}": 0.5}
-    sections[f"S{n - 1}"] = {f"R{n - 1}": 1.0}
+    sections[f"S{n - 1}"] = {f"R{n - 1}": 0.5}
+    a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
     u = {name: 0.1 + 0.4 * ((i * 7) % 11) / 10 for i, name in enumerate(sections)}
     demand = {
-        r: sum(shares.get(r, 0.0) * u[s] for s, shares in sections.items())
+        r: sum(coef(a, s, r) * u[s] for s in sections if r in sections[s])
         for r in rooms
     }
-    a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
     got = a._allocate(demand)
     for room in rooms:
-        d = sum(shares.get(room, 0.0) * got[s] for s, shares in sections.items())
+        d = sum(coef(a, s, room) * got[s] for s in sections if room in sections[s])
         assert d == pytest.approx(demand[room], abs=1e-9)
 
 
-@pytest.mark.parametrize(("demand", "duty"), [(0.0, 0.0), (0.3, 0.6), (0.6, 1.0)])
-def test_closed_form_component_gives_min_of_one_and_demand_over_share(
+@pytest.mark.parametrize(
+    ("demand", "duty"), [(0.0, 0.0), (0.3, 0.3), (0.6, 0.6), (1.0, 1.0)]
+)
+def test_closed_form_component_gives_min_of_one_and_the_demand(
     demand: float, duty: float
 ) -> None:
+    """A lone section's normalised coefficient is 1, whatever its coverage."""
     a = SectionAllocator(one_room(), {"S": {"R1": 0.5}}, kp=1.0, ki=0.0)
     a.update({"R1": SETPOINT - demand})
     assert a.duty is not None
     assert a.duty["S"] == pytest.approx(duty, abs=1e-12)
-    assert allocate(a, R1=demand)["S"] == min(1.0, demand / 0.5)
+    assert allocate(a, R1=demand)["S"] == min(1.0, demand)
 
 
 def test_closed_form_gives_exact_values_for_exact_demands() -> None:
     a = SectionAllocator(one_room(), {"S": {"R1": 0.5}}, kp=1.0, ki=0.0)
     assert allocate(a, R1=0.0) == {"S": 0.0}
-    assert allocate(a, R1=0.25) == {"S": 0.5}
+    assert allocate(a, R1=0.25) == {"S": 0.25}
     assert allocate(a, R1=1.0) == {"S": 1.0}
 
 
@@ -1030,7 +1076,7 @@ def test_shared_components_use_least_squares_not_the_closed_form(
     assert len(calls) == 2  # R3's component is closed form: no third call
     # A room with two sections and nobody else.
     one = SectionAllocator(
-        one_room(), {"A": {"R1": 1.0}, "B": {"R1": 0.5}}, kp=1.0, ki=0.0
+        one_room(), {"A": {"R1": 0.5}, "B": {"R1": 0.5}}, kp=1.0, ki=0.0
     )
     one._allocate({"R1": 0.3})
     assert len(calls) == 3
@@ -1051,16 +1097,18 @@ def test_single_shared_section_weights_fit_rows_by_square_root_priority() -> Non
         "R2": {"priority": 0.25, "evenness": 0.0},
         "R3": {"priority": 1.0, "evenness": 0.0},
     }
-    third = 1 / 3
+    third = 1 / 3  # each room's only section: its normalised coefficient is 1
     sections = {"HS": {"R1": third, "R2": third, "R3": third}}
     weighted = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
     got = weighted._allocate({"R1": 0.1, "R2": 0.2, "R3": 0.3})
-    assert got["HS"] == pytest.approx(0.75, abs=1e-9)
+    # u = (0.25 * 0.1 + 0.25 * 0.2 + 1.0 * 0.3) / (0.25 + 0.25 + 1.0) = 0.25
+    assert got["HS"] == pytest.approx(0.25, abs=1e-9)
     for room in rooms.values():
         room["priority"] = 1.0
     equal = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
     assert equal._allocate({"R1": 0.1, "R2": 0.2, "R3": 0.3})["HS"] == pytest.approx(
-        0.6, abs=1e-9
+        0.2,
+        abs=1e-9,  # the mean demand
     )
 
 
@@ -1075,13 +1123,22 @@ def test_duplicate_sections_make_a_rank_deficient_matrix_that_still_solves() -> 
     assert all(0.0 <= v <= 1.0 for v in compromise.values())
 
 
-def test_tiny_shares_stay_finite_and_in_range() -> None:
+def test_tiny_coverages_stay_finite_and_in_range() -> None:
     rooms = {k: ref_rooms()[k] for k in ("R1", "R2")}
     sections = {"HS1": {"R1": 1e-300, "R2": 1e-300}, "HS2": {"R1": 1.0}}
-    # R2's only section is HS1, whose share is 1e-300: R2's demand is unreachable.
+    # R2's only section is HS1: normalised, its coefficient is 1, so R2's demand
+    # is reachable however small the coverage; R1 gets 1e-300 from HS1.
     a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
     got = a._allocate({"R1": 0.5, "R2": 0.5})
     assert all(math.isfinite(v) and 0.0 <= v <= 1.0 for v in got.values())
+    assert got["HS1"] == pytest.approx(0.5, abs=1e-9)
+    assert got["HS2"] == pytest.approx(0.5, abs=1e-9)
+    # With a second R2 section the tiny coverage really is negligible.
+    more = {**sections, "HS3": {"R2": 1.0}}
+    b = SectionAllocator(rooms, more, kp=1.0, ki=0.0)
+    got = b._allocate({"R1": 0.5, "R2": 0.5})
+    assert all(math.isfinite(v) and 0.0 <= v <= 1.0 for v in got.values())
+    assert got["HS3"] == pytest.approx(0.5, abs=1e-9)
     assert got["HS2"] == pytest.approx(0.5, abs=1e-9)
 
 
@@ -1128,17 +1185,17 @@ def test_feasible_demands_survive_an_extreme_priority_ratio(
 def test_one_room_two_sections_with_evenness_gives_equal_duties(
     priority: float, evenness: float
 ) -> None:
-    sections = {"HS1": {"R1": 1.0}, "HS2": {"R1": 0.5}}
+    sections = {"HS1": {"R1": 0.5}, "HS2": {"R1": 0.5}}
     a = SectionAllocator(one_room(priority, evenness), sections, kp=1.0, ki=0.0)
     got = a._allocate({"R1": 0.6})
-    assert got["HS1"] == pytest.approx(0.4, abs=1e-9)
-    assert got["HS2"] == pytest.approx(0.4, abs=1e-9)
+    assert got["HS1"] == pytest.approx(0.6, abs=1e-9)
+    assert got["HS2"] == pytest.approx(0.6, abs=1e-9)
 
 
 @pytest.mark.parametrize("evenness", [0.0, 1.0, math.nextafter(1.0, 0.0), 5e-324])
 def test_evenness_of_a_single_section_room_is_inert(evenness: float) -> None:
     rooms = ref_rooms(e2=evenness)
-    sections = {"HS1": {"R1": 1.0}, "HS2": {"R1": 0.5, "R2": 0.5}}
+    sections = {"HS1": {"R1": 0.7}, "HS2": {"R1": 0.3, "R2": 0.3}}
     a = SectionAllocator(rooms, {**sections, "HS4": {"R3": 1.0}}, kp=1.0, ki=0.0)
     base = SectionAllocator(
         ref_rooms(), {**sections, "HS4": {"R3": 1.0}}, kp=1.0, ki=0.0
@@ -1176,8 +1233,11 @@ def test_the_higher_priority_room_ends_with_the_smaller_mismatch() -> None:
     a = shared_only(1.0, 0.5)
     a.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
     assert a.duty is not None
-    assert a.duty["HS1"] == pytest.approx(2 / 3, abs=1e-9)
+    # A lone shared section has coefficient 1 for both rooms:
+    # u = (1.0 * 0.2 + 0.5 * 0.6) / 1.5 = 1 / 3.
+    assert a.duty["HS1"] == pytest.approx(1 / 3, abs=1e-9)
     assert mismatch(a, "R1", 0.2) == pytest.approx(1 / 3 - 0.2, abs=1e-9)
+    assert mismatch(a, "R2", 0.6) == pytest.approx(0.6 - 1 / 3, abs=1e-9)
     assert mismatch(a, "R1", 0.2) < mismatch(a, "R2", 0.6)
     b = shared_only(0.5, 1.0)
     b.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
@@ -1204,8 +1264,18 @@ def counterexample_allocator(p1: float, e1: float) -> SectionAllocator:
         "R2": {"priority": 1.0, "evenness": 0.0},
         "R3": {"priority": 1.0, "evenness": 0.0},
     }
-    sections = {"HS1": {"R1": 0.5, "R2": 0.5}, "HS2": {"R1": 0.5, "R3": 0.5}}
+    # HS3 and HS4 are held shut, so R2 and R3 get half of their floor heating
+    # from HS1 and HS2 and nothing from the held sections: coefficients 0.5,
+    # as in 1.0.0's counterexample.
+    sections = {
+        "HS1": {"R1": 0.5, "R2": 0.5},
+        "HS2": {"R1": 0.5, "R3": 0.5},
+        "HS3": {"R2": 0.5},
+        "HS4": {"R3": 0.5},
+    }
     a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
+    a.hold("HS3", 0.0)
+    a.hold("HS4", 0.0)
     a.update({"R1": 20.5, "R2": 20.0, "R3": 21.0})  # demands 0.5 / 1.0 / 0.0
     return a
 
@@ -1214,8 +1284,8 @@ def room_cost(
     a: SectionAllocator, u: Mapping[str, float], room: str, demand: float
 ) -> float:
     """A5's per-room quantity: |d - h|^2 + evenness * spread (no priority factor)."""
-    serving = [s for s, shares in a.sections.items() if room in shares]
-    heat = sum(a.sections[s][room] * u[s] for s in serving)
+    serving = [s for s, covered in a.sections.items() if room in covered]
+    heat = sum(coef(a, s, room) * u[s] for s in serving)
     mean = sum(u[s] for s in serving) / len(serving)
     squares = sum((u[s] - mean) ** 2 for s in serving)
     return (demand - heat) ** 2 + a.rooms[room].evenness * squares
@@ -1308,18 +1378,40 @@ def test_priority_sweep_is_monotone_for_both_rooms_on_a_shared_section(
 def test_documented_exception_saturated_section_ties_the_mismatches() -> None:
     # Demands 0 and 1 on one shared section: the duty saturates at 1, so the
     # lower-priority room's mismatch equals the higher-priority room's.
-    a = shared_only(0.5, 1.0)
+    # It needs coefficients below 1 (a lone shared section has 1 for both
+    # rooms and never saturates with a mismatch), so each room's other half is
+    # covered by a section held shut.
+    rooms = {
+        "R1": {"priority": 0.5, "evenness": 0.0},
+        "R2": {"priority": 1.0, "evenness": 0.0},
+    }
+    sections = {
+        "HS1": {"R1": 0.5, "R2": 0.5},
+        "HS2": {"R1": 0.5},
+        "HS3": {"R2": 0.5},
+    }
+    a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
+    a.hold("HS2", 0.0)
+    a.hold("HS3", 0.0)
     a.update({"R1": SETPOINT - 0.0, "R2": SETPOINT - 1.0})
-    assert a.duty == {"HS1": 1.0}
+    assert a.duty == {"HS1": 1.0, "HS2": 0.0, "HS3": 0.0}
     assert mismatch(a, "R1", 0.0) == pytest.approx(mismatch(a, "R2", 1.0), abs=1e-9)
 
 
-def test_documented_exception_unequal_shares_favour_the_larger_share() -> None:
+def test_documented_exception_unequal_coverage_favours_the_larger_coverage() -> None:
+    """HS1 gives R1 20 % and R2 80 % of their floor.
+
+    The rest of each room is covered by a section held shut, so the
+    coefficients are 0.2 and 0.8 as in 1.0.0's unequal-share conflict.
+    """
     rooms = {
         "R1": {"priority": 1.0, "evenness": 0.0},
         "R2": {"priority": 0.5, "evenness": 0.0},
     }
-    a = SectionAllocator(rooms, {"HS1": {"R1": 0.2, "R2": 0.8}}, kp=1.0, ki=0.0)
+    sections = {"HS1": {"R1": 0.2, "R2": 0.8}, "HS2": {"R1": 0.8}, "HS3": {"R2": 0.2}}
+    a = SectionAllocator(rooms, sections, kp=1.0, ki=0.0)
+    a.hold("HS2", 0.0)
+    a.hold("HS3", 0.0)
     a.update({"R1": SETPOINT - 1.0, "R2": SETPOINT - 0.0})
     assert mismatch(a, "R1", 1.0) == pytest.approx(0.8889, abs=1e-4)
     assert mismatch(a, "R2", 0.0) == pytest.approx(0.4444, abs=1e-4)
@@ -1348,10 +1440,10 @@ def three_section_layout() -> tuple[
     dict[str, dict[str, float]], dict[str, dict[str, float]]
 ]:
     sections = {
-        "HS1": {"R1": 1.0},
-        "HS2": {"R1": 0.5, "R2": 0.5},
-        "HS3": {"R1": 0.5},
-        "HS4": {"R2": 1.0},
+        "HS1": {"R1": 0.4},
+        "HS2": {"R1": 0.3, "R2": 0.5},
+        "HS3": {"R1": 0.3},
+        "HS4": {"R2": 0.5},
     }
     return {k: ref_rooms()[k] for k in ("R1", "R2")}, sections
 
@@ -1390,11 +1482,13 @@ def test_raising_evenness_never_widens_the_spread_of_a_three_section_room(
 
 def test_three_section_spread_is_the_sum_of_squares_about_the_mean() -> None:
     # One room, three sections, demand 0.3: with strong evenness all duties
-    # equalise at demand / (sum of shares) = 0.3 / 1.5 = 0.2, spread 0.
-    sections = {"A": {"R1": 0.5}, "B": {"R1": 0.5}, "C": {"R1": 0.5}}
+    # equalise at demand / (sum of normalised coefficients) = 0.3 / 1 = 0.3,
+    # spread 0.
+    third = 1 / 3
+    sections = {"A": {"R1": third}, "B": {"R1": third}, "C": {"R1": third}}
     strong = SectionAllocator(one_room(1.0, 1.0), sections, kp=1.0, ki=0.0)
     got = strong._allocate({"R1": 0.3})
-    assert list(got.values()) == pytest.approx([0.2, 0.2, 0.2], abs=1e-9)
+    assert list(got.values()) == pytest.approx([0.3, 0.3, 0.3], abs=1e-9)
     # Hand-computed: evenness 0, two dedicated sections: spread of (1.0, 0.0).
     # Pin the metric: sum((u - mean)^2) = 0.5 for u = (1, 0).
     values = [1.0, 0.0]
@@ -1409,9 +1503,11 @@ def test_hungry_r2_with_r1_evenness_meets_both_demands_evenly() -> None:
     even.update(meas(0.1, 0.6, 0.0))
     assert even.duty is not None
     assert even.duty["HS1"] > 0.0
-    assert even.duty["HS1"] == pytest.approx(1 / 15, abs=1e-9)
-    assert even.duty["HS2"] == pytest.approx(1 / 15, abs=1e-9)
-    assert even.duty["HS3"] == pytest.approx(17 / 30, abs=1e-9)
+    # Exact fits are u1 = (0.1 - 0.3 t) / 0.7, u2 = t, u3 = (0.6 - 0.3 t) / 0.7;
+    # R1's spread (u1 - u2)^2 / 2 vanishes at t = 0.1.
+    assert even.duty["HS1"] == pytest.approx(0.1, abs=1e-9)
+    assert even.duty["HS2"] == pytest.approx(0.1, abs=1e-9)
+    assert even.duty["HS3"] == pytest.approx(0.57 / 0.7, abs=1e-9)
     assert delivered(even, "R1") == pytest.approx(0.1, abs=1e-9)
     assert delivered(even, "R2") == pytest.approx(0.6, abs=1e-9)
     assert plain.duty is not None
@@ -1426,12 +1522,13 @@ def test_evenness_on_a_shared_section_is_a_real_trade_off() -> None:
     a = ref(e1=1.0, e2=1.0)
     a.update(meas(0.1, 0.6, 0.0))
     assert a.duty is not None
-    assert a.duty["HS1"] == pytest.approx(0.067, abs=1e-3)
-    assert a.duty["HS2"] == pytest.approx(0.233, abs=1e-3)
-    assert a.duty["HS3"] == pytest.approx(0.400, abs=1e-3)
-    assert delivered(a, "R2") == pytest.approx(0.517, abs=1e-3)
+    # Hand-solved stationarity (u2 = 0.35, r1 = -r2 = -25 / 198):
+    assert a.duty["HS1"] == pytest.approx(34.3 / 198, abs=1e-6)
+    assert a.duty["HS2"] == pytest.approx(0.35, abs=1e-6)
+    assert a.duty["HS3"] == pytest.approx(104.3 / 198, abs=1e-6)
+    assert delivered(a, "R2") == pytest.approx(0.35 + 0.98 * 25 / 198, abs=1e-6)
     assert delivered(a, "R2") < 0.6 - 0.05
-    assert delivered(a, "R1") == pytest.approx(0.183, abs=1e-3)
+    assert delivered(a, "R1") == pytest.approx(0.35 - 0.98 * 25 / 198, abs=1e-6)
     assert delivered(a, "R1") > 0.1 + 0.05
 
 
@@ -1511,18 +1608,22 @@ def test_a_single_room_single_section_allocator_matches_the_standalone_controlle
     assert a.history["HS1"] == twin.history
 
 
-def test_equivalence_needs_a_dedicated_share_of_one() -> None:
-    """With a dedicated share of 0.5 the section runs twice the demand."""
+@pytest.mark.parametrize("coverage", [0.5, 0.3, 1.0, 1e-9, 1.0 - 1e-12])
+def test_equivalence_holds_for_a_dedicated_coverage_of_any_size(
+    coverage: float,
+) -> None:
+    """A lone section's coverage is normalised away: 0.5 runs as 1.0 does."""
     half = SectionAllocator(
-        one_room(), {"HS1": {"R1": 0.5}}, kp=1.0, ki=0.0, history_length=24
+        one_room(), {"HS1": {"R1": coverage}}, kp=1.0, ki=0.0, history_length=24
     )
     full = SectionAllocator(
         one_room(), {"HS1": {"R1": 1.0}}, kp=1.0, ki=0.0, history_length=24
     )
-    for _ in range(24):
-        half.update({"R1": SETPOINT - 0.3})
-        full.update({"R1": SETPOINT - 0.3})
-    assert sum(half.history["HS1"]) > sum(full.history["HS1"])
+    for _ in range(48):
+        assert half.update({"R1": SETPOINT - 0.3}) == full.update(
+            {"R1": SETPOINT - 0.3}
+        )
+    assert half.history["HS1"] == full.history["HS1"]
 
 
 def test_other_rooms_do_not_leak_into_a_dedicated_rooms_duty() -> None:
@@ -1599,8 +1700,9 @@ def test_to_dict_has_exactly_the_documented_shape_and_order() -> None:
     sections = d["sections"]
     assert isinstance(sections, dict)
     assert list(sections) == ["HS1", "HS2", "HS3", "HS4"]
-    assert list(sections["HS2"]) == ["shares", "history"]
-    assert sections["HS2"]["shares"] == {"R1": 0.5, "R2": 0.5}
+    assert list(sections["HS2"]) == ["coverage", "history", "hold"]
+    assert sections["HS2"]["coverage"] == {"R1": 0.3, "R2": 0.3}
+    assert sections["HS2"]["hold"] is None
     assert isinstance(sections["HS2"]["history"], list)
     assert rooms["R1"]["evenness"] == 0.1
     assert json.loads(json.dumps(d)) == d
@@ -1785,19 +1887,49 @@ def _without(path: list[object]) -> dict[str, object]:
             re.escape("sections['HS1']: ") + ".*history",
         ),
         (
-            _mutated(["sections", "HS1", "shares"], []),
+            _mutated(["sections", "HS1", "coverage"], []),
             TypeError,
-            re.escape("sections['HS1']['shares'] must be a mapping"),
+            re.escape("sections['HS1']['coverage'] must be a mapping"),
         ),
         (
-            _mutated(["sections", "HS1", "shares"], {"R1": 0}),
+            _mutated(["sections", "HS1", "coverage"], {"R1": 0}),
             ValueError,
             re.escape("sections['HS1']['R1']"),
         ),
         (
-            _mutated(["sections", "HS1", "shares"], {"RX": 1.0}),
+            _mutated(["sections", "HS1", "coverage"], {"RX": 1.0}),
             ValueError,
             "'RX'",
+        ),
+        (
+            _mutated(["sections", "HS1", "hold"], float("nan")),
+            ValueError,
+            re.escape("sections['HS1'].hold"),
+        ),
+        (
+            _mutated(["sections", "HS1", "hold"], 1.5),
+            ValueError,
+            re.escape("sections['HS1'].hold"),
+        ),
+        (
+            _mutated(["sections", "HS1", "hold"], True),
+            TypeError,
+            re.escape("sections['HS1'].hold"),
+        ),
+        (
+            _mutated(["sections", "HS1", "hold"], "x"),
+            TypeError,
+            re.escape("sections['HS1'].hold"),
+        ),
+        (
+            _mutated(["sections", "HS1", "hold"], 10**400),
+            OverflowError,
+            re.escape("sections['HS1'].hold"),
+        ),
+        (
+            _without(["sections", "HS1", "hold"]),
+            ValueError,
+            re.escape("sections['HS1']: ") + ".*hold",
         ),
         (
             _mutated(["sections", "HS2", "history"], [0.0] * 5),
@@ -1844,9 +1976,19 @@ def test_from_dict_reports_a_missing_key_before_an_unknown_one() -> None:
 
 
 def test_from_dict_gives_the_same_errors_as_the_constructor_for_the_layout() -> None:
-    data = _mutated(["sections", "HS2", "shares"], {"R1": 0.9, "R2": 0.9})
-    with pytest.raises(ValueError, match=re.escape("sections['HS2'] shares must sum")):
+    data = _mutated(["sections", "HS2", "coverage"], {"R1": 0.9, "R2": 0.9})
+    with pytest.raises(ValueError, match=re.escape("rooms['R1'] coverages sum to")):
         SectionAllocator.from_dict(data)
+
+
+def test_from_dict_refuses_a_1_0_0_snapshot_naming_the_missing_keys() -> None:
+    data = ref(history_length=4).to_dict()
+    entry = data["sections"]["HS1"]  # type: ignore[index]  # object-typed snapshot
+    old = {"shares": entry["coverage"], "history": entry["history"]}
+    data["sections"]["HS1"] = old  # type: ignore[index]  # object-typed snapshot
+    with pytest.raises(ValueError, match=re.escape("sections['HS1']: ")) as caught:
+        SectionAllocator.from_dict(data)
+    assert "['coverage', 'hold']" in str(caught.value)
 
 
 def test_from_dict_rejects_a_room_no_section_covers() -> None:
@@ -1988,8 +2130,8 @@ def cost(
     """A10's J written independently from a layout's public surface."""
     total = 0.0
     for name, room in a.rooms.items():
-        serving = [s for s, shares in a.sections.items() if name in shares]
-        heat = sum(a.sections[s][name] * u[s] for s in serving)
+        serving = [s for s, covered in a.sections.items() if name in covered]
+        heat = sum(coef(a, s, name) * u[s] for s in serving)
         total += room.priority * (demand[name] - heat) ** 2
         if len(serving) > 1:
             mean = sum(u[s] for s in serving) / len(serving)
@@ -2009,12 +2151,12 @@ def gradient(
     top = max(room.priority for room in a.rooms.values())
     grad = {s: 0.0 for s in a.sections}
     for name, room in a.rooms.items():
-        serving = [s for s, shares in a.sections.items() if name in shares]
-        heat = sum(a.sections[s][name] * u[s] for s in serving)
+        serving = [s for s, covered in a.sections.items() if name in covered]
+        heat = sum(coef(a, s, name) * u[s] for s in serving)
         mean = sum(u[s] for s in serving) / len(serving)
         for s in serving:
             grad[s] += (
-                -2 * (room.priority / top) * (demand[name] - heat) * a.sections[s][name]
+                -2 * (room.priority / top) * (demand[name] - heat) * coef(a, s, name)
             )
             if len(serving) > 1:
                 grad[s] += 2 * (room.priority / top) * room.evenness * (u[s] - mean)
@@ -2023,11 +2165,14 @@ def gradient(
 
 A12_CASES = {
     # name: (demands R1/R2, p1, p2, e1, e2, (HS1, HS2, HS3))
-    "B": ((0.1, 0.6), 1.0, 1.0, 0.1, 0.0, (1 / 15, 1 / 15, 17 / 30)),
-    "C": ((0.1, 0.6), 1.0, 1.0, 1.0, 1.0, (1 / 15, 7 / 30, 0.4)),
-    "D": ((0.1, 0.6), 1.0, 1.0, 1.0, 0.1, (0.067, 0.108, 0.525)),
-    "E": ((0.1, 0.6), 0.3, 1.0, 1.0, 1.0, (0.067, 0.323, 0.400)),
-    "G": ((0.3, 1.0), 1.0, 1.0, 0.1, 0.0, (0.2, 0.2, 0.9)),
+    # Recomputed for coverages 0.7 / 0.3 and 0.3 / 0.7 by an exhaustive
+    # active-set solve of J, independent of the allocator (B and C also by
+    # hand, see the hungry-R2 and trade-off tests).
+    "B": ((0.1, 0.6), 1.0, 1.0, 0.1, 0.0, (0.1, 0.1, 0.81428571)),
+    "C": ((0.1, 0.6), 1.0, 1.0, 1.0, 1.0, (0.17323232, 0.35, 0.52676768)),
+    "D": ((0.1, 0.6), 1.0, 1.0, 1.0, 0.1, (0.12269171, 0.17746479, 0.72519562)),
+    "E": ((0.1, 0.6), 0.3, 1.0, 1.0, 1.0, (0.21266511, 0.48461538, 0.56620047)),
+    "G": ((0.3, 1.0), 1.0, 1.0, 0.1, 0.0, (0.19776876, 0.64503043, 1.0)),
 }
 
 
@@ -2092,10 +2237,14 @@ def random_layout(
                 str(r): float(max(w, 1e-3))
                 for r, w in zip(covered, weights, strict=True)
             }
-        if any(sum(shares.values()) > 1.0 for shares in sections.values()):
+        if not all(any(r in covered for covered in sections.values()) for r in names):
             continue
-        if not all(any(r in shares for shares in sections.values()) for r in names):
-            continue
+        for r in names:  # a room's coverages sum to at most 1
+            total = math.fsum(c[r] for c in sections.values() if r in c)
+            if total > 1.0:
+                for covered in sections.values():
+                    if r in covered:
+                        covered[r] /= total
         demand = {n: float(rng.choice([0.0, 1.0, rng.random()])) for n in names}
         return SectionAllocator(rooms, sections, kp=1.0, ki=0.0), demand
 
@@ -2169,7 +2318,7 @@ def test_the_higher_priority_room_ends_with_an_exact_mismatch_ratio() -> None:
     a = SectionAllocator(rooms, {"HS1": {"R1": 0.5, "R2": 0.5}}, kp=1.0, ki=0.0)
     a.update({"R1": SETPOINT - 0.2, "R2": SETPOINT - 0.6})
     assert a.duty is not None
-    assert a.duty["HS1"] == pytest.approx(0.56, abs=1e-9)
+    assert a.duty["HS1"] == pytest.approx(0.28, abs=1e-9)  # (0.8 * 0.2 + 0.2 * 0.6)
     assert mismatch(a, "R1", 0.2) == pytest.approx(0.08, abs=1e-9)
     assert mismatch(a, "R2", 0.6) == pytest.approx(0.32, abs=1e-9)
     assert mismatch(a, "R1", 0.2) / mismatch(a, "R2", 0.6) == pytest.approx(0.25)
@@ -2204,7 +2353,7 @@ def test_a_dedicated_share_one_room_matches_the_standalone_controller_in_a_confl
 def test_main_runs_and_reports_each_section(capsys: pytest.CaptureFixture[str]) -> None:
     allocator_module.main()
     out = capsys.readouterr().out
-    assert "Hungry R2" in out
+    assert "Example E1" in out
     assert "Snapshot round trip" in out
     assert "Invalid layout" in out
 
