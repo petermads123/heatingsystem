@@ -144,13 +144,14 @@ python test.py
 
 `hs.SectionAllocator` controls on/off heating sections that may each heat more than one
 room. It is built once from a fixed layout: rooms with a priority (in `(0, 1]`, 1 = most important, only ratios matter) and an evenness
-weight (in `[0, 1]`), and sections with the share of their heat that reaches each room they cover. Each `update`
+weight (in `[0, 1]`), and sections with their **coverage** of each room they serve: the
+fraction of that room's floor heating the section provides, in `(0, 1]`. Each `update`
 takes one temperature per room and returns a `0.0`/`1.0` command per section.
 
 ```python
 import heatingsystem as hs
 
-# HS2 gives half its heat to R1 and half to R2. Evenness 0 means that room's floor
+# HS2 provides 30 % of R1's floor and 30 % of R2's. Evenness 0 means that room's floor
 # evenness does not matter; a weight above 0 pulls its sections' duty cycles together
 # (it counts as priority x evenness, so 1 prices an uneven floor like a temperature miss).
 rooms = {
@@ -158,9 +159,9 @@ rooms = {
     "R2": {"priority": 1.0, "evenness": 0.0},
 }
 sections = {
-    "HS1": {"R1": 1.0},
-    "HS2": {"R1": 0.5, "R2": 0.5},
-    "HS3": {"R2": 1.0},
+    "HS1": {"R1": 0.7},
+    "HS2": {"R1": 0.3, "R2": 0.3},
+    "HS3": {"R2": 0.7},
 }
 allocator = hs.SectionAllocator(rooms, sections, kp=0.3, ki=0.015, setpoint=21.0)
 
@@ -173,16 +174,40 @@ print(allocator.rooms["R2"].demand)  # last PI demand of R2
 allocator.rooms["R1"].setpoint = 19.0
 allocator.rooms["R1"].kp = 0.5
 
-# Snapshot and restore, as for PIController.
+# Hold a section at a fixed level (relay locked open or shut, pump lock, ...);
+# the other sections compensate. None releases it.
+allocator.hold("HS1", 0.0)
+print(allocator.holds)  # {"HS1": 0.0, "HS2": None, "HS3": None}
+allocator.hold("HS1", None)
+
+# Snapshot and restore, as for PIController; holds are part of the snapshot.
 state = allocator.to_dict()
 allocator = hs.SectionAllocator.from_dict(state)
 ```
 
-The layout (rooms, priorities, evenness weights, shares) cannot change after construction;
-build a new allocator instead, which from Home Assistant's side is a full reset. A section's
-shares may sum to less than 1 (the rest heats something unmeasured) but not more. A room
-that has exactly one dedicated section behaves like a standalone floor-heating
-`PIController`.
+**Coverage.** `sections[s][r]` is the fraction of room `r`'s floor heating that section `s`
+provides. A room's coverages must sum to at most 1 (tolerance 1e-9); a section may cover
+several rooms with any sum. What a room's sections do not cover (the other half of a room
+only half served, say) is an outside disturbance like the weather. Internally each room's
+coverages are normalised by its total, so a demand of 1.0 means "every loop of this room
+fully on", and a small section can never be believed to heat a whole room. A room served
+by one section of any coverage behaves like a standalone floor-heating `PIController`.
+`allocator.sections` returns the coverages as you gave them, not normalised. Snapshots
+from 1.0.0 (where `sections[s][r]` was the share of the section's heat reaching the room, and
+the snapshot key was `shares`) are refused, not misread.
+
+**Holds.** `hold(section, level)` fixes a section's duty at `level` in `[0, 1]` (validated like
+`PIController.fixed_output`); `hold(section, None)` releases it, and `holds` reports every
+section's level or `None`. A held section's duty is its level at every `update`; its commands
+are the floor-heating modulation of that level (exactly the level for 0.0 and 1.0, a 0/1
+pattern averaging the level over the window otherwise) and its window records them. The free
+sections are solved with the held contribution subtracted, and a group of sections that are
+all held calls no solver. Every room's PI keeps running during a hold, as `PIController` does
+under `fixed_output`: a room that stays cold while a section is held keeps integrating, so on
+**release** the next `update` can show a demand burst. Nothing in `update` changes a hold.
+
+The layout (rooms, priorities, evenness weights, coverages) cannot change after construction;
+build a new allocator instead, which from Home Assistant's side is a full reset.
 
 ## Layout
 

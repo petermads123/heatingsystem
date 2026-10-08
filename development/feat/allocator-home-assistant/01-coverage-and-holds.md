@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — coverage and holds
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
@@ -300,6 +300,39 @@ plan-critic (verdict: accept with changes; E1–E5 independently recomputed and 
 ---
 
 ## 3. Implementation notes
+
+No deviation from the Public API table; every signature is as planned.
+
+- `allocator.py`: `_build_shares` became `_build_coverage` (per-entry checks and paths only) and a
+  new private `_normalise` runs after the uncovered-room check, in room order, raising the per-room
+  sum error and returning the table `c / total` that the components are built from. `_Component`
+  lost `share`. `_allocate` reads holds from the section modulators (`self.holds`), subtracts
+  `matrix[:, held] * level` from `b` and solves `matrix[:, free]` with `max_iter = 20 * len(free)`;
+  an all-held component skips the solver. `hold`/`holds`, the snapshot keys and the rebuilt `main()` are
+  as specified; `from_dict` validates `hold` (`_validation.level("hold", ...)`, prefixed with
+  `sections['HS1'].`) before `Modulator._from_dict`.
+- `pyproject.toml` 1.1.0; README "SectionAllocator usage" rewritten (coverage, normalisation, holds,
+  burst after release, 1.0.0 snapshots refused); `STRUCTURE.md` allocator entry and test summary.
+- Test migration (`tests/test_allocator.py`, 661 passing). New reference layout HS1 {R1 0.7},
+  HS2 {R1 0.3, R2 0.3}, HS3 {R2 0.7}, HS4 {R3 1.0}; helper `coef` (coverage over room total) written
+  from the public `sections` only. Expected numbers are hand-derived (closed forms, hungry-R2, trade-off C)
+  or from an independent exhaustive active-set solve of J (examples B-G), never read from the allocator.
+  Replaced by intent: the per-section share-sum tests became per-room-sum tests (room and sum named, first
+  room in room order, several-room section above 1 accepted, float-error sums, 1e-9 boundary on a room);
+  `test_equivalence_needs_a_dedicated_share_of_one` became "any dedicated coverage (0.5, 0.3, 1.0, 1e-9,
+  1 - 1e-12) gives the identical command sequence". Lone shared sections now have coefficient 1 for both
+  rooms, so the numbers of the closed form (`min(1, demand)`), the weighted/equal single-section tests,
+  the exact-ratio test and the two-priority test were recomputed; the three tests whose point needs a
+  coefficient below 1 (A5 priority counterexample, the unequal-coverage and the saturation exceptions) keep
+  their original numerics by covering the other half of the room with a section held at 0.0 (so they also
+  exercise `hold`). Three feasible-demand cases and the random-layout generator were adjusted to the
+  per-room sum rule. Snapshot tests moved to `coverage`/`history`/`hold` and gained hold-error and
+  1.0.0-snapshot cases.
+- New tests for normalisation (E1-E5), `hold` validation, A6-A9 and the snapshot hold round trip are step
+  5's; they are not written here.
+- Two gates already green after this step: `ruff check .`, `ruff format --check .`, `mypy`, `pytest`
+  (1391 passed). `python -m heatingsystem.allocator.allocator` runs and reproduces E1 (HS4 0.2154),
+  E2 (HS4 0.5385) and E3 (HS1 0.4).
 
 ---
 

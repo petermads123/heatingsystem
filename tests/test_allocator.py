@@ -2237,14 +2237,14 @@ def random_layout(
                 str(r): float(max(w, 1e-3))
                 for r, w in zip(covered, weights, strict=True)
             }
-        if not all(any(r in covered for covered in sections.values()) for r in names):
+        if not all(any(r in entry for entry in sections.values()) for r in names):
             continue
         for r in names:  # a room's coverages sum to at most 1
             total = math.fsum(c[r] for c in sections.values() if r in c)
             if total > 1.0:
-                for covered in sections.values():
-                    if r in covered:
-                        covered[r] /= total
+                for entry in sections.values():
+                    if r in entry:
+                        entry[r] /= total
         demand = {n: float(rng.choice([0.0, 1.0, rng.random()])) for n in names}
         return SectionAllocator(rooms, sections, kp=1.0, ki=0.0), demand
 

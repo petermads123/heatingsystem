@@ -111,13 +111,19 @@ Subpackage entry point. Re-exports `SectionAllocator` and `Room` from `allocator
 
 Multi-room control of on/off heating sections that may each serve several rooms. Built
 once from a fixed layout (rooms with a priority and an evenness weight; sections with a
-share per covered room). Every `update` runs, per room, a composed radiator-mode
+*coverage* per served room: the fraction of that room's floor heating the section provides,
+in `(0, 1]`, a room's coverages summing to at most 1 with the rest an outside disturbance;
+each room's coverages are normalised by its controlled total, so demand 1.0 means every
+loop of the room fully on). A section can be held at a fixed level (`hold`). Every `update` runs, per room, a composed radiator-mode
 `PIController` (`history_length=1`) for the demand; allocates section duty cycles by
 bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`) minimising exactly
 `J(u) = sum_r p_r (d_r - h_r)^2 + sum_r p_r e_r spread_r` (`p` priority in `(0, 1]`, `e` evenness
-in `[0, 1]`, `h_r` the heat room r receives, `spread_r = sum((u_s - mean)**2)` over its sections),
-split by connected component of the room-section graph with a closed form `min(1, demand / share)`
-for a one-room, one-section component (every weight is divided by the component's largest priority and
+in `[0, 1]`, `h_r = sum_s (normalised coverage) u_s` the heat room r receives,
+`spread_r = sum((u_s - mean)**2)` over its sections, a held section entering with its level),
+split by connected component of the room-section graph with a closed form `min(1, demand)`
+for a one-room, one-section component (its held columns are split off at solve time: their
+contribution is subtracted from the right-hand side, and a component with no free section
+calls no solver) (every weight is divided by the component's largest priority and
 floored at 1e-12 of it as a safety net for priorities more than 1e12 apart, so a very low-priority room's feasible demand is never lost to round-off,
 and the solver's status is checked); and turns each duty into 0.0/1.0 through one
 floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
@@ -135,16 +141,18 @@ private helpers and are omitted per this file's convention.
 | `Room.ki -> float` (settable) | Delegates to the composed `PIController`. |
 | `Room.integral -> float` | Read-only; the PI integral. |
 | `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last `update`, `None` before the first and after `from_dict`. |
-| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority" in (0, 1], "evenness" in [0, 1]}`; `sections` maps name to `{room: share}`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
-| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`; a bad temperature names `measured['<room>']`, a missing or unknown room is reported as the list of names (`measured is missing rooms [...]` / `measured has unknown rooms [...]`), and a non-mapping names `measured`. If the allocation fails (`ArithmeticError` for a non-finite or non-converged solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. |
+| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority" in (0, 1], "evenness" in [0, 1]}`; `sections` maps name to `{room: coverage}`, each coverage in `(0, 1]`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); an uncovered room is named; then a room whose coverages sum above `1 + 1e-9` raises `ValueError` naming it and the sum (`rooms['R3'] coverages sum to 1.1, more than 1.`, first in room order); a section covering several rooms may sum to anything; nothing is built on failure. |
+| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`; a bad temperature names `measured['<room>']`, a missing or unknown room is reported as the list of names (`measured is missing rooms [...]` / `measured has unknown rooms [...]`), and a non-mapping names `measured`. If the allocation fails (`ArithmeticError` for a non-finite or non-converged solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. A held section's duty is its level and its command the floor-heating modulation of that level (exactly the level for 0.0 and 1.0); the free sections compensate; every room's PI keeps stepping during a hold (a burst can follow a release); `update` never writes a hold. |
 | `SectionAllocator.rooms -> Mapping[str, Room]` | Read-only `MappingProxyType` of the `Room` handles. |
-| `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the shares. |
+| `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the coverages as given (not normalised). |
+| `SectionAllocator.hold(section: str, level: float \| None) -> None` | Hold a section at `level` in `[0, 1]`, or release it with `None`. A non-`str` section raises `TypeError`, an unknown name `ValueError` listing the known sections; `level` is validated like `Modulator.fixed_output` (`TypeError`/`ValueError`/`OverflowError` naming `holds['HS3']`, repeating the caller's value). Stored in the section modulator's `fixed_output`; takes effect on the next `update`, leaves `duty` and `history` untouched, and a raising call changes nothing. |
+| `SectionAllocator.holds -> dict[str, float \| None]` | Read-only; a fresh dict with every section in constructor order, its held level or `None`. |
 | `SectionAllocator.history_length -> int` | Read-only. |
-| `SectionAllocator.duty -> dict[str, float] \| None` | Last allocated duty per section; `None` before the first `update` and after `from_dict`. |
+| `SectionAllocator.duty -> dict[str, float] \| None` | Last allocated duty per section (a held section reports its level); `None` before the first `update` and after `from_dict`. |
 | `SectionAllocator.history -> dict[str, tuple[float, ...]]` | Each section's command window, oldest first. |
-| `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`shares`, `history`), fresh containers. |
-| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor (so a layout error is the constructor's, naming the constructor's path, e.g. `sections['HS1']['R1']` for a bad share), settings through the setters, each section's window restored into a fresh floor-heating `Modulator`; setting and window errors keep their class with the snapshot path prefixed (`rooms['R1'].integral`, `sections['HS1'].history[0]`). `duty` and every room's `demand` are `None` afterwards. |
-| `main() -> None` | Showcase: the reference layout with evenness 0, worked example B (R1 evenness 0.1) and C (both rooms 1), a priority conflict on a shared section, a setpoint change, a JSON snapshot round trip and an invalid layout. |
+| `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`coverage` as given, `history`, `hold`), fresh containers. |
+| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor (so a layout error is the constructor's, naming the constructor's path, e.g. `sections['HS1']['R1']` for a bad coverage), settings through the setters, each section's hold validated (after the constructor, before its window) and its window restored into a fresh floor-heating `Modulator` whose `fixed_output` is the hold; setting, hold and window errors keep their class with the snapshot path prefixed (`rooms['R1'].integral`, `sections['HS1'].hold`, `sections['HS1'].history[0]`). A 1.0.0 snapshot (`shares` instead of `coverage` and `hold`) is refused for the missing keys. `duty` and every room's `demand` are `None` afterwards. |
+| `main() -> None` | Showcase: the reference layout (HS1-HS5 over R1-R4) with worked example E1, E2 (HS3 held shut, then released), E3 (R1 normalisation) and E4 (evenness), a JSON snapshot round trip carrying a hold, and a room whose coverages sum above 1. |
 
 Runnable standalone: `python -m heatingsystem.allocator.allocator`, once the package is
 installed.
@@ -407,8 +415,13 @@ found anywhere else.
 
 ### `tests/test_allocator.py`
 
-Covers `SectionAllocator` and `Room`. Construction: every A1 refusal with its class and path (share
-at, either side of and far from `(0, 1]`, share sums either side of the 1e-9 tolerance, unknown and
+Covers `SectionAllocator` and `Room`, migrated in round 1 of `feat/allocator-home-assistant` to the
+coverage meaning (reference layout HS1 {R1 0.7}, HS2 {R1 0.3, R2 0.3}, HS3 {R2 0.7}, HS4 {R3 1.0}; worked
+examples B-G recomputed by an independent active-set solve, B and C also by hand; the layouts that need a
+coefficient below 1 — the priority counterexample, the unequal-coverage and saturation exceptions — hold
+the other half of the room shut; the share-sum tests became per-room sums and the dedicated-share test
+became "any dedicated coverage gives the standalone command sequence"). Construction: every A1 refusal with its class and path (coverage
+at, either side of and far from `(0, 1]`, per-room coverage sums either side of the 1e-9 tolerance, unknown and
 uncovered rooms, priority and evenness limits, bad types, empty and malformed mappings, non-string
 names), the error order, shared-gain errors identical to `PIController`'s and naming the argument,
 `history_length` parity, no aliasing of the caller's mappings, and a read-only layout. `Room`
