@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — change the layout keeping state
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,7 +18,7 @@
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -304,16 +304,53 @@ Edge cases considered and deliberately skipped, with reasons:
 
 ## 6. Concept check
 
+Audited against section 1 only, with the code as it stands (`allocator.py:875-960`), the 1612-test
+suite green, and the showcase run.
+
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| C1 | No-arg call: distinct object, equal state, identical next 50 commands, original unchanged | yes | `with_layout` resolves every `None` to the current value (`allocator.py:921-929`) and carries rooms, windows, holds, `duty` and `demand`. `test_with_layout_without_arguments_returns_an_equal_but_distinct_allocator`, `..._issues_identical_commands_including_none_readings`, `..._shares_no_state_with_the_original`, `..._original_updates_do_not_reach_the_new_allocator`. |
+| C2 | Priority/evenness/coverage change carries everything; equals `from_dict` for real readings; `None` reading allocates the carried demand | yes | Carry loop `allocator.py:931-951` (`setpoint`/`kp`/`ki` via setters, `_integral`/`_pi_output` directly, `duty` copied at 952). `test_with_layout_layout_change_carries_all_state`, `..._matches_the_from_dict_rebuild_for_real_readings`, `..._none_reading_allocates_the_carried_demand_unlike_from_dict`, `..._coverage_only_change_still_carries_duty_when_names_match`. |
+| C3 | `history_length=n`: newest `min(len, n)` slots kept, property reads `n`, equals trimmed `from_dict` rebuild | yes | `"history": list(kept.history)[-new._history_length:]` into `Modulator._from_dict` (`allocator.py:945-951`). `test_with_layout_keeps_the_newest_slots_at_every_window_boundary`, `..._history_length_matches_the_trimmed_from_dict_rebuild`, `..._a_fractional_hold_continues_the_pattern_over_a_grown_window`. Showcase: HS2 window `(0.0, 1.0)` after shrinking to 2. |
+| C4 | Add/remove rooms and sections: matched keep state, new room defaults, new section empty and unheld, `duty` `None` when names change, removed state dropped | yes | New room skipped in the carry loop so it keeps the constructor defaults; new section skipped so it keeps its fresh modulator; `duty` carried only when `list(new._modulators) == list(self._modulators)`. `test_with_layout_new_room_and_section_start_fresh_and_names_keep_state`, `..._new_room_takes_the_class_defaults_not_the_originals_gains`, `..._removing_a_room_and_its_section_drops_their_state`, `..._reordered_sections_give_no_duty_but_keep_state_by_name`. |
+| C5 | Constructor refusals identical in class and message; original unchanged | yes | The layout is validated by `type(self)(...)` before any state is touched (`allocator.py:931`), so a refusal produces nothing. `test_with_layout_refuses_what_the_constructor_refuses_and_changes_nothing` (13 cases), `..._rooms_without_a_room_the_default_sections_use_names_sections_path`, `..._failed_call_leaves_duty_and_demands_and_next_commands_alone`. |
+| C6 | Docstrings, README, STRUCTURE.md describe `with_layout`; nothing says the layout is fixed; rounds 1-2 hold | yes | Method, class, module and `duty` docstrings updated; README "Changing the layout" paragraph (lines 220-228) replaces the fixed-layout sentence; STRUCTURE.md row, module text, showcase row and test summary. `grep` for "fixed layout" finds nothing; `test_with_layout_docs_no_longer_claim_a_fixed_layout`. Structure auditor: no changes needed. Showcase `python -m heatingsystem.allocator.allocator` runs and prints the `with_layout` case (R3 integral 1.0 kept, duty and hold carried, HS2 window `(0.0, 1.0)`). Earlier rounds: table below. |
 
 Drift found, and what was done about it:
+
+- None. The diff of `src/` since round 2's ship is confined to `with_layout`, the module, class and
+  `duty` docstrings (the removed lines are the "built once from a fixed layout" wording and the
+  one-line `duty` docstring) and the showcase case; the constructor, `update`, `hold`, `to_dict`,
+  `from_dict`, `Room`, `PIController` and `Modulator` are untouched.
+- Out of scope, checked: no `PIController.with_history_length`, no renaming, no in-place mutation,
+  no P/I terms; `pyproject.toml` version still 1.1.0 and the snapshot format is unchanged.
+- Surface: the only new public name is `with_layout`, exactly the planned signature. Decided
+  behaviours (new rooms take the constructor defaults, `duty` carries only for identical ordered
+  section names) are as section 1 states them and pinned by tests.
+- Accepted limitation, not drift: a coverage-only change with unchanged section names carries a
+  `duty` computed under the old coverages until the next `update` (section 1 decided this).
 
 ### Earlier rounds still hold
 
 | Round | # | Criterion | Still met | Evidence |
 |---|---|---|---|---|
+| 1 | A1 | Coverage-sum refusal naming room and sum; several-room section may exceed 1; coverage range and other refusals | yes | Constructor and `_validate_layout` unchanged this round; `with_layout` calls the constructor, so the same refusals apply (C5's 13 cases include a room sum above 1). Round 1 refusal tests green. |
+| 1 | A2 | Normalisation by each room's controlled total (E1, E3) | yes | Matrix assembly untouched; E-layout tests green; `with_layout` rebuilds through the constructor so a new coverage is normalised afresh. |
+| 1 | A3 | Single-section room equals a standalone floor-heating `PIController` | yes | `update` and `Room` untouched; the A3 bit-exact twin test is green. |
+| 1 | A4 | KKT, independent solve, priority scaling, A5/A6 scope, worked examples | yes | `_allocate` and the components are untouched; those suites are green in the 1612. |
+| 1 | A5 | `hold`/`holds` validation, release, raising call changes nothing | yes | `hold` and `holds` unchanged; and `with_layout` carries a hold into the new modulator (`fixed_output`), `test_with_layout_..._holds`/the showcase show `holds carried` `HS2: 1.0`. |
+| 1 | A6 | Held section's duty is its level; free sections compensate; release | yes | `_allocate` untouched; a carried hold behaves the same on the new allocator (twin commands in the C1 and C2 tests include a hold). |
+| 1 | A7 | Fully held component calls no solver | yes | Untouched; test with a raising `lsq_linear` green. |
+| 1 | A8 | Room PI keeps running during a hold | yes | Untouched; the un-held twin test is green. |
+| 1 | A9 | Raising `update` leaves holds, windows, rooms, `duty` unchanged | yes | The save/restore block in `update` is untouched (`allocator.py:652-676`); tests green. |
+| 1 | A10 | Snapshot `coverage`/`history`/`hold`; identical next 50 commands; 1.0.0 snapshot refused | yes | `to_dict`/`from_dict` untouched; snapshot suite green; `with_layout` is also compared against `from_dict` for real readings (C2, C3). |
+| 1 | A11 | Version 1.1.0; STRUCTURE.md and README describe coverage, normalisation, `hold` | yes | `pyproject.toml` version = "1.1.0"; the README and STRUCTURE.md sections are intact, and only the layout sentence changed. |
+| 2 | B1 | A `None` room keeps its integral and `demand`; others step like a twin | yes | `update` untouched; tests green; C1's 50-step twin includes `None` readings. |
+| 2 | B2 | Allocation uses the last demand (E1 again); 0.0 before a first reading | yes | Untouched. Round 3 strengthens it: `demand` now survives a layout change (`..._none_reading_after_a_coverage_change_reuses_the_carried_demand`). |
+| 2 | B3 | Interleaved run equals a standalone `PIController` fed real readings | yes | Untouched; test green. |
+| 2 | B4 | All `None` accepted; missing key and other refusals unchanged | yes | Untouched; tests green. |
+| 2 | B5 | A raising `update` with `None` rooms leaves everything unchanged | yes | Untouched; tests green, and `..._carried_duty_survives_a_failed_first_update` shows it on a carried allocator. |
+| 2 | B6 | Docstrings, README, STRUCTURE.md describe `None`; A1-A11 hold | yes | `None`-reading text in `update`, `Room.demand`, README and STRUCTURE.md is intact; the `Room.demand` row ("`None` before the first real reading and after `from_dict`") is still accurate, since `with_layout` carries rather than resets. |
 
 ---
 
