@@ -1,7 +1,7 @@
 """Multi-room control of on/off heating sections that may serve several rooms.
 
-This module provides :class:`SectionAllocator`, built once from a fixed
-physical layout: named rooms (each with a priority and an evenness weight)
+This module provides :class:`SectionAllocator`, built from a
+physical layout (changeable through :meth:`SectionAllocator.with_layout`): named rooms (each with a priority and an evenness weight)
 and named sections (each with the *coverage* it gives each room it serves:
 the fraction of that room's floor heating the section provides). A room's
 coverages sum to at most 1; the uncovered remainder is an outside
@@ -733,7 +733,11 @@ class SectionAllocator:
 
     @property
     def duty(self) -> dict[str, float] | None:
-        """The last allocated duty per section, or ``None`` before an update."""
+        """The last allocated duty per section.
+
+        ``None`` before the first update, after ``from_dict``, and after a
+        ``with_layout`` whose section names or order differ.
+        """
         return None if self._duty is None else dict(self._duty)
 
     @property

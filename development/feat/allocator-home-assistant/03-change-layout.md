@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — change the layout keeping state
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,7 +16,7 @@
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -228,6 +228,22 @@ Implemented as planned; no deviation from section 2 and no criterion affected.
 
 | Check | Result |
 |---|---|
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | 56 files already formatted |
+| `mypy` | Success: no issues found in 21 source files |
+| `pytest` | 1557 passed |
+| Plan completeness | `SectionAllocator.with_layout(rooms=None, sections=None, *, history_length=None) -> Self` exists as written; `main()` showcase gained the `with_layout` case. No missing, deviating or unplanned public surface. |
+| `STRUCTURE.md` | in sync after one edit (below) |
+| `python -m heatingsystem.allocator.allocator` | runs, exit 0; the `with_layout` case prints R3 integral kept 1.0, duty and holds carried, HS2 window `(0.0, 1.0)`; the invalid-layout case still prints the constructor's error |
+
+structure-auditor findings and action:
+
+- `duty` row lacked the `with_layout` clause: STRUCTURE.md row edited to "`None` before the first `update`, after `from_dict`, and after a `with_layout` whose section names or order differ."
+- Module docstring (allocator.py lines 3-4) still said "built once from a fixed physical layout" (C6): reworded to "built from a physical layout (changeable through :meth:`SectionAllocator.with_layout`)".
+- Also extended the `duty` property docstring with the same three `None` cases.
+- grep of README.md and allocator.py for "fixed layout"/"read-only layout"/"cannot change": no remaining fixed-layout claim. README line 220-221 says an allocator's layout "is read-only, but `with_layout` returns a new allocator", which is accurate and is the C6 paragraph.
+
+---|---|
 | `ruff check .` | |
 | `ruff format --check .` | |
 | `mypy` | |
