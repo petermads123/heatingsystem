@@ -74,6 +74,11 @@ radiator.reset()  # zeroes the integral accumulator and clears the history windo
 radiator.fixed_output = 0.0  # update() now returns 0.0 regardless of measured_temp
 output = radiator.update(measured_temp)
 print(radiator.pi_output)  # the PI demand the loop would have issued, unheld
+# error, p_term and i_term describe the last update exactly as it computed it (read them
+# rather than recomputing: the setpoint or gains may have changed since, and under
+# anti-windup the stored integral is not the one the output used). p_term + i_term is the
+# raw PI sum before clamping; all three are None before the first update and after reset().
+print(radiator.error, radiator.p_term, radiator.i_term)
 radiator.fixed_output = None  # release the override; update() resumes the PI result
 
 # --- State snapshot (e.g. survive a Home Assistant restart or AppDaemon reload) ---
@@ -169,6 +174,8 @@ allocator = hs.SectionAllocator(rooms, sections, kp=0.3, ki=0.015, setpoint=21.0
 commands = allocator.update({"R1": 20.9, "R2": 20.4})  # {"HS1": 1.0, "HS2": 1.0, ...}
 print(allocator.duty)  # last allocated duty per section, in [0, 1]
 print(allocator.rooms["R2"].demand)  # last PI demand of R2
+# For a dashboard, read the terms of the last PI step rather than recomputing them:
+print(allocator.rooms["R2"].error, allocator.rooms["R2"].p_term, allocator.rooms["R2"].i_term)
 
 # A dead sensor: None means "no reading". R2's PI takes no step and the allocation
 # reuses its last demand (0.0 if it never had a reading); R1 steps as usual.

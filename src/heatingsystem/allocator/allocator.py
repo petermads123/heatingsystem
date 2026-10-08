@@ -270,6 +270,36 @@ class Room:
         """
         return self._pi.pi_output
 
+    @property
+    def error(self) -> float | None:
+        """The ``setpoint - measured`` of the room's last PI step (read-only).
+
+        Delegates to the composed ``PIController``; ``None`` before the first
+        real reading and after ``from_dict``, unchanged by a ``None`` reading,
+        restored by a failed ``update`` and carried by ``with_layout``.
+        """
+        return self._pi.error
+
+    @property
+    def p_term(self) -> float | None:
+        """The ``kp * error`` of the room's last PI step (read-only).
+
+        Delegates to the composed ``PIController``; ``None`` before the first
+        real reading and after ``from_dict``, unchanged by a ``None`` reading,
+        restored by a failed ``update`` and carried by ``with_layout``.
+        """
+        return self._pi.p_term
+
+    @property
+    def i_term(self) -> float | None:
+        """The ``ki`` times the tentative integral the room's last PI step used (read-only).
+
+        Delegates to the composed ``PIController``; ``None`` before the first
+        real reading and after ``from_dict``, unchanged by a ``None`` reading,
+        restored by a failed ``update`` and carried by ``with_layout``.
+        """
+        return self._pi.i_term
+
     def _step(self, measured: float) -> float:
         """Run one PI step and return the clamped demand.
 
@@ -650,7 +680,13 @@ class SectionAllocator:
             )
 
         saved = {
-            name: (room._pi._integral, room._pi._pi_output)
+            name: (
+                room._pi._integral,
+                room._pi._pi_output,
+                room._pi._error,
+                room._pi._p_term,
+                room._pi._i_term,
+            )
             for name, room in self._rooms.items()
         }
         try:
@@ -665,9 +701,13 @@ class SectionAllocator:
                     demand[name] = 0.0
             duty = self._allocate(demand)
         except BaseException:
-            for name, (integral, pi_output) in saved.items():
-                self._rooms[name]._pi._integral = integral
-                self._rooms[name]._pi._pi_output = pi_output
+            for name, (integral, pi_output, error, p_term, i_term) in saved.items():
+                pi = self._rooms[name]._pi
+                pi._integral = integral
+                pi._pi_output = pi_output
+                pi._error = error
+                pi._p_term = p_term
+                pi._i_term = i_term
             raise
 
         commands = {
@@ -938,6 +978,9 @@ class SectionAllocator:
             room.ki = old.ki
             room._pi._integral = old._pi._integral
             room._pi._pi_output = old._pi._pi_output
+            room._pi._error = old._pi._error
+            room._pi._p_term = old._pi._p_term
+            room._pi._i_term = old._pi._i_term
         for name in new._modulators:
             kept = self._modulators.get(name)
             if kept is None:
@@ -1079,6 +1122,11 @@ def main() -> None:
 
     print("\n=== R3 has no reading: its last demand is allocated again ===")
     print(f"  R3 demand = {allocator.rooms['R3'].demand}")
+    room_r3 = allocator.rooms["R3"]
+    print(
+        f"  R3 error = {room_r3.error}, p_term = {room_r3.p_term}, "
+        f"i_term = {room_r3.i_term}"
+    )
     print(f"  duty      = {allocator.duty}")
 
     # Example E3: demand is relative to the covered half of R1.

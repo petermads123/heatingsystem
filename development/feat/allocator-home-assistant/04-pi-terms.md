@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — P and I terms per room
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
@@ -199,6 +199,13 @@ confirmed complete, no attribute-surface test to break):
 ---
 
 ## 3. Implementation notes
+
+Implemented as planned, guide entries 1-6; no deviation, Public API table unchanged.
+
+- `PIController`: private `_error`, `_p_term`, `_i_term` (`float | None`, `None` at construction); `update` computes `p_term = kp * error`, `i_term = ki * new_integral`, `raw = p_term + i_term` and writes the three after the modulator call, with `_integral`/`_pi_output`; `reset` clears them; `from_dict` builds a fresh controller, so they start `None` (confirmed, no change). Three read-only properties.
+- `Room`: three delegating properties. `SectionAllocator.update` saves and restores the three private fields with integral and `_pi_output`; `with_layout` copies them for matched rooms.
+- Showcases print the terms; README (PIController and allocator dashboard use) and STRUCTURE.md updated.
+- Sanity: ruff, mypy and the existing suite (1612 tests) pass unedited.
 
 ---
 
