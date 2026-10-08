@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — P and I terms per room
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,7 +18,7 @@
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -266,16 +266,52 @@ Edge cases considered and deliberately skipped:
 
 ## 6. Concept check
 
+Audited against section 1 only, then the code as it stands (`ruff check` and `ruff format --check` clean, `mypy`
+clean, `pytest` 1673 passed; both showcases exit 0). structure-auditor: in sync.
+
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| D1 | After every `update`: `error == setpoint - measured`, `p_term == kp * error`, `i_term == ki * (previous integral + error)`, `clamp(p+i) == pi_output` when finite; linear, both saturations, hold | yes | `pi_controller.py` `update`: `p_term = self.kp * error`, `i_term = self.ki * new_integral`, `raw = p_term + i_term`, written with `_integral`/`_pi_output` after the modulator call. Tests: `test_terms_linear_region_match_hand_computation_over_several_steps`, `..._saturated_high_use_the_tentative_integral_not_the_held_one`, `..._saturated_low_...`, `test_i_term_at_exact_upper_clamp_...`, `test_terms_follow_a_per_call_setpoint`, `test_terms_under_a_fixed_output_hold_match_an_unfixed_twin`, `test_zero_gain_with_negative_error_stores_a_negative_zero_p_term`, non-finite cases |
+| D2 | `None` before first update, after `reset()`, after `from_dict()`; read-only; `to_dict()` unchanged | yes | `__init__` sets the three `None`; `reset` clears them; `from_dict` builds a fresh object. `test_terms_are_none_before_the_first_update`, `..._after_reset`, `..._after_from_dict_directly_and_through_json`, `test_terms_are_read_only`, `test_to_dict_does_not_gain_the_terms`; `git diff 0d07729 HEAD` shows `to_dict` untouched |
+| D3 | A raising `PIController.update` leaves the three as before | yes | The writes sit after `self._modulator.command(...)`. `test_a_raising_update_leaves_the_terms_unchanged`, `test_a_raising_per_call_setpoint_...`, `test_a_raising_first_update_...`, `test_modulator_raise_leaves_the_terms_unchanged` |
+| D4 | `Room` terms equal the composed controller's and a standalone twin's; `None` reading leaves them; raising update restores them; `with_layout` carries them (`None` for new rooms) | yes | `Room.error/p_term/i_term` delegate to `self._pi`; `SectionAllocator.update` saves and restores the three in `saved`; `with_layout` copies them for matched rooms. `test_room_terms_equal_a_standalone_twin_over_many_steps`, `..._under_a_hold_and_saturation`, `test_a_none_reading_*`, `test_a_failing_solver_restores_the_terms_to_the_previous_update`, `test_a_later_room_step_raising_restores_earlier_rooms_terms`, `test_with_layout_*`, `test_from_dict_leaves_the_terms_none_while_with_layout_carries_them` |
+| D5 | Every existing behaviour unchanged; suites pass without edits to existing assertions | yes | `git diff -U0 0d07729 HEAD -- tests` has zero removed lines (additions only: +279 in `test_allocator.py`, +293 in `test_pi_controller.py`); production diff changes `raw` only by splitting the same two products and one addition (bit-identical); full suite 1673 passed, 1612 before |
+| D6 | Docstrings, `README.md` and `STRUCTURE.md` describe the properties | yes | Docstrings on all six properties and on `update`/`reset`/`SectionAllocator.update`; README PIController and allocator blocks tell the dashboard to read the terms; STRUCTURE.md rows for all six, `update`, `reset`, `from_dict`, `with_layout`, `main()`; showcases print `last step: error=0.7000  p_term=0.2100  i_term=0.1365` and `R3 error = 0.5, p_term = 0.5, i_term = 0.0` |
 
-Drift found, and what was done about it:
+Drift found, and what was done about it: none. Out of scope held: no control-law change, nothing in
+`to_dict`/`from_dict`, no term history, no per-section terms. The only surface added is the six properties.
+Step 5's note that the restore window does not cover `modulator.command(duty)` after the `try` is unreachable
+with duty in [0, 1] and unchanged by this round.
 
 ### Earlier rounds still hold
 
+Re-read against the code as it stands, not only the green tests.
+
 | Round | # | Criterion | Still met | Evidence |
 |---|---|---|---|---|
+| 1 | A1 | Layout validation, room sum, coverage range | yes | Constructor and `_normalise` untouched by `git diff`; round 1 construction tests pass |
+| 1 | A2 | Normalisation by controlled total | yes | Showcase E1/E3 unchanged; allocation code untouched |
+| 1 | A3 | Dedicated room equals standalone floor-heating controller | yes | `raw = p_term + i_term` is the same expression value; `test_dedicated_room_produces_the_command_sequence_of_a_standalone_controller` passes |
+| 1 | A4 | Cost, KKT, scaling, worked examples | yes | `_allocate` untouched; KKT and example tests pass |
+| 1 | A5 | `hold` validation, `holds` | yes | `hold`/`holds` untouched |
+| 1 | A6 | Held duty, compensation, release | yes | Showcase E2 and release unchanged; tests pass |
+| 1 | A7 | All-held component calls no solver | yes | `if not free: continue` untouched; test passes |
+| 1 | A8 | Room PI keeps stepping during a hold | yes | `update` step loop unchanged; twin test passes |
+| 1 | A9 | Raising `update` changes nothing | yes | Restore now covers the three terms as well; round 1 test passes plus the new restore tests |
+| 1 | A10 | Snapshot shape, restore, 1.0.0 refused | yes | `to_dict`/`from_dict` untouched; `test_the_snapshot_does_not_contain_the_terms` |
+| 1 | A11 | Version 1.1.0 and docs | yes | `pyproject.toml` untouched; README/STRUCTURE only extended |
+| 2 | B1 | `None` room: integral and demand untouched | yes | The `None` path skips `_step`, so the terms are untouched too; `test_a_none_reading_*` |
+| 2 | B2 | Allocation uses last demand | yes | Untouched; showcase prints `R3 demand = 0.5` |
+| 2 | B3 | Equals a standalone fed only real readings | yes | Tests pass; terms compared against the same twin |
+| 2 | B4 | All-`None` accepted, refusals unchanged | yes | Validation untouched; tests pass |
+| 2 | B5 | Raising `update` with `None` rooms changes nothing | yes | Tests pass; restore extended |
+| 2 | B6 | Docs describe `None` readings | yes | README/STRUCTURE keep the `None` text, now with the terms |
+| 3 | C1 | `with_layout()` copy with identical next 50 commands | yes | Three more fields copied; `to_dict` identical; tests pass |
+| 3 | C2 | Priority/evenness/coverage change carries state | yes | Carry loop extended only; tests pass |
+| 3 | C3 | `history_length` trimming | yes | Untouched; tests pass |
+| 3 | C4 | Add/remove rooms and sections | yes | New rooms keep `None` terms; `test_with_layout_*` covers renamed/re-added rooms |
+| 3 | C5 | Constructor refusals propagate, original unchanged | yes | Untouched; tests pass |
+| 3 | C6 | Docs describe `with_layout` | yes | `with_layout` row now names the carried terms |
 
 ---
 
