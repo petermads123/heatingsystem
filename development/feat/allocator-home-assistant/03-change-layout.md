@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — change the layout keeping state
 
-<!-- claude-plan step=3 status=active -->
+<!-- claude-plan step=4 status=active -->
 
 | Field | Value |
 |---|---|
@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
-| 3 | Implement | `/implement` | in `/build` | pending |
+| 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | pending |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
@@ -209,6 +209,18 @@ plan-critic (verdict: accept with changes):
 ---
 
 ## 3. Implementation notes
+
+Implemented as planned; no deviation from section 2 and no criterion affected.
+
+- `SectionAllocator.with_layout` added to `allocator.py` exactly per the Public API row; guide
+  entries 1-5 transcribed in order (defaults resolved, construction through
+  `type(self)(rooms, sections, history_length=...)`, room settings via setters and `_pi._integral`/
+  `_pi._pi_output`, matched sections rebuilt with `Modulator._from_dict` on the newest `n` slots
+  and the hold, `duty` copied only when the section name lists are equal in order).
+- Entry 6: method docstring, class docstring (no longer says the layout is fixed), showcase case
+  (R3 priority 0.5, window shortened to 2), README "Changing the layout" paragraph replacing the
+  fixed-layout sentence (PIController trimming advice untouched), STRUCTURE.md row and module text.
+- Existing suite (1557 tests), ruff and mypy are green; tests for `with_layout` are step 5's.
 
 ---
 

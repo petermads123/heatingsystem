@@ -313,10 +313,11 @@ class _Component:
 class SectionAllocator:
     """Controller for on/off heating sections that may each serve several rooms.
 
-    Built once from a fixed layout; the layout (rooms, priorities, evenness
-    weights, coverages) is read-only. Each room's ``setpoint``, ``kp`` and
-    ``ki`` can be changed at any time through :attr:`rooms` and take effect
-    on the next :meth:`update`.
+    The layout (rooms, priorities, evenness weights, coverages) is read-only
+    on an instance; :meth:`with_layout` returns a new allocator with a changed
+    layout that keeps the state of the rooms and sections it shares by name.
+    Each room's ``setpoint``, ``kp`` and ``ki`` can be changed at any time
+    through :attr:`rooms` and take effect on the next :meth:`update`.
 
     Args:
         rooms: Maps each room name to a mapping with exactly the keys
@@ -867,6 +868,88 @@ class SectionAllocator:
                 raise _reraise(f"sections[{name!r}].", exc) from exc
         return allocator
 
+    def with_layout(
+        self,
+        rooms: Mapping[str, Mapping[str, float]] | None = None,
+        sections: Mapping[str, Mapping[str, float]] | None = None,
+        *,
+        history_length: int | None = None,
+    ) -> Self:
+        """Return a new allocator with a changed layout, keeping state by name.
+
+        Any argument left ``None`` keeps the current value. The new layout is
+        validated exactly as the constructor validates it, so a refused layout
+        raises the constructor's own exception and produces nothing; this
+        allocator is never changed. Adding or removing a room usually needs
+        both ``rooms`` and ``sections``, since the other one still names the
+        old rooms, and an error then names the defaulted argument's path (for
+        example ``sections['HS1']['R3']``) although the caller did not pass it.
+
+        State carries over by name. A room in both layouts keeps its
+        ``setpoint``, ``kp``, ``ki``, integral and last ``demand`` (its
+        priority and evenness come from the new ``rooms``); a new room starts
+        like a freshly constructed one (``kp`` 0.3, ``ki`` 0.015, ``setpoint``
+        21.0, integral 0, ``demand`` ``None``). A section in both keeps its
+        command window, trimmed to its newest ``history_length`` slots, and
+        its hold; a new section starts with an empty window and no hold. Unlike
+        :meth:`from_dict`, ``demand`` is carried, so a room with no reading
+        still allocates its last demand. ``duty`` carries over only when the
+        new layout has exactly the same section names in the same order, and
+        is ``None`` otherwise.
+
+        Args:
+            rooms: The new rooms, as for the constructor, or ``None`` to keep
+                each current room's priority and evenness.
+            sections: The new sections and coverages, as for the constructor,
+                or ``None`` to keep the current ones.
+            history_length: The new command-window length, an ``int`` of at
+                least 1, or ``None`` to keep the current one.
+
+        Returns:
+            A new allocator of the same type as this one.
+
+        Raises:
+            TypeError: As the constructor.
+            ValueError: As the constructor.
+            OverflowError: As the constructor.
+        """
+        if rooms is None:
+            rooms = {
+                name: {"priority": room.priority, "evenness": room.evenness}
+                for name, room in self._rooms.items()
+            }
+        if sections is None:
+            sections = self.sections
+        if history_length is None:
+            history_length = self._history_length
+
+        new = type(self)(rooms, sections, history_length=history_length)
+
+        for name, room in new._rooms.items():
+            old = self._rooms.get(name)
+            if old is None:
+                continue
+            room.setpoint = old.setpoint
+            room.kp = old.kp
+            room.ki = old.ki
+            room._pi._integral = old._pi._integral
+            room._pi._pi_output = old._pi._pi_output
+        for name in new._modulators:
+            kept = self._modulators.get(name)
+            if kept is None:
+                continue
+            new._modulators[name] = Modulator._from_dict(
+                {
+                    "mode": "floor_heating",
+                    "history_length": new._history_length,
+                    "fixed_output": kept.fixed_output,
+                    "history": list(kept.history)[-new._history_length :],
+                }
+            )
+        if self._duty is not None and list(new._modulators) == list(self._modulators):
+            new._duty = dict(self._duty)
+        return new
+
     # ------------------------------------------------------------------
     # Allocation
     # ------------------------------------------------------------------
@@ -1028,6 +1111,24 @@ def main() -> None:
     print(f"  holds    = {restored.holds}")
     print(f"  original = {original_next}")
     print(f"  restored = {restored_next}")
+
+    # Change the layout at runtime: a new allocator keeps every room's
+    # integral and every section's window and hold, matched by name.
+    new_rooms = {
+        "R1": {"priority": 1.0, "evenness": 0.0},
+        "R2": {"priority": 1.0, "evenness": 0.0},
+        "R3": {"priority": 0.5, "evenness": 1.0},  # priority (0, 1]
+        "R4": {"priority": 1.0, "evenness": 1.0},
+    }
+    new_length = 2  # shorter windows keep their newest slots
+
+    changed = even.with_layout(new_rooms, history_length=new_length)
+
+    print("\n=== with_layout: R3 priority 0.5, window shortened to 2 ===")
+    print(f"  R3 integral kept = {changed.rooms['R3'].integral}")
+    print(f"  duty carried     = {changed.duty}")
+    print(f"  holds carried    = {changed.holds}")
+    print(f"  HS2 window       = {changed.history['HS2']}")
 
     # A room's coverages may not sum above 1.
     sections = {"HS1": {"R1": 0.7}, "HS2": {"R1": 0.5}}

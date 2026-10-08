@@ -110,7 +110,7 @@ Subpackage entry point. Re-exports `SectionAllocator` and `Room` from `allocator
 ### `src/heatingsystem/allocator/allocator.py`
 
 Multi-room control of on/off heating sections that may each serve several rooms. Built
-once from a fixed layout (rooms with a priority and an evenness weight; sections with a
+from a layout, changeable through `with_layout` (rooms with a priority and an evenness weight; sections with a
 *coverage* per served room: the fraction of that room's floor heating the section provides,
 in `(0, 1]`, a room's coverages summing to at most 1 with the rest an outside disturbance;
 each room's coverages are normalised by its controlled total, so demand 1.0 means every
@@ -155,7 +155,8 @@ are private helpers and are omitted per this file's convention.
 | `SectionAllocator.history -> dict[str, tuple[float, ...]]` | Each section's command window, oldest first. |
 | `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`coverage` as given, `history`, `hold`), fresh containers. |
 | `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor (so a layout error is the constructor's, naming the constructor's path, e.g. `sections['HS1']['R1']` for a bad coverage), settings through the setters, each section's hold validated (after the constructor, before its window) and its window restored into a fresh floor-heating `Modulator` whose `fixed_output` is the hold; setting, hold and window errors keep their class with the snapshot path prefixed (`rooms['R1'].integral`, `sections['HS1'].hold`, `sections['HS1'].history[0]`). A 1.0.0 snapshot (`shares` instead of `coverage` and `hold`) is refused for the missing keys. `duty` and every room's `demand` are `None` afterwards. |
-| `main() -> None` | Showcase: the reference layout (HS1-HS5 over R1-R4) with worked example E1, E2 (HS3 held shut, then released), a `None` reading for R3, E3 (R1 normalisation) and E4 (evenness), a JSON snapshot round trip carrying a hold, and a room whose coverages sum above 1. |
+| `SectionAllocator.with_layout(rooms: Mapping[str, Mapping[str, float]] \| None = None, sections: Mapping[str, Mapping[str, float]] \| None = None, *, history_length: int \| None = None) -> Self` | A new allocator (same type) with the given layout, an argument left `None` keeping the current one; built through the constructor, so it raises what the constructor raises (even with a path naming a defaulted argument) and the original is never changed. Carries by name: a room's `setpoint`, `kp`, `ki`, integral and last `demand` (priority and evenness from the new `rooms`), a section's window (newest `history_length` slots) and hold; `duty` only when the section names are identical in order. A new room takes the constructor defaults (`kp` 0.3, `ki` 0.015, `setpoint` 21.0, `demand` `None`), a new section an empty window and no hold. |
+| `main() -> None` | Showcase: the reference layout (HS1-HS5 over R1-R4) with worked example E1, E2 (HS3 held shut, then released), a `None` reading for R3, E3 (R1 normalisation) and E4 (evenness), a JSON snapshot round trip carrying a hold, and a `with_layout` change (R3 priority, shorter window) and a room whose coverages sum above 1. |
 
 Runnable standalone: `python -m heatingsystem.allocator.allocator`, once the package is
 installed.
