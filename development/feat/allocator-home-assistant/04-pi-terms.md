@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — P and I terms per room
 
-<!-- claude-plan step=2 status=active -->
+<!-- claude-plan step=3 status=active -->
 
 | Field | Value |
 |---|---|
@@ -81,7 +81,9 @@ the same on `PIController` keeps the two controllers alike, as the spec asks.
 New read-only properties, each `-> float | None`: `PIController.error`, `PIController.p_term`,
 `PIController.i_term`, `Room.error`, `Room.p_term`, `Room.i_term`. Nothing else changes signature.
 In the non-finite guard case (extreme finite inputs, round 3 of `feat/fixed-output`) the terms are
-reported as computed, which may be non-finite; `pi_output` is still 0.0.
+reported as computed, which may be non-finite; `pi_output` is still 0.0. Terms are stored as
+computed, `-0.0` included: they are diagnostics, not settings, so the package's `-0.0`
+normalisation of settings does not apply (and normalising would break `p_term + i_term == raw`).
 
 ### How it connects to the rest of the repo
 
@@ -170,10 +172,10 @@ property (the spec and the dashboard name three values).
 
 | # | Must prove | Covers |
 |---|---|---|
-| T1 | Hand-computed `error`/`p_term`/`i_term` after each of several steps: linear region, saturated high with positive error (integral held, `i_term` uses the tentative one), saturated low, a per-call setpoint, a gain change between steps, a `fixed_output` hold; `clamp(p+i) == pi_output` when finite; the non-finite guard case reports terms as computed with `pi_output` 0.0. | D1 |
+| T1 | Hand-computed `error`/`p_term`/`i_term` after each of several steps: linear region, saturated high with positive error (integral held, `i_term` uses the tentative one), saturated low, a per-call setpoint, a gain change between steps, a `fixed_output` hold; `clamp(p+i) == pi_output` when finite; the non-finite guard case reports terms as computed with `pi_output` 0.0; `kp=0.0` with a negative error stores `p_term` as `-0.0` (`math.copysign(1, p_term) == -1.0`). | D1 |
 | T2 | `None` before first update, after `reset`, after `from_dict` (and JSON round trip); assignment raises `AttributeError`; `to_dict()` identical in keys and values to before this round (literal). | D2 |
 | T3 | Raising `update` (bad `measured`, bad `setpoint`, monkeypatched modulator) leaves the three unchanged. | D3 |
-| T4 | Allocator: `Room` terms == composed controller's == a standalone `PIController` twin's (dedicated room, many steps); `None` reading leaves them; failing solver restores them; `with_layout` carries them, `None` for a new room; the twin equality holds under a hold. | D4 |
+| T4 | Allocator: `Room` terms == composed controller's == a standalone `PIController` twin's (dedicated room, many steps); `None` reading leaves them; failing solver restores them; `with_layout` carries them, `None` for a new room; after `SectionAllocator.from_dict(a.to_dict())` (direct and through JSON) every room's three terms are `None` while `with_layout` on the same source carries them; the twin equality holds under a hold. | D4 |
 | T5 | Full suite green with no existing assertion edited. | D5 |
 
 Coverage: D1–D6 each have Public API rows and test intents; every row cites a criterion.
@@ -185,6 +187,15 @@ Coverage: D1–D6 each have Public API rows and test intents; every row cites a 
   order, so it is identical; if a test moves anyway, **halt** (D5 says nothing changes).
 - `test_pi_controller.py` has literal `to_dict` and attribute-surface tests; new properties must not
   appear in `to_dict` — D2 pins it.
+### Critique
+
+plan-critic (verdict: accept with changes; `raw = p + i` confirmed bit-identical, save points
+confirmed complete, no attribute-surface test to break):
+
+1. `-0.0` in the terms was undecided — **applied**: stored as computed, `-0.0` included; T1 case
+   added.
+2. Room terms after `SectionAllocator.from_dict` had no test intent — **applied**: T4 extended.
+
 ---
 
 ## 3. Implementation notes
