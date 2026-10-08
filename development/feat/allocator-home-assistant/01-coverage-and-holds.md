@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — coverage and holds
 
-<!-- claude-plan step=6 status=active -->
+<!-- claude-plan step=7 status=active -->
 
 | Field | Value |
 |---|---|
@@ -18,7 +18,7 @@
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
-| 6 | Concept check | `/concept-check` | in `/build` | pending |
+| 6 | Concept check | `/concept-check` | in `/build` | done |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
@@ -361,14 +361,6 @@ Auditor findings (all three applied; each checked against the code as it stands)
 
 No code changed in this step.
 
----|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
-
 ---
 
 ## 5. Test log
@@ -438,16 +430,64 @@ Edge cases considered and deliberately skipped, with reasons:
 
 ## 6. Concept check
 
+Audited against section 1 only, then the code as it stands (ruff, format, mypy clean; pytest 1517 passed;
+`python -m heatingsystem.allocator.allocator` exit 0, reproducing E1 HS4 0.2154, E2 HS4 0.5385, release back
+to E1, E3 HS1 0.4, E4 0.5 each, the JSON round trip with a hold, and the room-sum refusal).
+
 | # | Criterion | Met | Evidence |
 |---|---|---|---|
-| A1 | | | |
+| A1 | Reference layout builds; room sum above 1 + 1e-9 refused naming room and sum; multi-room section above 1 accepted; coverage range keeps its path; other refusals unchanged | yes | `_normalise` (`allocator.py:478`) raises `rooms['R1'] coverages sum to 1.2, more than 1.` (showcase output); `_build_coverage` (`:432`) keeps `sections['HS4']['R3'] must be in (0, 1]`; tests `test_construction_refuses_a_room_coverage_sum_above_one_naming_room_and_sum`, `..._accepts_a_section_covering_several_rooms_with_a_sum_above_one`, `test_coverage_sum_tolerance_boundary_is_one_nanounit`; the showcase's HS4 {R3 0.7, R4 0.4} constructs |
+| A2 | Normalised by each room's controlled total; E1 and E3 as stated | yes | Showcase: E1 HS3 1.0, HS4 0.2154, HS5 0.0; E3 HS1 0.4 (does not saturate at 0.5); `test_normalisation_e1_free_allocation_of_the_reference_layout`, `..._e3_closed_form_is_relative_to_the_covered_part`, `test_a_room_summing_below_one_equals_the_same_layout_scaled_to_one`; expected numbers are hand-derived or from an independent active-set solve, per section 3 |
+| A3 | A room with one section of any coverage in (0, 1] reproduces a standalone floor-heating `PIController` exactly (`==`) across setpoint and gain changes | yes | `_Component(rooms, sections, None, 1.0)` closed form `min(1, demand)` (`:555`, `:880`); `test_dedicated_room_produces_the_command_sequence_of_a_standalone_controller`, `test_equivalence_holds_for_a_dedicated_coverage_of_any_size` (0.5, 0.3, 1.0, 1e-9, 1 - 1e-12), `test_other_rooms_do_not_leak_into_a_dedicated_rooms_duty`; the old reversed test was replaced by intent, as planned |
+| A4 | A4-A6 and A10-A12 of 1.0.0 restated with `h_r = sum normalised coverage * u_s`: KKT, independent solve, priority scaling, A5/A6 as scoped, worked examples incl. E1-E5 | yes, with one reading judged below | `test_allocation_satisfies_the_kkt_conditions_of_the_documented_cost`, `test_random_layouts_are_unchanged_by_scaling_every_priority`, `test_worked_examples_hold_within_a_thousandth`, `test_worked_examples_with_many_exact_fits_deliver_each_demand`, E1-E5 tests (`test_e2_free_sections_compensate_for_a_shut_section`, `test_e4_evenness_spreads_the_demand_over_the_three_loops`, `test_an_all_held_component_calls_no_solver_e5`); A5 general clause on the counterexample, a sweep and seeded random layouts (`:1301-1347`) |
+| A5 | `hold` validates like `fixed_output`, section named, unknown section `ValueError`, `None` releases, a raising call changes nothing; `holds` complete and fresh | yes | `hold` (`:671`) checks section type and name, then `_validation.level(f"holds[{section!r}]", ...)`, and assigns only after both pass; `holds` (`:667`) builds a fresh dict; tests `test_hold_refuses_a_bad_level_naming_the_section_and_changes_nothing` (17 values), `test_hold_range_error_repeats_the_callers_own_value`, `test_hold_checks_the_section_before_the_level`, `test_holds_is_complete_fresh_and_in_constructor_order`, `test_hold_release_and_repeat_are_no_ops`. The non-`str` `TypeError` is a documented plan refinement, not drift |
+| A6 | Held duty is its level at every update and `duty` reports it; commands are the floor-heating modulation of the level and the window records them; free sections compensate (E2); after release it allocates freely (E1) | yes (operative clause; parenthetical loose, see below) | `_allocate` writes the level into `found` for held sections (`:878`, `:893`) and the modulator's `fixed_output` is the hold; `test_a_section_held_at_a_bound_commands_exactly_its_level` (6 cases), `test_a_held_level_ignores_the_demand_at_every_step`, `test_a_held_fractional_level_is_modulated_like_a_standalone_modulator` (twin equality), `test_a_held_quarter_level_fills_the_first_window_with_the_level_as_its_mean`, `test_e2_free_sections_compensate_for_a_shut_section`, `test_release_reallocates_exactly_like_a_fresh_allocator_e1`; showcase E2 HS4 0.5385, release back to E1 |
+| A7 | An all-held component calls no solver | yes | `if not free: continue` before `lsq_linear` (`:895`); `test_an_all_held_component_calls_no_solver_e5` (monkeypatched `lsq_linear` raising, plus converse), `test_only_components_with_a_free_section_call_the_solver` |
+| A8 | Every room's PI keeps running during a hold, equal to an un-held twin step for step | yes | `update` steps every room before `_allocate` regardless of holds (`:638`); nothing in `update` writes a hold; `test_every_rooms_pi_equals_an_unheld_twins_step_for_step` (40 steps, hold set, changed, released) |
+| A9 | A raising `update` leaves holds, windows, rooms and `duty` unchanged | yes | integrals and PI outputs restored on any exception (`:633-647`), commands issued and `_duty` stored only after `_allocate` succeeds; `test_a_raising_update_leaves_holds_windows_rooms_and_duty_unchanged` (solver failure, NaN, text, missing room, with holds set) |
+| A10 | Snapshot `coverage`/`history`/`hold`; holds restored; identical next 50 commands direct and via JSON with a hold; 1.0.0 snapshot refused naming the key | yes | `to_dict` (`:720`) and `from_dict` (`:754`) as specified; `test_a_restored_allocator_with_holds_produces_the_same_next_fifty`, `test_from_dict_refuses_a_bad_hold_with_its_snapshot_path`, `test_a_1_0_0_snapshot_is_refused_for_coverage_and_hold_only` (names `coverage` and `hold`, as the plan's critique settled; `shares` is not named because `snapshot_mapping` stops at missing keys, which is the "naming the key" the plan agreed); showcase round trip original = restored |
+| A11 | Version 1.1.0; `STRUCTURE.md` and `README.md` describe coverage, normalisation, `hold` and the post-release burst | yes | `pyproject.toml:7` `version = "1.1.0"`; `test_the_package_version_is_1_1_0`; README "SectionAllocator usage" (lines 147-209: coverage, normalisation, `holds`, burst after release at 205-207, 1.0.0 snapshots refused); `STRUCTURE.md` allocator entry; a grep for `share` in README and the allocator source finds only unrelated uses (the package comment and the `shares` mention in the 1.0.0-snapshot note) |
 
-Drift found, and what was done about it:
+### Judgements the build left to this step
+
+- **A4, "A5/A6 hold as scoped in 1.0.0" via held-at-0 companions: met.** Under normalisation a lone shared
+  section has coefficient 1 for both rooms, so 1.0.0's exceptions (saturation tie, unequal coverage) need a
+  coefficient below 1, which exists only when the room has another section. Holding that other section at 0.0
+  removes its column and its contribution, leaving exactly 1.0.0's problem (`test_documented_exception_unequal_coverage_favours_the_larger_coverage`
+  recovers 1.0.0's 0.8889 / 0.4444). The scope of the claim is unchanged; only the construction of the layout
+  that exhibits it differs. The tests do not weaken the claim, and they exercise `hold` as a side benefit. No
+  unheld layout falsifies A5/A6 beyond the documented exceptions (random-layout tests pass).
+- **A6's parenthetical ("a 0/1 pattern averaging the level over a window otherwise"): a gloss, not a second
+  promise; not a halt.** The operative clause, "its commands are the floor-heating modulation of that level",
+  holds exactly (command-for-command equality with a standalone `Modulator`). The concept itself fixes the
+  mechanism (section 1: "the held section's floor-heating `Modulator` gets `fixed_output = level`") and puts
+  `Modulator` out of scope, so a window mean exact for every window length was never decidable here: a fractional
+  level is realised to within about one slot (window 2 at 0.5 gives a mean of 1/3), and exactly for a full 24-slot
+  window from empty at 0.25. No criterion is broken and no case is undecided. The wording can be tightened at the
+  next revision of section 1; noted for step 8, not amended here.
+
+### Beyond the criteria
+
+- **Out of scope:** nothing built. `PIController` and `Modulator` are untouched by this branch's diff; no `dt`, no
+  lazy scipy, no limits or prices, no `None` temperatures, no layout-change method, no P/I term properties.
+- **Connections:** `Room` still composes `PIController`; the section modulators are `Modulator` instances and the
+  hold is their `fixed_output` (one source of truth); validation goes through `heatingsystem._validation`.
+- **Surface:** the new public API is `hold` and `holds` only, both in the concept; the non-`str` `TypeError` is a
+  documented plan refinement. Nothing unrequested.
+- **Showcase:** reads as a worked example (named inputs, one call, a named result) and a reader who read only the
+  concept recognises E1-E4, a hold with release, the JSON round trip and the room-sum refusal.
+- **Structure:** the auditor's two findings were correct (checked against the tests) and applied to `STRUCTURE.md`:
+  a missing `hold` key is reported as `sections['HS1']: ` plus the missing key, not as `sections['HS1'].hold`;
+  and the step 5 summary now includes the error-order, no-renormalise and version tests and says a raising
+  `update` leaves holds, windows, rooms and `duty` untouched. The `allocator.py` entry needed no edit.
+
+Drift found, and what was done about it: none in the code. Two section-5/6 wording items (A6's parenthetical, the
+`from_dict`/`hold` docstring wording about "same setters") are recorded for step 8 as notes; neither is a defect. The
+empty template table left in section 4 was removed.
 
 ### Earlier rounds still hold
 
-| Round | # | Criterion | Still met | Evidence |
-|---|---|---|---|---|
+Not applicable: this is round 1 of the branch. (1.0.0's criteria were carried into A3-A4 and audited above.)
 
 ---
 

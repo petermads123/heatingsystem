@@ -443,12 +443,14 @@ the cost's KKT conditions and an independent solve over random layouts, priority
 the worked examples A-G. Package exports, the declared scipy/numpy dependencies, and
 `to_dict`/`from_dict`: shape and order (per section `coverage`, `history`, `hold`), identical next 50
 commands (direct and through JSON, empty, partial and full windows), every malformed snapshot naming
-its path (a bad or missing `hold` naming `sections['HS1'].hold`), a 1.0.0 snapshot refused naming
+its path (a bad `hold` naming `sections['HS1'].hold`, a missing one reported as `sections['HS1']: ` with the missing key), a 1.0.0 snapshot refused naming
 its missing keys, subclass round trip; and the module showcase runs. Normalisation and holds (the E layout, hand-derived numbers): E1-E5, a room summing below 1, coverages
 reported as given, `hold`/`holds` validation (section checked before level, previous hold kept on a raising call), a held
 section's duty and its modulator-twin commands, the held contribution subtracted from demand and evenness rows, no solver
-for an all-held component, the room PI equal to an un-held twin's, a raising `update` leaving holds untouched, and the
-restored allocator with holds.
+for an all-held component, the room PI equal to an un-held twin's, a raising `update` leaving holds, windows, rooms and
+`duty` untouched, the restored allocator with holds (identical next 50 commands, int and `-0.0` holds read as holds), a
+restored partial-coverage layout not renormalised, `from_dict` reporting a layout error, then a room setting, then a hold,
+then a history error; and the package version is 1.1.0.
 
 ### `tests/test_modulator.py`
 
