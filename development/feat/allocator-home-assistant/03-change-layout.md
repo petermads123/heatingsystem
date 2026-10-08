@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — change the layout keeping state
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,7 +19,7 @@
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -243,14 +243,6 @@ structure-auditor findings and action:
 - Also extended the `duty` property docstring with the same three `None` cases.
 - grep of README.md and allocator.py for "fixed layout"/"read-only layout"/"cannot change": no remaining fixed-layout claim. README line 220-221 says an allocator's layout "is read-only, but `with_layout` returns a new allocator", which is accurate and is the C6 paragraph.
 
----|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
-
 ---
 
 ## 5. Test log
@@ -358,8 +350,11 @@ Drift found, and what was done about it:
 
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits | `912c394` Recommend round 2; concept and plan: round 3 — change the layout keeping state; `73176ea` Plan accepted: round 3 — critique applied, start build; `0207b48` Implement: round 3 — change the layout keeping state; `3e035af` Verify: SectionAllocator.with_layout; `8733de6` Test: with_layout keeping state (round 3); `a18dac8` Concept check: change the layout keeping state; plus this step's `Ship: SectionAllocator ready for Home Assistant — change the layout keeping state` |
+| Pushed to | `origin/feat/allocator-home-assistant` |
+| Whole-tree gates | `ruff check .` passed; `ruff format --check .` 56 files formatted; `mypy` no issues in 21 source files; `pytest` 1612 passed |
+| Stray files | none; diff confined to `allocator.py`, `tests/test_allocator.py`, `README.md`, `STRUCTURE.md` and plan files |
+| Missing step commits | none; steps 1-2 share the `912c394`/`73176ea` commits |
 
 ---
 
