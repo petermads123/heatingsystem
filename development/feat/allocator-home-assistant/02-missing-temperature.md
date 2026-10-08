@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — a room without a temperature
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,7 +16,7 @@
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -214,6 +214,20 @@ Guide entries 1-5 implemented as planned; no deviation from the Public API table
 
 | Check | Result |
 |---|---|
+| `ruff check .` | All checks passed! |
+| `ruff format --check .` | 55 files already formatted |
+| `mypy` | Success: no issues found in 21 source files |
+| `pytest` | 1517 passed |
+| Plan completeness | every signature in the Public API table exists as written: `SectionAllocator.update(measured: Mapping[str, float \| None]) -> dict[str, float]`, `Room.demand -> float \| None`, `main() -> None`; no missing, deviating or unplanned surface |
+| `STRUCTURE.md` | in sync after one edit (below) |
+| `python -m heatingsystem.allocator.allocator` | runs; expected RuntimeWarning; the "R3 has no reading" case prints R3 demand 0.5 and duty HS3 1.0, HS4 0.2154 (E1 again) |
+
+structure-auditor: allocator.py entries matched the code; one finding, applied: the
+`tests/test_allocator.py` summary now says a `None` temperature is accepted as no reading
+(no raise, that room's `integral` and `demand` unchanged). Step 5 should extend that
+sentence if it adds T1-T5.
+
+---|---|
 | `ruff check .` | |
 | `ruff format --check .` | |
 | `mypy` | |

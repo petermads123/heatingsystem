@@ -429,8 +429,9 @@ uncovered rooms, priority and evenness limits, bad types, empty and malformed ma
 names), the error order, shared-gain errors identical to `PIController`'s and naming the argument,
 `history_length` parity, no aliasing of the caller's mappings, and a read-only layout. `Room`
 setters identical to `PIController`'s and effective on the next `update`. `update`: output shape and
-binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, numeric
-variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
+binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, a `None`
+temperature accepted as no reading (no raise, that room's `integral` and `demand` unchanged),
+numeric variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
 evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
 and tiny-coverage matrices), the weight floor against extreme priority ratios and subnormal
 priorities, the range refusals for priority in `(0, 1]` and evenness in `[0, 1]` (and in `from_dict`),
