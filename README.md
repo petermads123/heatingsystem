@@ -175,7 +175,11 @@ commands = allocator.update({"R1": 20.9, "R2": 20.4})  # {"HS1": 1.0, "HS2": 1.0
 print(allocator.duty)  # last allocated duty per section, in [0, 1]
 print(allocator.rooms["R2"].demand)  # last PI demand of R2
 # For a dashboard, read the terms of the last PI step rather than recomputing them:
-print(allocator.rooms["R2"].error, allocator.rooms["R2"].p_term, allocator.rooms["R2"].i_term)
+print(
+    allocator.rooms["R2"].error,
+    allocator.rooms["R2"].p_term,
+    allocator.rooms["R2"].i_term,
+)
 
 # A dead sensor: None means "no reading". R2's PI takes no step and the allocation
 # reuses its last demand (0.0 if it never had a reading); R1 steps as usual.

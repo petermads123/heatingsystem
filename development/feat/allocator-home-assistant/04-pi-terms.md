@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — P and I terms per room
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,7 +16,7 @@
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -213,6 +213,16 @@ Implemented as planned, guide entries 1-6; no deviation, Public API table unchan
 
 | Check | Result |
 |---|---|
+| `ruff check .` | All checks passed! |
+| `ruff format --check .` | First run: `README.md` would be reformatted (the new dashboard `print` in the allocator usage block was one line too long for ruff's markdown code-block formatting). Fixed with `ruff format README.md` (the call is wrapped over four lines); re-run: 57 files already formatted. |
+| `mypy` | Success: no issues found in 21 source files |
+| `pytest` | 1612 passed, no existing assertion edited |
+| Plan completeness | every signature in the Public API table exists as written: `PIController.error`/`p_term`/`i_term` and `Room.error`/`p_term`/`i_term`, read-only properties `-> float | None`; both `main()` showcases print the terms. No Missing, Deviation or Unplanned rows. |
+| `STRUCTURE.md` | structure-auditor: in sync apart from two stale `main()` descriptions, both applied (allocator showcase: terms now described with the R3 no-reading block; PIController showcase: terms follow the setpoint override), plus the optional `from_dict` row now says `pi_output`, `error`, `p_term` and `i_term` are `None`. |
+| `python -m heatingsystem.pi_controller.pi_controller` | Runs; prints `last step: error=0.7000  p_term=0.2100  i_term=0.1365` after the setpoint override (RuntimeWarning expected). |
+| `python -m heatingsystem.allocator.allocator` | Runs; R3 no-reading block prints `demand = 0.5`, `error = 0.5, p_term = 0.5, i_term = 0.0` (RuntimeWarning expected). |
+
+---|---|
 | `ruff check .` | |
 | `ruff format --check .` | |
 | `mypy` | |
