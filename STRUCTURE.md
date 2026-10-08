@@ -110,19 +110,28 @@ Subpackage entry point. Re-exports `SectionAllocator` and `Room` from `allocator
 ### `src/heatingsystem/allocator/allocator.py`
 
 Multi-room control of on/off heating sections that may each serve several rooms. Built
-once from a fixed layout (rooms with a priority and an evenness weight; sections with a
-share per covered room). Every `update` runs, per room, a composed radiator-mode
+from a layout, changeable through `with_layout` (rooms with a priority and an evenness weight; sections with a
+*coverage* per served room: the fraction of that room's floor heating the section provides,
+in `(0, 1]`, a room's coverages summing to at most 1 with the rest an outside disturbance;
+each room's coverages are normalised by its controlled total, so demand 1.0 means every
+loop of the room fully on). A section can be held at a fixed level (`hold`). Every `update` runs, per room, a composed radiator-mode
 `PIController` (`history_length=1`) for the demand; allocates section duty cycles by
 bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`) minimising exactly
 `J(u) = sum_r p_r (d_r - h_r)^2 + sum_r p_r e_r spread_r` (`p` priority in `(0, 1]`, `e` evenness
-in `[0, 1]`, `h_r` the heat room r receives, `spread_r = sum((u_s - mean)**2)` over its sections),
-split by connected component of the room-section graph with a closed form `min(1, demand / share)`
-for a one-room, one-section component (every weight is divided by the component's largest priority and
-floored at 1e-12 of it as a safety net for priorities more than 1e12 apart, so a very low-priority room's feasible demand is never lost to round-off,
-and the solver's status is checked); and turns each duty into 0.0/1.0 through one
-floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
-`scipy`). The component split, matrix assembly, the solve step and the layout validation are
-private helpers and are omitted per this file's convention.
+in `[0, 1]`, `h_r = sum_s (normalised coverage) u_s` the heat room r receives,
+`spread_r = sum((u_s - mean)**2)` over its sections, a held section entering with its level),
+split by connected component of the room-section graph. A one-room, one-section component
+has a closed form, `min(1, demand)`, or the held level when its section is held. Every
+other component is solved by least squares over its free sections only: each held
+section's column is split off at solve time and its contribution (column times level) is
+subtracted from the right-hand side, demand and evenness rows alike, and a component with
+no free section calls no solver. Every row weight (a priority, or priority times evenness)
+is divided by the component's largest priority and floored at 1e-12 of it, as a safety net
+so a very low-priority room's feasible demand is never lost to round-off, and the solver's
+status is checked. Finally each duty becomes 0.0/1.0 through one floor-heating `Modulator`
+per section. First module with runtime dependencies (`numpy`, `scipy`). The component
+split, matrix assembly, coverage normalisation, the solve step and the layout validation
+are private helpers and are omitted per this file's convention.
 
 | Signature | Description |
 |---|---|
@@ -134,17 +143,23 @@ private helpers and are omitted per this file's convention.
 | `Room.kp -> float` (settable) | Delegates to the composed `PIController`. |
 | `Room.ki -> float` (settable) | Delegates to the composed `PIController`. |
 | `Room.integral -> float` | Read-only; the PI integral. |
-| `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last `update`, `None` before the first and after `from_dict`. |
-| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority" in (0, 1], "evenness" in [0, 1]}`; `sections` maps name to `{room: share}`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
-| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`; a bad temperature names `measured['<room>']`, a missing or unknown room is reported as the list of names (`measured is missing rooms [...]` / `measured has unknown rooms [...]`), and a non-mapping names `measured`. If the allocation fails (`ArithmeticError` for a non-finite or non-converged solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. |
+| `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last PI step (unchanged by a `None` reading), `None` before the first real reading and after `from_dict`. |
+| `Room.error -> float \| None` | Read-only; delegates to the composed `PIController`. `None` before the first real reading and after `from_dict`; unchanged by a `None` reading, restored by a failed `update`, carried by `with_layout` (`None` for a new room). |
+| `Room.p_term -> float \| None` | Read-only; delegates, same cases. |
+| `Room.i_term -> float \| None` | Read-only; delegates, same cases. |
+| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority" in (0, 1], "evenness" in [0, 1]}`; `sections` maps name to `{room: coverage}`, each coverage in `(0, 1]`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); an uncovered room is named; then a room whose coverages sum above `1 + 1e-9` raises `ValueError` naming it and the sum (`rooms['R3'] coverages sum to 1.1, more than 1.`, first in room order); a section covering several rooms may sum to anything; nothing is built on failure. |
+| `SectionAllocator.update(measured: Mapping[str, float \| None]) -> dict[str, float]` | One step: a temperature per room in (`None` = no reading: that room's PI takes no step, its integral and `demand` stay, and the allocation uses its last demand, 0.0 before its first; the key must still be present), a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature (`None` is accepted), `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`; a bad temperature names `measured['<room>']`, a missing or unknown room is reported as the list of names (`measured is missing rooms [...]` / `measured has unknown rooms [...]`), and a non-mapping names `measured`. If the allocation fails (`ArithmeticError` for a non-finite or non-converged solver result), every room's integral, demand, `error`, `p_term` and `i_term` are restored and the error propagates; no command is issued and `duty` is unchanged. A held section's duty is its level and its command the floor-heating modulation of that level (exactly the level for 0.0 and 1.0); the free sections compensate; every room's PI keeps stepping during a hold (a burst can follow a release); `update` never writes a hold. |
 | `SectionAllocator.rooms -> Mapping[str, Room]` | Read-only `MappingProxyType` of the `Room` handles. |
-| `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the shares. |
+| `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the coverages as given (not normalised). |
+| `SectionAllocator.hold(section: str, level: float \| None) -> None` | Hold a section at `level` in `[0, 1]`, or release it with `None`. A non-`str` section raises `TypeError`, an unknown name `ValueError` listing the known sections; `level` is validated like `Modulator.fixed_output` (`TypeError`/`ValueError`/`OverflowError` naming `holds['HS3']`, repeating the caller's value). Stored in the section modulator's `fixed_output`; takes effect on the next `update`, leaves `duty` and `history` untouched, and a raising call changes nothing. |
+| `SectionAllocator.holds -> dict[str, float \| None]` | Read-only; a fresh dict with every section in constructor order, its held level or `None`. |
 | `SectionAllocator.history_length -> int` | Read-only. |
-| `SectionAllocator.duty -> dict[str, float] \| None` | Last allocated duty per section; `None` before the first `update` and after `from_dict`. |
+| `SectionAllocator.duty -> dict[str, float] \| None` | Last allocated duty per section (a held section reports its level); `None` before the first `update`, after `from_dict`, and after a `with_layout` whose section names or order differ. |
 | `SectionAllocator.history -> dict[str, tuple[float, ...]]` | Each section's command window, oldest first. |
-| `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`shares`, `history`), fresh containers. |
-| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor (so a layout error is the constructor's, naming the constructor's path, e.g. `sections['HS1']['R1']` for a bad share), settings through the setters, each section's window restored into a fresh floor-heating `Modulator`; setting and window errors keep their class with the snapshot path prefixed (`rooms['R1'].integral`, `sections['HS1'].history[0]`). `duty` and every room's `demand` are `None` afterwards. |
-| `main() -> None` | Showcase: the reference layout with evenness 0, worked example B (R1 evenness 0.1) and C (both rooms 1), a priority conflict on a shared section, a setpoint change, a JSON snapshot round trip and an invalid layout. |
+| `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`coverage` as given, `history`, `hold`), fresh containers. |
+| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor (so a layout error is the constructor's, naming the constructor's path, e.g. `sections['HS1']['R1']` for a bad coverage), settings through the setters, each section's hold validated (after the constructor, before its window) and its window restored into a fresh floor-heating `Modulator` whose `fixed_output` is the hold; setting, hold and window errors keep their class with the snapshot path prefixed (`rooms['R1'].integral`, `sections['HS1'].hold`, `sections['HS1'].history[0]`). A 1.0.0 snapshot (`shares` instead of `coverage` and `hold`) is refused for the missing keys. `duty` and every room's `demand` are `None` afterwards. |
+| `SectionAllocator.with_layout(rooms: Mapping[str, Mapping[str, float]] \| None = None, sections: Mapping[str, Mapping[str, float]] \| None = None, *, history_length: int \| None = None) -> Self` | A new allocator (same type) with the given layout, an argument left `None` keeping the current one; built through the constructor, so it raises what the constructor raises (even with a path naming a defaulted argument) and the original is never changed. Carries by name: a room's `setpoint`, `kp`, `ki`, integral, last `demand` and last `error`/`p_term`/`i_term` (priority and evenness from the new `rooms`), a section's window (newest `history_length` slots) and hold; `duty` only when the section names are identical in order. A new room takes the constructor defaults (`kp` 0.3, `ki` 0.015, `setpoint` 21.0, `demand` `None`), a new section an empty window and no hold. |
+| `main() -> None` | Showcase: the reference layout (HS1-HS5 over R1-R4) with worked example E1, E2 (HS3 held shut, then released), a `None` reading for R3 with its kept `demand` and last `error`/`p_term`/`i_term`, E3 (R1 normalisation) and E4 (evenness), a JSON snapshot round trip carrying a hold, a `with_layout` change (R3 priority, shorter window) and a room whose coverages sum above 1. |
 
 Runnable standalone: `python -m heatingsystem.allocator.allocator`, once the package is
 installed.
@@ -218,14 +233,17 @@ to it, and the modulator instance itself is not exposed.
 | `PIController.integral -> float` (settable) | The integral accumulator. Same numeric-family setter contract as `kp`, naming `integral`; previous value unchanged on failure. Writable so a restore can put it back exactly; `update` and `reset` write the private field directly rather than through this setter, so the control law does not depend on it never tightening. |
 | `PIController.history_length -> int` | Read-only. Delegates to the composed `Modulator`. |
 | `PIController.pi_output -> float \| None` | Read-only. The clamped PI result of the last `update`, in `[OUTPUT_MIN, OUTPUT_MAX]`. Reports the PI demand even while `fixed_output` holds the actuator at a different level. `None` before the first `update` and again after `reset()` or `from_dict()`. |
-| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). `measured` is validated first; a passed `setpoint` is then assigned through its setter, so a call that fails validation stores nothing. The new integral and the PI demand `u` are computed into locals; the demand is then handed to the composed `Modulator`'s `command`, which raises before `integral` or `pi_output` is written (`ValueError`/`TypeError`/`OverflowError` propagate unchanged and leave both untouched; a `setpoint` passed to that call has already been stored, as after any raise past validation); only then are `integral` and `pi_output` written. If the raw PI sum or the tentative integral is not finite (reachable only with extreme finite inputs, e.g. `kp * -inf`), the PI demand is `OUTPUT_MIN`, `pi_output` reads `0.0`, and the integral is held rather than advanced; while `fixed_output` is set, the command is unaffected, since the fixed level replaces the demand regardless inside the modulator. Raises `TypeError` for a non-numeric or `bool` `measured`/`setpoint`, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. |
-| `PIController.reset() -> None` | Zero the integral, reset the composed `Modulator` (clearing its history window) and set `pi_output` back to `None`. Leaves `fixed_output` and every setting unchanged. |
+| `PIController.error -> float \| None` | Read-only. `setpoint - measured` of the last `update`, the setpoint in force for that step; stored as computed. `None` before the first `update` and after `reset()` or `from_dict()`. |
+| `PIController.p_term -> float \| None` | Read-only. `kp * error` of the last `update`, stored as computed (`-0.0` and non-finite values included); same `None` cases. |
+| `PIController.i_term -> float \| None` | Read-only. `ki *` the tentative integral (previous integral plus this error) the last `update`'s raw output used, whether or not anti-windup committed it, so `p_term + i_term` is the raw sum before clamping; same `None` cases. None of the three is in `to_dict()`. |
+| `PIController.update(measured: float, setpoint: float \| None = None) -> float` | One control step: returns the actuator command for `measured` (°C). `measured` is validated first; a passed `setpoint` is then assigned through its setter, so a call that fails validation stores nothing. The new integral and the PI demand `u` are computed into locals; the demand is then handed to the composed `Modulator`'s `command`, which raises before `integral` or `pi_output` is written (`ValueError`/`TypeError`/`OverflowError` propagate unchanged and leave both untouched; a `setpoint` passed to that call has already been stored, as after any raise past validation); only then are `integral`, `pi_output`, `error`, `p_term` and `i_term` written. If the raw PI sum or the tentative integral is not finite (reachable only with extreme finite inputs, e.g. `kp * -inf`), the PI demand is `OUTPUT_MIN`, `pi_output` reads `0.0`, and the integral is held rather than advanced; while `fixed_output` is set, the command is unaffected, since the fixed level replaces the demand regardless inside the modulator. Raises `TypeError` for a non-numeric or `bool` `measured`/`setpoint`, `ValueError` for a non-finite one, `OverflowError` for one too large to represent as a `float`. |
+| `PIController.reset() -> None` | Zero the integral, reset the composed `Modulator` (clearing its history window) and set `pi_output`, `error`, `p_term` and `i_term` back to `None`. Leaves `fixed_output` and every setting unchanged. |
 | `PIController.to_dict() -> dict[str, object]` | A snapshot of every setting and every piece of running state — `kp`, `ki`, `setpoint`, `mode` (as its string value), `history_length`, `fixed_output`, `integral`, `history` (a list, oldest first) — as built-in types `json.dumps` accepts, merging the controller's own four keys with the modulator's private four-key snapshot into this frozen eight-key order. A fresh dict and a fresh list each call; mutating either, or updating the controller afterwards, leaves the other unchanged. `pi_output` is derived, not included. |
-| `PIController.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuilds a controller from a `to_dict()`-shaped mapping, each value applied through the same validating setter or check a direct assignment would use — the four modulator-owned keys are checked by building a `Modulator` first, then the four controller-owned keys. A missing or unknown key raises `ValueError` naming the keys (missing checked first); a bad value raises what the matching setter or check raises, naming the key (`history[i]` for an entry, `OverflowError` for a huge `int`); a `history` longer than `history_length` raises `ValueError`; a non-mapping `data` (e.g. the JSON text instead of the loaded object) raises `TypeError`. On any failure no controller is produced. The result equals the source in every setting and in `integral`, `history`, `duty_cycle`, `is_history_full` and `fixed_output`; `pi_output` is `None`, as on any fresh controller. |
+| `PIController.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuilds a controller from a `to_dict()`-shaped mapping, each value applied through the same validating setter or check a direct assignment would use — the four modulator-owned keys are checked by building a `Modulator` first, then the four controller-owned keys. A missing or unknown key raises `ValueError` naming the keys (missing checked first); a bad value raises what the matching setter or check raises, naming the key (`history[i]` for an entry, `OverflowError` for a huge `int`); a `history` longer than `history_length` raises `ValueError`; a non-mapping `data` (e.g. the JSON text instead of the loaded object) raises `TypeError`. On any failure no controller is produced. The result equals the source in every setting and in `integral`, `history`, `duty_cycle`, `is_history_full` and `fixed_output`; `pi_output`, `error`, `p_term` and `i_term` are `None`, as on any fresh controller. |
 | `PIController.history -> tuple[float, ...]` | Read-only. Delegates to the composed `Modulator`; the last `history_length` commands, oldest first. |
 | `PIController.duty_cycle -> float` | Read-only. Delegates to the composed `Modulator`; mean of `history`, `0.0` while it is empty. |
 | `PIController.is_history_full -> bool` | Read-only. Delegates to the composed `Modulator`; whether `history_length` commands have been issued. |
-| `main() -> None` | Showcase: the enum, a radiator warm-up, a setpoint override, a `fixed_output` override (now also printing `pi_output`) and release, a reset, a floor-heating run to a converged duty cycle, a state snapshot round trip through `to_dict`/`from_dict` (including a JSON round trip) with the released hold surviving, a `mode` reassignment, and the `ValueError`/`TypeError` demonstrations including an invalid snapshot. |
+| `main() -> None` | Showcase: the enum, a radiator warm-up, a setpoint override with that step's `error`/`p_term`/`i_term`, a `fixed_output` override (now also printing `pi_output`) and release, a reset, a floor-heating run to a converged duty cycle, a state snapshot round trip through `to_dict`/`from_dict` (including a JSON round trip) with the released hold surviving, a `mode` reassignment, and the `ValueError`/`TypeError` demonstrations including an invalid snapshot. |
 
 Runnable standalone: `python -m heatingsystem.pi_controller.pi_controller`, once the
 package is installed (`pip install -e ".[dev]"`). Under a `src/` layout the repo root is
@@ -401,32 +419,79 @@ in `heatingsystem.__all__` and `heatingsystem.modulator.__all__` but not
 `setpoint` is passed in that call, since the setpoint setter runs before the modulator is
 reached and would otherwise store even on a raise — see plan round 4 section 5).
 
+Round 4 of `feat/allocator-home-assistant` (D1-D3, 35 cases): `error`, `p_term` and `i_term` of the last
+`update` against hand computation: the linear region over several steps, both saturation directions with `i_term`
+built from the tentative integral while the integral is held (including raw exactly on either clamp), a per-call
+setpoint, a gain change between steps, terms stored not recomputed after a setting change, floor-heating mode and a
+`fixed_output` hold matching an unfixed twin, `int`/`Fraction` inputs giving `float` terms, the non-finite cases
+reported as computed (finite terms with an overflowing sum, `nan`/`inf` from an overflowing error) with `pi_output`
+0.0, signed zero kept on `p_term`/`i_term` and never on `error`; `None` before the first `update`, after `reset()`
+and after `from_dict` (direct and JSON), read-only, `to_dict()` unchanged; a raising `update` (bad `measured`, bad
+per-call `setpoint`, a raising modulator, with and without a per-call setpoint) leaving the three untouched.
+
 All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.toml` means
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file
 found anywhere else.
 
 ### `tests/test_allocator.py`
 
-Covers `SectionAllocator` and `Room`. Construction: every A1 refusal with its class and path (share
-at, either side of and far from `(0, 1]`, share sums either side of the 1e-9 tolerance, unknown and
+Covers `SectionAllocator` and `Room`, migrated in round 1 of `feat/allocator-home-assistant` to the
+coverage meaning (reference layout HS1 {R1 0.7}, HS2 {R1 0.3, R2 0.3}, HS3 {R2 0.7}, HS4 {R3 1.0}; worked
+examples B-G recomputed by an independent active-set solve, B and C also by hand; the layouts that need a
+coefficient below 1 — the priority counterexample, the unequal-coverage and saturation exceptions — hold
+the other half of the room shut; the share-sum tests became per-room sums and the dedicated-share test
+became "any dedicated coverage gives the standalone command sequence"). Construction: every A1 refusal with its class and path (coverage
+at, either side of and far from `(0, 1]`, per-room coverage sums either side of the 1e-9 tolerance, unknown and
 uncovered rooms, priority and evenness limits, bad types, empty and malformed mappings, non-string
 names), the error order, shared-gain errors identical to `PIController`'s and naming the argument,
 `history_length` parity, no aliasing of the caller's mappings, and a read-only layout. `Room`
 setters identical to `PIController`'s and effective on the next `update`. `update`: output shape and
-binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, numeric
-variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
+binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, a `None`
+temperature accepted as no reading (round 2, B1-B5: that room's `integral` and `demand` untouched while other rooms step like a twin; the allocation reuses its last demand, 0.0 and `demand` `None` before a first reading and after `from_dict`, also on the closed-form path and at the clamp; equals a standalone `PIController` fed only the real readings; every room `None`, with holds; a missing key, an unknown room, `"None"`/`"unavailable"` strings and every other refusal unchanged; a solver failure restores all rooms; each temperature read once from the mapping; a setting change deferred to the next real reading),
+numeric variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
 evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
-and tiny-share matrices), the weight floor against extreme priority ratios and subnormal
+and tiny-coverage matrices), the weight floor against extreme priority ratios and subnormal
 priorities, the range refusals for priority in `(0, 1]` and evenness in `[0, 1]` (and in `from_dict`),
 A5's absolute-mismatch monotonicity at evenness 0 with its documented exceptions, and its general
 clause (the combined cost `|d - h|^2 + e * spread` never rises with priority) on the halt's
 counterexample layout, a priority sweep and seeded random layouts, with the counterexample also
 pinned as the reason the absolute-mismatch clause needs evenness 0, A6's spread monotonicity (including a three-section room) and the
-hungry-R2 case, A7's bit-exact equivalence to a standalone floor-heating `PIController`, and A10-A12:
+hungry-R2 case, 1.0.0's A7 (now A3) bit-exact equivalence to a standalone floor-heating `PIController` for a dedicated coverage of any size, and 1.0.0's A10-A12 (now A4):
 the cost's KKT conditions and an independent solve over random layouts, priority-scaling invariance, and
 the worked examples A-G. Package exports, the declared scipy/numpy dependencies, and
-`to_dict`/`from_dict`: shape and order, identical next 50 commands (direct and through JSON, empty,
-partial and full windows), every malformed snapshot naming its path, subclass round trip.
+`to_dict`/`from_dict`: shape and order (per section `coverage`, `history`, `hold`), identical next 50
+commands (direct and through JSON, empty, partial and full windows), every malformed snapshot naming
+its path (a bad `hold` naming `sections['HS1'].hold`, a missing one reported as `sections['HS1']: ` with the missing key), a 1.0.0 snapshot refused naming
+its missing keys, subclass round trip; and the module showcase runs. Normalisation and holds (the E layout, hand-derived numbers): E1-E5, a room summing below 1, coverages
+reported as given, `hold`/`holds` validation (section checked before level, previous hold kept on a raising call), a held
+section's duty and its modulator-twin commands, the held contribution subtracted from demand and evenness rows, no solver
+for an all-held component, the room PI equal to an un-held twin's, a raising `update` leaving holds, windows, rooms and
+`duty` untouched, the restored allocator with holds (identical next 50 commands, int and `-0.0` holds read as holds), a
+restored partial-coverage layout not renormalised, `from_dict` reporting a layout error, then a room setting, then a hold,
+then a history error; and the package version is 1.1.0.
+
+Round 3's `with_layout` suite (55 tests, C1-C6): a no-argument call giving an equal but distinct allocator
+(`to_dict`, `duty`, `holds`, `history`, demands) with identical next 50 commands including `None` readings,
+chained calls equal to one, a never-updated allocator, a zero demand carried as `0.0` not `None`; isolation
+both ways and no aliasing of the caller's mappings; a priority/evenness/coverage change carrying every setting,
+integral, demand, window, hold and `duty` and matching the edited-snapshot `from_dict` rebuild for real readings,
+with the `None`-reading contrast (carried demand against the rebuild's 0.0); `duty` carried for reordered rooms,
+a mapping proxy, a coverage-only change and a window-only change, and `None` for a reordered section list;
+`history_length` trimming to the newest slots at every boundary, growth not full, a shrink irreversible, the
+trimmed `from_dict` twin, a fractional hold continuing over a grown window and the `sys.maxsize` limits; adding
+and removing rooms and sections (defaults not the original's gains, no ghost state on re-adding, a section kept
+after its room is removed, exact-name matching); thirteen constructor refusals identical in class and message
+with the original untouched (including `duty`, demands and next commands), empty mappings not read as "keep",
+keyword-only `history_length`, a failed first `update` after a carry, a subclass keeping its type and the README
+and docstrings no longer claiming a fixed layout.
+
+Round 4's `Room` terms suite (D4, 26 cases): `error`/`p_term`/`i_term` `None` before the first update, equal to a
+standalone `PIController` twin (NaN-aware, sign-of-zero-aware comparison) over 40 steps and under a hold and
+saturation, following the setpoint and gains in force per step and stored not recomputed, read-only, `float`; a
+`None` reading leaving them (and keeping them `None` before a first real reading); a failing solver (first update,
+later update, `KeyboardInterrupt`), a later room's step raising mid-loop and a validation failure restoring them;
+`with_layout` carrying them for matched rooms and `None` for new, renamed or re-added rooms, bit-for-bit for
+non-finite terms, as a copy; `from_dict` (direct and JSON) leaving them `None`; the snapshot not containing them.
 
 ### `tests/test_modulator.py`
 

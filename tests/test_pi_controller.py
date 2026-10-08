@@ -2456,3 +2456,296 @@ def test_update_leaves_integral_pi_output_and_history_untouched_when_modulator_r
     assert ctrl.to_dict() == before
     assert ctrl.integral == pytest.approx(1.0)
     assert ctrl.pi_output == pytest.approx(0.165)
+
+
+# ---------------------------------------------------------------------------
+# Round 4 (D1-D3): error, p_term and i_term of the last update
+# ---------------------------------------------------------------------------
+
+
+def _terms(c: hs.PIController) -> tuple[float | None, float | None, float | None]:
+    return (c.error, c.p_term, c.i_term)
+
+
+def test_terms_linear_region_match_hand_computation_over_several_steps() -> None:
+    c = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    integral = 0.0
+    for measured in (20.0, 20.5, 20.75, 21.0, 21.25):
+        error = 21.0 - measured
+        new_integral = integral + error
+        c.update(measured)
+        assert c.error == error
+        assert c.p_term == 0.3 * error
+        assert c.i_term == 0.015 * new_integral
+        assert c.p_term is not None
+        assert c.i_term is not None
+        assert max(0.0, min(1.0, c.p_term + c.i_term)) == c.pi_output
+        integral = c.integral  # the last step saturates low and holds it
+
+
+def test_terms_saturated_high_use_the_tentative_integral_not_the_held_one() -> None:
+    c = hs.PIController(kp=2.0, ki=1.0, setpoint=21.0)
+    for _ in range(3):
+        c.update(20.0)
+        assert _terms(c) == (1.0, 2.0, 1.0)  # raw 3.0, integral held at 0.0
+        assert c.pi_output == 1.0
+        assert c.integral == 0.0
+        assert c.ki * c.integral != c.i_term
+
+
+def test_terms_saturated_low_use_the_tentative_integral_not_the_held_one() -> None:
+    c = hs.PIController(kp=1.0, ki=1.0, setpoint=21.0)
+    for _ in range(3):
+        c.update(25.0)
+        assert _terms(c) == (-4.0, -4.0, -4.0)  # raw -8.0, integral held at 0.0
+        assert c.pi_output == 0.0
+        assert c.integral == 0.0
+
+
+def test_i_term_at_exact_upper_clamp_is_not_built_from_the_previous_tentative() -> None:
+    c = hs.PIController(kp=0.5, ki=0.5, setpoint=21.0)
+    for _ in range(2):
+        c.update(20.0)
+        assert _terms(c) == (1.0, 0.5, 0.5)  # raw exactly 1.0, error > 0: hold
+        assert c.pi_output == 1.0
+        assert c.integral == 0.0
+
+
+def test_i_term_at_exact_lower_clamp_differs_from_the_committed_integral() -> None:
+    c = hs.PIController(kp=0.5, ki=0.5, setpoint=21.0)
+    c.integral = 2.0
+    c.update(22.0)
+    assert _terms(c) == (-1.0, -0.5, 0.5)  # raw exactly 0.0, error < 0: hold
+    assert c.pi_output == 0.0
+    assert c.integral == 2.0
+    assert c.ki * c.integral == 1.0
+
+
+def test_terms_follow_a_per_call_setpoint() -> None:
+    c = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    c.update(20.0, setpoint=22.0)
+    assert c.error == 2.0
+    assert c.p_term == 0.3 * 2.0
+    assert c.i_term == 0.015 * 2.0
+    c.update(20.0)  # the stored setpoint stays 22.0
+    assert c.error == 2.0
+    assert c.i_term == 0.015 * 4.0
+
+
+def test_terms_use_the_gains_in_force_for_each_step() -> None:
+    c = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    c.update(20.0)
+    c.kp = 1.0
+    c.ki = 0.5
+    c.update(20.0)
+    assert c.error == 1.0
+    assert c.p_term == 1.0
+    assert c.i_term == 0.5 * 2.0
+
+
+def test_terms_are_stored_not_recomputed_after_settings_change() -> None:
+    c = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    c.update(20.0)
+    before = _terms(c)
+    assert before == (1.0, 0.3, 0.015)
+    c.kp = 1.0
+    c.ki = 1.0
+    c.setpoint = 25.0
+    c.integral = 7.0
+    assert _terms(c) == before
+
+
+@pytest.mark.parametrize("mode", ["radiator", "floor_heating"])
+def test_terms_are_pi_values_not_the_actuator_command(mode: str) -> None:
+    c = hs.PIController(mode=mode, history_length=4, setpoint=21.0)
+    command = c.update(20.0)
+    if mode == "floor_heating":
+        assert command in {0.0, 1.0}
+    assert _terms(c) == (1.0, 0.3, 0.015)
+    assert c.pi_output == 0.3 + 0.015
+
+
+def test_terms_under_a_fixed_output_hold_match_an_unfixed_twin() -> None:
+    held = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0, fixed_output=0.5)
+    free = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    for measured in (20.0, 19.0, 22.5, 21.0):
+        assert held.update(measured) == 0.5
+        free.update(measured)
+        assert _terms(held) == _terms(free)
+        assert held.pi_output == free.pi_output
+
+
+def test_terms_are_floats_for_int_and_fraction_inputs() -> None:
+    c = hs.PIController(kp=1, ki=Fraction(1, 2), setpoint=21)  # type: ignore[arg-type]  # Fraction is a Real
+    c.update(Fraction(41, 2))  # type: ignore[arg-type]  # Fraction is a Real
+    assert _terms(c) == (0.5, 0.5, 0.25)
+    assert type(c.error) is type(c.p_term) is type(c.i_term) is float
+
+
+def test_terms_finite_while_the_raw_sum_overflows() -> None:
+    c = hs.PIController(kp=1e308, ki=1e308, setpoint=21.0)
+    c.update(20.0)
+    assert _terms(c) == (1.0, 1e308, 1e308)
+    assert c.p_term is not None
+    assert c.i_term is not None
+    assert c.p_term + c.i_term == math.inf
+    assert c.pi_output == 0.0
+    assert c.integral == 0.0
+
+
+@pytest.mark.parametrize(("kp", "ki"), [(0.0, 0.015), (0.3, 0.0)])
+def test_terms_report_nan_and_inf_as_computed_when_the_error_overflows(
+    kp: float, ki: float
+) -> None:
+    c = hs.PIController(kp=kp, ki=ki, setpoint=1e308)
+    c.update(-1e308)
+    assert c.error == math.inf
+    assert c.pi_output == 0.0
+    assert c.integral == 0.0
+    if kp == 0.0:
+        assert c.p_term is not None
+        assert math.isnan(c.p_term)
+        assert c.i_term == math.inf
+    else:
+        assert c.p_term == math.inf
+        assert c.i_term is not None
+        assert math.isnan(c.i_term)
+
+
+def test_zero_gain_with_negative_error_stores_a_negative_zero_p_term() -> None:
+    c = hs.PIController(kp=0.0, ki=0.015, setpoint=21.0)
+    c.update(22.0)
+    assert c.error == -1.0
+    assert c.p_term == 0.0
+    assert math.copysign(1.0, c.p_term) == -1.0
+
+
+@pytest.mark.parametrize(
+    ("kp", "ki", "p_sign", "i_sign"),
+    [(0.3, -0.015, 1.0, -1.0), (-0.3, -0.015, -1.0, -1.0)],
+)
+def test_signed_zero_terms_from_negative_gains_keep_their_sign(
+    kp: float, ki: float, p_sign: float, i_sign: float
+) -> None:
+    c = hs.PIController(kp=kp, ki=ki, setpoint=21.0)
+    c.update(21.0)
+    assert c.error == 0.0
+    assert math.copysign(1.0, c.error) == 1.0
+    assert c.p_term is not None
+    assert c.i_term is not None
+    assert math.copysign(1.0, c.p_term) == p_sign
+    assert math.copysign(1.0, c.i_term) == i_sign
+    assert c.pi_output is not None
+    assert math.copysign(1.0, c.pi_output) == 1.0  # the clamp still normalises
+
+
+def test_terms_are_none_before_the_first_update() -> None:
+    assert _terms(hs.PIController()) == (None, None, None)
+
+
+def test_terms_are_none_after_reset() -> None:
+    c = hs.PIController()
+    c.update(20.0)
+    assert _terms(c) != (None, None, None)
+    c.reset()
+    assert _terms(c) == (None, None, None)
+
+
+def test_terms_are_none_after_from_dict_directly_and_through_json() -> None:
+    c = hs.PIController(fixed_output=0.5)
+    c.update(20.0)
+    c.update(19.0)
+    direct = hs.PIController.from_dict(c.to_dict())
+    via_json = hs.PIController.from_dict(json.loads(json.dumps(c.to_dict())))
+    assert _terms(direct) == (None, None, None)
+    assert _terms(via_json) == (None, None, None)
+    assert direct.pi_output is None
+
+
+@pytest.mark.parametrize("name", ["error", "p_term", "i_term"])
+def test_terms_are_read_only(name: str) -> None:
+    c = hs.PIController()
+    with pytest.raises(AttributeError):
+        setattr(c, name, 1.0)
+
+
+def test_to_dict_does_not_gain_the_terms() -> None:
+    c = hs.PIController(kp=0.3, ki=0.015, setpoint=21.0)
+    c.update(20.0)
+    assert c.to_dict() == {
+        "mode": "radiator",
+        "history_length": 24,
+        "fixed_output": None,
+        "history": [c.history[0]],
+        "kp": 0.3,
+        "ki": 0.015,
+        "setpoint": 21.0,
+        "integral": 1.0,
+    }
+    assert set(c.to_dict()) == {
+        "kp",
+        "ki",
+        "setpoint",
+        "mode",
+        "history_length",
+        "fixed_output",
+        "integral",
+        "history",
+    }
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), "warm", True, None])
+def test_a_raising_update_leaves_the_terms_unchanged(bad: object) -> None:
+    c = hs.PIController()
+    c.update(20.0)
+    before = (_terms(c), c.pi_output, c.integral)
+    with pytest.raises((TypeError, ValueError)):
+        c.update(bad)  # type: ignore[arg-type]  # deliberate misuse
+    assert (_terms(c), c.pi_output, c.integral) == before
+
+
+@pytest.mark.parametrize("bad", [float("nan"), "warm", True])
+def test_a_raising_per_call_setpoint_leaves_the_terms_unchanged(bad: object) -> None:
+    c = hs.PIController()
+    c.update(20.0)
+    before = _terms(c)
+    with pytest.raises((TypeError, ValueError)):
+        c.update(19.0, setpoint=bad)  # type: ignore[arg-type]  # deliberate misuse
+    assert _terms(c) == before
+
+
+def test_a_raising_first_update_leaves_the_terms_none() -> None:
+    c = hs.PIController()
+    with pytest.raises(ValueError):
+        c.update(float("nan"))
+    assert _terms(c) == (None, None, None)
+
+
+def _raise_runtime(*_args: object, **_kwargs: object) -> float:
+    raise RuntimeError("modulator failed")
+
+
+def test_modulator_raise_leaves_the_terms_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = hs.PIController()
+    c.update(20.0)
+    before = _terms(c)
+    monkeypatch.setattr(Modulator, "command", _raise_runtime)
+    with pytest.raises(RuntimeError):
+        c.update(15.0)
+    assert _terms(c) == before
+
+
+def test_modulator_raise_with_a_per_call_setpoint_stores_it_but_not_the_terms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = hs.PIController()
+    c.update(20.0)
+    before = _terms(c)
+    monkeypatch.setattr(Modulator, "command", _raise_runtime)
+    with pytest.raises(RuntimeError):
+        c.update(19.0, setpoint=22.0)
+    assert c.setpoint == 22.0
+    assert _terms(c) == before
+    assert c.error != c.setpoint - 19.0

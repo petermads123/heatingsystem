@@ -128,6 +128,9 @@ class PIController:
     _setpoint: float
     _integral: float
     _pi_output: float | None
+    _error: float | None
+    _p_term: float | None
+    _i_term: float | None
     _modulator: Modulator
 
     def __init__(
@@ -158,6 +161,11 @@ class PIController:
 
         # Clamped PI result of the last update(); None before the first step.
         self._pi_output = None
+
+        # Error and P/I terms of the last update(); None before the first step.
+        self._error = None
+        self._p_term = None
+        self._i_term = None
 
         # Fixed output override — delegated to the modulator, assigned last
         # to keep the original constructor's validation order.
@@ -221,7 +229,9 @@ class PIController:
         # whether to commit the new integral value.  This prevents the integral
         # from winding up when the actuator is saturated.
         new_integral: float = self._integral + error
-        raw: float = self.kp * error + self.ki * new_integral
+        p_term: float = self.kp * error
+        i_term: float = self.ki * new_integral
+        raw: float = p_term + i_term
 
         # Reachable only with extreme finite inputs: a non-finite raw sum or
         # tentative integral (kp * -inf, an overflowing integral, ...) closes
@@ -272,6 +282,9 @@ class PIController:
 
         self._integral = next_integral
         self._pi_output = u
+        self._error = error
+        self._p_term = p_term
+        self._i_term = i_term
 
         return command
 
@@ -279,12 +292,16 @@ class PIController:
         """Reset the controller state to initial values.
 
         Clears the integral accumulator, the modulator's history window,
-        and :attr:`pi_output`.  The gains, mode, setpoint, and
+        :attr:`pi_output`, :attr:`error`, :attr:`p_term` and :attr:`i_term`.
+        The gains, mode, setpoint, and
         :attr:`fixed_output` are left unchanged.
         """
         self._integral = 0.0
         self._modulator.reset()
         self._pi_output = None
+        self._error = None
+        self._p_term = None
+        self._i_term = None
 
     def to_dict(self) -> dict[str, object]:
         """Capture the controller's complete state as a snapshot.
@@ -498,6 +515,48 @@ class PIController:
         return self._pi_output
 
     @property
+    def error(self) -> float | None:
+        """The error of the last :meth:`update`: ``setpoint - measured``.
+
+        The setpoint is the one in force for that step, including a per-call
+        ``setpoint``. Stored as computed; it is never ``-0.0`` (both operands
+        are normalised), unlike :attr:`p_term` and :attr:`i_term`.
+
+        Returns:
+            The error, or ``None`` before the first :meth:`update` call and
+            again after :meth:`reset` or :meth:`from_dict`.
+        """
+        return self._error
+
+    @property
+    def p_term(self) -> float | None:
+        """The proportional term of the last :meth:`update`: ``kp * error``.
+
+        Stored as computed (``-0.0`` and non-finite values included), so
+        ``p_term + i_term`` is exactly the raw PI sum before clamping.
+
+        Returns:
+            The P term, or ``None`` before the first :meth:`update` call and
+            again after :meth:`reset` or :meth:`from_dict`.
+        """
+        return self._p_term
+
+    @property
+    def i_term(self) -> float | None:
+        """The integral term of the last :meth:`update`: ``ki`` times the tentative integral.
+
+        The tentative integral is the previous integral plus this step's
+        error, which the raw output was computed from whether or not
+        anti-windup then committed it, so it can differ from ``ki *``
+        :attr:`integral`. Stored as computed.
+
+        Returns:
+            The I term, or ``None`` before the first :meth:`update` call and
+            again after :meth:`reset` or :meth:`from_dict`.
+        """
+        return self._i_term
+
+    @property
     def fixed_output(self) -> float | None:
         """The fixed-output override; delegates to :attr:`Modulator.fixed_output`."""
         return self._modulator.fixed_output
@@ -561,6 +620,10 @@ def main() -> None:
     print(
         f"  command after setpoint change: {cmd:.4f}  (setpoint now {ctrl_rad.setpoint})"
     )
+    error = ctrl_rad.error
+    p_term = ctrl_rad.p_term
+    i_term = ctrl_rad.i_term
+    print(f"  last step: error={error:.4f}  p_term={p_term:.4f}  i_term={i_term:.4f}")
 
     # Demonstrate the fixed_output override.
     print("\n  -- fixed_output override --")
