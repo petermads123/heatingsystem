@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — change the layout keeping state
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -17,7 +17,7 @@
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -257,8 +257,48 @@ structure-auditor findings and action:
 
 | Intent | Test names | Result |
 |---|---|---|
+| T1 (C1) | `test_with_layout_without_arguments_returns_an_equal_but_distinct_allocator`, `..._issues_identical_commands_including_none_readings`, `..._on_a_never_updated_allocator_has_no_duty_or_demand`, `..._chained_calls_equal_a_single_call`, `..._carries_a_zero_demand_as_zero_not_none`, isolation: `..._shares_no_state_with_the_original`, `..._original_updates_do_not_reach_the_new_allocator`, `..._does_not_alias_the_callers_mappings` | pass |
+| T2 (C2) | `..._layout_change_carries_all_state`, `..._matches_the_from_dict_rebuild_for_real_readings`, `..._none_reading_allocates_the_carried_demand_unlike_from_dict`, `..._coverage_only_change_still_carries_duty_when_names_match`, `..._duty_carries_for_reordered_rooms_and_mapping_proxies`, `..._duty_carries_when_only_history_length_changes`, `..._none_reading_after_a_coverage_change_reuses_the_carried_demand` | pass |
+| T3 (C3) | `..._keeps_the_newest_slots_at_every_window_boundary` (4), `..._a_longer_window_is_not_full_and_a_shrink_is_irreversible`, `..._history_length_matches_the_trimmed_from_dict_rebuild` (5), `..._a_fractional_hold_continues_the_pattern_over_a_grown_window`, `..._history_length_limits_match_the_constructor` | pass |
+| T4 (C4) | `..._new_room_and_section_start_fresh_and_names_keep_state`, `..._new_room_takes_the_class_defaults_not_the_originals_gains`, `..._removing_a_room_and_its_section_drops_their_state`, `..._a_removed_then_readded_room_and_section_have_no_ghost_state`, `..._a_section_keeps_its_state_after_its_room_is_removed`, `..._reordered_sections_give_no_duty_but_keep_state_by_name`, `..._room_names_match_exactly` | pass |
+| T5 (C5) | `..._refuses_what_the_constructor_refuses_and_changes_nothing` (13 cases), `..._rooms_without_a_room_the_default_sections_use_names_sections_path`, `..._an_empty_mapping_is_not_treated_as_keep`, `..._history_length_is_keyword_only`, `..._failed_call_leaves_duty_and_demands_and_next_commands_alone`, `..._carried_duty_survives_a_failed_first_update` | pass |
+| T6 (C6) | `..._returns_the_subclass`, `..._does_not_mutate_the_callers_arguments`, `..._docs_no_longer_claim_a_fixed_layout`; showcase and rounds 1-2 suites unchanged and green | pass |
+
+Result: 55 new tests (all `with_layout`), whole suite 1612 passed; ruff, format, mypy clean.
+
+Merge of the two designer reports (input-space 12 cases, contract 14): all duplicates folded
+(no-aliasing both ways, new-room defaults, removed-then-readded, reordered-section duty, `duty` with
+`history_length` only, falsy/empty arguments, chained calls, keyword-only, `False`/limits, failed-call
+twin comparison) and applied. Applied additions beyond the plan: `run50`-based twins instead of
+spot checks.
+
+Contradictions, on the record:
+
+1. README "nothing is reset to `None`" (contract 1) — confirmed against the code and its own paragraph.
+   Fixed the README: it now says a carried room's `demand` is kept, and the `duty` sentence gains
+   "and in the same order (otherwise it is `None` until the next `update`)" (contract 3). A test
+   (`..._docs_no_longer_claim_a_fixed_layout`) pins both.
+2. Stale `duty` when names match but coverage/rooms change (input-space 1) — rebutted. Section 1 decided
+   it ("`duty` carries when the section names are unchanged"), the docstring says it, and the test
+   `..._coverage_only_change_still_carries_duty_when_names_match` pins the decision. It is not a halt:
+   it is the agreed behaviour, not an undecided case. The next `update` replaces `duty`.
+3. New room takes class defaults, not the original's gains (contract 2) — rebutted as a defect: section 1
+   decided the constructor defaults and the docstring states the numbers; pinned by
+   `..._new_room_takes_the_class_defaults_not_the_originals_gains`.
+4. Subclass with an extra required constructor argument (input-space 2, contract 4) — rebutted: `from_dict`
+   has the same coupling and a subclass with a different signature is out of scope of the concept; tested
+   with a signature-preserving subclass only.
+5. Error order (history_length checked last) — no contradiction; pinned by the `bad_layout_wins_over_bad_history`
+   refusal case.
+
+Bugs found in production code: none. No production code changed this step; README wording fixed (C6).
 
 Edge cases considered and deliberately skipped, with reasons:
+
+- A subclass whose `__init__` needs extra arguments: not supported by `from_dict` either, out of scope.
+- Numeric validation of `kp`/`ki`/`setpoint` values on carry: the values are already validated in the old allocator.
+- Rename of a room or section keeping state: out of scope (section 1); only the exact-name match is pinned.
+- `PIController.with_history_length`: out of scope (section 1).
 
 ---
 

@@ -222,10 +222,10 @@ is read-only, but `allocator.with_layout(rooms, sections, history_length=n)` ret
 allocator with a changed layout (an argument left `None` keeps the current one; the original is
 not changed). State carries over by name: a room in both layouts keeps its `setpoint`, `kp`,
 `ki`, integral and last `demand`; a section in both keeps its command window (trimmed to its
-newest `n` slots) and its hold; `duty` carries when the section names are unchanged. A new room
+newest `n` slots) and its hold; `duty` carries when the section names are unchanged and in the same order (otherwise it is `None` until the next `update`). A new room
 starts with the constructor defaults, a new section with an empty window and no hold, and a
-layout the constructor would refuse raises the same error. Unlike `from_dict`, nothing is reset
-to `None`, so a room with no reading still allocates its last demand. Adding or removing a room
+layout the constructor would refuse raises the same error. Unlike `from_dict`, a carried room's
+`demand` is kept, so a room with no reading still allocates its last demand. Adding or removing a room
 usually needs both `rooms` and `sections`.
 
 ## Layout

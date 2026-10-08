@@ -454,6 +454,21 @@ for an all-held component, the room PI equal to an un-held twin's, a raising `up
 restored partial-coverage layout not renormalised, `from_dict` reporting a layout error, then a room setting, then a hold,
 then a history error; and the package version is 1.1.0.
 
+Round 3's `with_layout` suite (55 tests, C1-C6): a no-argument call giving an equal but distinct allocator
+(`to_dict`, `duty`, `holds`, `history`, demands) with identical next 50 commands including `None` readings,
+chained calls equal to one, a never-updated allocator, a zero demand carried as `0.0` not `None`; isolation
+both ways and no aliasing of the caller's mappings; a priority/evenness/coverage change carrying every setting,
+integral, demand, window, hold and `duty` and matching the edited-snapshot `from_dict` rebuild for real readings,
+with the `None`-reading contrast (carried demand against the rebuild's 0.0); `duty` carried for reordered rooms,
+a mapping proxy, a coverage-only change and a window-only change, and `None` for a reordered section list;
+`history_length` trimming to the newest slots at every boundary, growth not full, a shrink irreversible, the
+trimmed `from_dict` twin, a fractional hold continuing over a grown window and the `sys.maxsize` limits; adding
+and removing rooms and sections (defaults not the original's gains, no ghost state on re-adding, a section kept
+after its room is removed, exact-name matching); thirteen constructor refusals identical in class and message
+with the original untouched (including `duty`, demands and next commands), empty mappings not read as "keep",
+keyword-only `history_length`, a failed first `update` after a carry, a subclass keeping its type and the README
+and docstrings no longer claiming a fixed layout.
+
 ### `tests/test_modulator.py`
 
 Covers `Modulator` and, jointly with it, the shared numeric-contract plumbing it and

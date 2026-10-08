@@ -3703,3 +3703,617 @@ def test_update_error_names_the_bad_room_not_the_none_room() -> None:
     a = ref()
     with pytest.raises(ValueError, match=re.escape("measured['R2']")):
         a.update({"R1": None, "R2": float("nan"), "R3": 20.0})
+
+
+# ---------------------------------------------------------------------------
+# Round 3 (feat/allocator-home-assistant), step 5: with_layout (C1-C6)
+# ---------------------------------------------------------------------------
+
+STEPS = [
+    {"R1": 19.0, "R2": 20.0, "R3": 22.0},
+    {"R1": 18.5, "R2": 21.5, "R3": 20.0},
+    {"R1": 20.0, "R2": 19.0, "R3": 21.0},
+    {"R1": 19.5, "R2": 20.5, "R3": 19.5},
+    {"R1": 17.0, "R2": 22.0, "R3": 20.5},
+    {"R1": 21.5, "R2": 18.0, "R3": 23.0},
+]
+
+
+def warm(history_length: int = 4) -> SectionAllocator:
+    """A reference allocator with real integrals, a hold and full windows."""
+    a = ref(history_length=history_length)
+    for room in a.rooms.values():
+        room.ki = 0.2
+    a.hold("HS2", 0.5)
+    for step in STEPS:
+        a.update(step)
+    return a
+
+
+def full_state(a: SectionAllocator) -> tuple[object, ...]:
+    return (
+        a.to_dict(),
+        a.duty,
+        a.holds,
+        a.history,
+        {n: r.demand for n, r in a.rooms.items()},
+    )
+
+
+def run50(
+    a: SectionAllocator, none_every: int = 0
+) -> list[tuple[dict[str, float], object]]:
+    """50 deterministic updates; every ``none_every``-th reading of R2 is None."""
+    out: list[tuple[dict[str, float], object]] = []
+    for i in range(50):
+        reading: dict[str, float | None] = {
+            "R1": 17.0 + (i * 7 % 11) * 0.5,
+            "R2": 18.0 + (i * 5 % 13) * 0.4,
+            "R3": 19.0 + (i * 3 % 9) * 0.5,
+        }
+        if none_every and i % none_every == 0:
+            reading["R2"] = None
+        out.append((a.update(reading), a.duty))
+    return out
+
+
+def rebuilt(
+    a: SectionAllocator, edit: Callable[[dict[str, object]], None]
+) -> SectionAllocator:
+    """The from_dict twin: the snapshot edited by key names, as a consumer would."""
+    data = a.to_dict()
+    edit(data)
+    return SectionAllocator.from_dict(data)
+
+
+# --- C1: no-argument call ----------------------------------------------------
+
+
+def test_with_layout_without_arguments_returns_an_equal_but_distinct_allocator() -> (
+    None
+):
+    a = warm()
+    a.update({"R1": None, "R2": 20.0, "R3": 21.0})
+    before = full_state(a)
+    b = a.with_layout()
+    assert b is not a
+    assert full_state(a) == before
+    assert full_state(b) == before
+
+
+def test_with_layout_without_arguments_issues_identical_commands_including_none_readings() -> (
+    None
+):
+    a = warm()
+    b = a.with_layout()
+    assert run50(a, none_every=4) == run50(b, none_every=4)
+    assert a.to_dict() == b.to_dict()
+
+
+def test_with_layout_on_a_never_updated_allocator_has_no_duty_or_demand() -> None:
+    b = ref(history_length=3).with_layout(history_length=1)
+    assert b.duty is None
+    assert all(r.demand is None for r in b.rooms.values())
+    assert all(h == () for h in b.history.values())
+    assert b.history_length == 1
+
+
+def test_with_layout_chained_calls_equal_a_single_call() -> None:
+    a = warm()
+    once = a.with_layout()
+    twice = a.with_layout().with_layout()
+    assert full_state(once) == full_state(twice)
+    assert run50(once) == run50(twice)
+
+
+def test_with_layout_carries_a_zero_demand_as_zero_not_none() -> None:
+    a = ref()
+    a.update(meas(-1.0, 0.3, 0.5))
+    assert a.rooms["R1"].demand == 0.0
+    b = a.with_layout()
+    assert b.rooms["R1"].demand == 0.0
+    assert b.rooms["R1"].demand is not None
+
+
+# --- Isolation both ways -----------------------------------------------------
+
+
+def test_with_layout_new_allocator_shares_no_state_with_the_original() -> None:
+    a = warm()
+    before = full_state(a)
+    b = a.with_layout()
+    b.rooms["R1"].setpoint = 25.0
+    b.hold("HS1", 1.0)
+    b.hold("HS2", None)
+    for step in STEPS[:3]:
+        b.update(step)
+    duty = b.duty
+    assert duty is not None
+    duty["HS1"] = 99.0
+    assert full_state(a) == before
+    assert a.rooms["R1"].setpoint == 21.0
+    assert a.holds["HS1"] is None
+
+
+def test_with_layout_original_updates_do_not_reach_the_new_allocator() -> None:
+    a = warm()
+    b = a.with_layout()
+    snap = b.to_dict()
+    duty = b.duty
+    for step in STEPS:
+        a.update(step)
+    assert b.to_dict() == snap
+    assert b.duty == duty
+
+
+def test_with_layout_does_not_alias_the_callers_mappings() -> None:
+    rooms = ref_rooms()
+    sections = ref_sections()
+    b = ref().with_layout(rooms, sections)
+    rooms["R1"]["priority"] = 0.1
+    sections["HS1"]["R1"] = 0.2
+    assert b.rooms["R1"].priority == 1.0
+    assert b.sections["HS1"]["R1"] == 0.7
+
+
+# --- C2: priorities, evenness, coverages -------------------------------------
+
+
+def edited_rooms() -> dict[str, dict[str, float]]:
+    return ref_rooms(e1=0.3, e2=0.6, p1=0.5, p3=0.8)
+
+
+def edited_sections() -> dict[str, dict[str, float]]:
+    s = ref_sections()
+    s["HS2"] = {"R1": 0.2, "R2": 0.3}
+    s["HS1"] = {"R1": 0.8}
+    return s
+
+
+def edit_snapshot_to_new_layout(data: dict[str, object]) -> None:
+    rooms = data["rooms"]
+    sections = data["sections"]
+    assert isinstance(rooms, dict)
+    assert isinstance(sections, dict)
+    for name, spec in edited_rooms().items():
+        rooms[name]["priority"] = spec["priority"]
+        rooms[name]["evenness"] = spec["evenness"]
+    for name, cov in edited_sections().items():
+        sections[name]["coverage"] = cov
+
+
+def test_with_layout_layout_change_carries_all_state() -> None:
+    a = warm()
+    b = a.with_layout(edited_rooms(), edited_sections())
+    assert b.duty == a.duty
+    assert b.holds == a.holds
+    assert b.history == a.history
+    for name, room in a.rooms.items():
+        new = b.rooms[name]
+        assert (new.setpoint, new.kp, new.ki, new.integral, new.demand) == (
+            room.setpoint,
+            room.kp,
+            room.ki,
+            room.integral,
+            room.demand,
+        )
+    assert b.rooms["R1"].priority == 0.5
+    assert b.rooms["R2"].evenness == 0.6
+    assert b.sections == edited_sections()
+    assert a.sections == ref_sections()
+    assert a.rooms["R1"].priority == 1.0
+
+
+def test_with_layout_layout_change_matches_the_from_dict_rebuild_for_real_readings() -> (
+    None
+):
+    a = warm()
+    b = a.with_layout(edited_rooms(), edited_sections())
+    twin = rebuilt(a, edit_snapshot_to_new_layout)
+    assert b.to_dict() == twin.to_dict()
+    assert run50(b) == run50(twin)
+
+
+def test_with_layout_none_reading_allocates_the_carried_demand_unlike_from_dict() -> (
+    None
+):
+    a = warm()
+    demand = a.rooms["R2"].demand
+    assert demand is not None
+    assert demand > 0.0
+    reading = {"R1": 20.0, "R2": None, "R3": 21.0}
+    b = a.with_layout(edited_rooms(), edited_sections())
+    twin = rebuilt(a, edit_snapshot_to_new_layout)
+    b.update(reading)
+    twin.update(reading)
+    assert b.rooms["R2"].demand == demand
+    assert twin.rooms["R2"].demand is None
+    assert b.rooms["R2"].integral == a.rooms["R2"].integral
+    assert b.duty != twin.duty  # R2 asks for heat in one and for none in the other
+
+
+def test_with_layout_coverage_only_change_still_carries_duty_when_names_match() -> None:
+    a = warm()
+    assert a.duty is not None
+    b = a.with_layout(sections={**ref_sections(), "HS2": {"R1": 0.3, "R2": 0.2}})
+    assert b.duty == a.duty
+
+
+def test_with_layout_duty_carries_for_reordered_rooms_and_mapping_proxies() -> None:
+    a = warm()
+    reordered = dict(reversed(list(ref_rooms().items())))
+    assert a.with_layout(rooms=reordered).duty == a.duty
+    assert a.with_layout(sections=MappingProxyType(ref_sections())).duty == a.duty
+
+
+def test_with_layout_duty_carries_when_only_history_length_changes() -> None:
+    a = warm()
+    b = a.with_layout(history_length=1)
+    assert b.duty == a.duty
+    assert b.history_length == 1
+    assert b.history == {s: h[-1:] for s, h in a.history.items()}
+
+
+# --- C3: history_length ------------------------------------------------------
+
+
+def window_allocator() -> SectionAllocator:
+    a = ref(history_length=3)
+    for level in (1.0, 0.0, 0.0):
+        a.hold("HS4", level)
+        a.update(meas(0, 0, 0))
+    assert a.history["HS4"] == (1.0, 0.0, 0.0)
+    return a
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"),
+    [(1, (0.0,)), (2, (0.0, 0.0)), (3, (1.0, 0.0, 0.0)), (4, (1.0, 0.0, 0.0))],
+)
+def test_with_layout_keeps_the_newest_slots_at_every_window_boundary(
+    n: int, expected: tuple[float, ...]
+) -> None:
+    b = window_allocator().with_layout(history_length=n)
+    assert b.history["HS4"] == expected
+    assert b.holds["HS4"] == 0.0
+    assert b.history_length == n
+
+
+def test_with_layout_a_longer_window_is_not_full_and_a_shrink_is_irreversible() -> None:
+    a = window_allocator()
+    grown = a.with_layout(history_length=6)
+    assert grown.history["HS4"] == (1.0, 0.0, 0.0)
+    assert not grown._modulators["HS4"].is_history_full
+    assert a.with_layout(history_length=1).with_layout(history_length=3).history[
+        "HS4"
+    ] == (0.0,)
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 4, 10])
+def test_with_layout_history_length_matches_the_trimmed_from_dict_rebuild(
+    n: int,
+) -> None:
+    a = warm()
+
+    def edit(data: dict[str, object]) -> None:
+        data["history_length"] = n
+        sections = data["sections"]
+        assert isinstance(sections, dict)
+        for spec in sections.values():
+            spec["history"] = spec["history"][-n:]
+
+    b = a.with_layout(history_length=n)
+    twin = rebuilt(a, edit)
+    assert b.to_dict() == twin.to_dict()
+    assert run50(b) == run50(twin)
+
+
+def test_with_layout_a_fractional_hold_continues_the_pattern_over_a_grown_window() -> (
+    None
+):
+    a = warm()
+    b = a.with_layout(history_length=10)
+    assert b.holds["HS2"] == 0.5
+    assert b.history["HS2"] == a.history["HS2"]
+    assert len(b.history["HS2"]) == 4
+    expected = hs.Modulator._from_dict(
+        {
+            "mode": "floor_heating",
+            "history_length": 10,
+            "fixed_output": 0.5,
+            "history": list(a.history["HS2"]),
+        }
+    )
+    for step in STEPS:
+        assert b.update(step)["HS2"] == expected.command(0.0)
+
+
+def test_with_layout_history_length_limits_match_the_constructor() -> None:
+    a = warm()
+    ok = a.with_layout(history_length=sys.maxsize)
+    assert ok.history == a.history
+    for value, error in ((sys.maxsize + 1, OverflowError), (2.0, TypeError)):
+        with pytest.raises(error) as via_method:
+            a.with_layout(history_length=value)  # type: ignore[arg-type]  # deliberate misuse
+        with pytest.raises(error) as via_constructor:
+            SectionAllocator(ref_rooms(), ref_sections(), history_length=value)  # type: ignore[arg-type]  # deliberate misuse
+        assert str(via_method.value) == str(via_constructor.value)
+
+
+# --- C4: adding and removing -------------------------------------------------
+
+
+def with_r4() -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    rooms = {**ref_rooms(), "R4": {"priority": 1.0, "evenness": 0.0}}
+    sections = {**ref_sections(), "HS5": {"R4": 1.0}}
+    return rooms, sections
+
+
+def test_with_layout_new_room_and_section_start_fresh_and_names_keep_state() -> None:
+    a = warm()
+    rooms, sections = with_r4()
+    b = a.with_layout(rooms, sections)
+    r4 = b.rooms["R4"]
+    assert (r4.kp, r4.ki, r4.setpoint, r4.integral, r4.demand) == (
+        0.3,
+        0.015,
+        21.0,
+        0.0,
+        None,
+    )
+    assert b.history["HS5"] == ()
+    assert b.holds["HS5"] is None
+    assert b.duty is None
+    for name in ("R1", "R2", "R3"):
+        assert b.rooms[name].integral == a.rooms[name].integral
+        assert b.rooms[name].kp == 1.0
+    assert b.history["HS1"] == a.history["HS1"]
+    assert b.holds["HS2"] == 0.5
+
+
+def test_with_layout_new_room_takes_the_class_defaults_not_the_originals_gains() -> (
+    None
+):
+    a = SectionAllocator(ref_rooms(), ref_sections(), kp=0.5, ki=0.05, setpoint=19.0)
+    rooms, sections = with_r4()
+    b = a.with_layout(rooms, sections)
+    r4 = b.rooms["R4"]
+    assert (r4.kp, r4.ki, r4.setpoint) == (0.3, 0.015, 21.0)
+    assert (b.rooms["R1"].kp, b.rooms["R1"].ki, b.rooms["R1"].setpoint) == (
+        0.5,
+        0.05,
+        19.0,
+    )
+
+
+def test_with_layout_removing_a_room_and_its_section_drops_their_state() -> None:
+    a = warm()
+    rooms = {k: v for k, v in ref_rooms().items() if k != "R3"}
+    sections = {k: v for k, v in ref_sections().items() if k != "HS4"}
+    b = a.with_layout(rooms, sections)
+    assert "R3" not in b.rooms
+    assert "HS4" not in b.history
+    assert b.duty is None
+    with pytest.raises(
+        ValueError, match=re.escape("measured has unknown rooms ['R3']")
+    ):
+        b.update({"R1": 20.0, "R2": 20.0, "R3": 20.0})
+    with pytest.raises(ValueError, match=re.escape("measured is missing rooms ['R3']")):
+        a.update({"R1": 20.0, "R2": 20.0})
+
+
+def test_with_layout_a_removed_then_readded_room_and_section_have_no_ghost_state() -> (
+    None
+):
+    a = warm()
+    rooms = {k: v for k, v in ref_rooms().items() if k != "R3"}
+    sections = {k: v for k, v in ref_sections().items() if k != "HS4"}
+    c = a.with_layout(rooms, sections).with_layout(ref_rooms(), ref_sections())
+    assert c.rooms["R3"].integral == 0.0
+    assert c.rooms["R3"].demand is None
+    assert c.rooms["R3"].setpoint == 21.0
+    assert c.rooms["R3"].kp == 0.3
+    assert c.history["HS4"] == ()
+    assert c.holds["HS4"] is None
+    assert c.duty is None
+
+
+def test_with_layout_a_section_keeps_its_state_after_its_room_is_removed() -> None:
+    a = ref(history_length=4)
+    a.hold("HS4", 0.0)
+    a.update(meas(0.2, 0.3, 0.5))
+    a.update(meas(0.2, 0.3, 0.5))
+    rooms = {k: v for k, v in ref_rooms().items() if k != "R3"}
+    sections = {
+        "HS1": {"R1": 0.7},
+        "HS2": {"R1": 0.3, "R2": 0.3},
+        "HS3": {"R2": 0.4},
+        "HS4": {"R2": 0.3},
+    }
+    b = a.with_layout(rooms, sections)
+    assert b.history["HS4"] == (0.0, 0.0)
+    assert b.holds["HS4"] == 0.0
+    assert b.duty == a.duty
+
+
+def test_with_layout_reordered_sections_give_no_duty_but_keep_state_by_name() -> None:
+    a = warm()
+    b = a.with_layout(sections=dict(reversed(list(ref_sections().items()))))
+    assert b.duty is None
+    assert b.holds == {s: a.holds[s] for s in b.holds}
+    assert b.holds["HS2"] == 0.5
+    assert b.history["HS1"] == a.history["HS1"]
+
+
+def test_with_layout_room_names_match_exactly() -> None:
+    a = warm()
+    rooms = {("r1" if k == "R1" else k): v for k, v in ref_rooms().items()}
+    sections = {
+        "HS1": {"r1": 0.7},
+        "HS2": {"r1": 0.3, "R2": 0.3},
+        "HS3": {"R2": 0.7},
+        "HS4": {"R3": 1.0},
+    }
+    b = a.with_layout(rooms, sections)
+    assert b.rooms["r1"].kp == 0.3
+    assert b.rooms["r1"].integral == 0.0
+    assert b.rooms["r1"].demand is None
+    assert b.rooms["R2"].kp == 1.0
+
+
+# --- C5: refusals ------------------------------------------------------------
+
+
+def uncovered() -> dict[str, dict[str, float]]:
+    return {"HS1": {"R1": 0.7}}
+
+
+REFUSALS: list[tuple[str, dict[str, object]]] = [
+    ("sum_above_one", {"sections": {**ref_sections(), "HS5": {"R1": 0.5}}}),
+    ("unknown_room", {"sections": {**ref_sections(), "HS5": {"R9": 1.0}}}),
+    ("uncovered_room", {"sections": uncovered()}),
+    ("bad_priority", {"rooms": ref_rooms(p1=0.0)}),
+    ("bad_evenness", {"rooms": ref_rooms(e1=1.5)}),
+    ("bool_history", {"history_length": True}),
+    ("zero_history", {"history_length": 0}),
+    ("float_history", {"history_length": 1.5}),
+    ("empty_rooms", {"rooms": {}}),
+    ("empty_sections", {"sections": {}}),
+    (
+        "rooms_without_r3_default_sections",
+        {"rooms": {k: v for k, v in ref_rooms().items() if k != "R3"}},
+    ),
+    (
+        "bad_layout_wins_over_bad_history",
+        {"sections": {"HS1": {"R9": 1.0}}, "history_length": 0},
+    ),
+    ("history_false", {"history_length": False}),
+]
+
+
+@pytest.mark.parametrize(("label", "kwargs"), REFUSALS, ids=[r[0] for r in REFUSALS])
+def test_with_layout_refuses_what_the_constructor_refuses_and_changes_nothing(
+    label: str,  # noqa: ARG001 - parametrize id
+    kwargs: dict[str, object],
+) -> None:
+    a = warm()
+    twin = warm()
+    before = full_state(a)
+    args = {
+        "rooms": ref_rooms(),
+        "sections": ref_sections(),
+        "history_length": a.history_length,
+        "kp": 1.0,
+        "ki": 0.0,
+    }
+    args.update(kwargs)
+    with pytest.raises(Exception) as direct:  # noqa: PT011 - class compared below
+        SectionAllocator(**args)  # type: ignore[arg-type]  # deliberate misuse
+    with pytest.raises(type(direct.value)) as via_method:
+        a.with_layout(**kwargs)  # type: ignore[arg-type]  # deliberate misuse
+    assert str(via_method.value) == str(direct.value)
+    assert full_state(a) == before
+    assert run50(a) == run50(twin)
+
+
+def test_with_layout_rooms_without_a_room_the_default_sections_use_names_sections_path() -> (
+    None
+):
+    rooms = {k: v for k, v in ref_rooms().items() if k != "R3"}
+    with pytest.raises(
+        ValueError, match=re.escape("sections['HS4'] names unknown room 'R3'")
+    ):
+        ref().with_layout(rooms=rooms)
+
+
+def test_with_layout_an_empty_mapping_is_not_treated_as_keep() -> None:
+    with pytest.raises(ValueError, match="rooms must not be empty"):
+        ref().with_layout(rooms={})
+    with pytest.raises(ValueError, match="sections must not be empty"):
+        ref().with_layout(sections={})
+
+
+def test_with_layout_history_length_is_keyword_only() -> None:
+    with pytest.raises(TypeError):
+        ref().with_layout(None, None, 3)  # type: ignore[call-arg]  # deliberate misuse
+
+
+def test_with_layout_failed_call_leaves_duty_and_demands_and_next_commands_alone() -> (
+    None
+):
+    a = warm()
+    twin = warm()
+    with pytest.raises(
+        ValueError, match=re.escape("rooms ['R2', 'R3'] are covered by no section")
+    ):
+        a.with_layout(sections=uncovered())
+    assert a.duty == twin.duty
+    assert {n: r.demand for n, r in a.rooms.items()} == {
+        n: r.demand for n, r in twin.rooms.items()
+    }
+    assert run50(a) == run50(twin)
+
+
+# --- Interaction with update -------------------------------------------------
+
+
+def test_with_layout_carried_duty_survives_a_failed_first_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a = warm()
+    b = a.with_layout(history_length=2)
+
+    def boom(*_args: object, **_kwargs: object) -> dict[str, float]:
+        raise ArithmeticError("solver")
+
+    monkeypatch.setattr(b, "_allocate", boom)
+    before = full_state(b)
+    with pytest.raises(ArithmeticError):
+        b.update(STEPS[0])
+    assert full_state(b) == before
+    assert b.duty == a.duty
+    assert {n: r.demand for n, r in b.rooms.items()} == {
+        n: r.demand for n, r in a.rooms.items()
+    }
+
+
+def test_with_layout_none_reading_after_a_coverage_change_reuses_the_carried_demand() -> (
+    None
+):
+    a = warm()
+    demand = a.rooms["R1"].demand
+    b = a.with_layout(sections={**ref_sections(), "HS2": {"R1": 0.2, "R2": 0.3}})
+    b.update({"R1": None, "R2": 20.0, "R3": 22.0})
+    assert b.rooms["R1"].demand == demand
+    assert b.rooms["R1"].integral == a.rooms["R1"].integral
+
+
+# --- C6: subclass and exports ------------------------------------------------
+
+
+class _Sub(SectionAllocator):
+    pass
+
+
+def test_with_layout_returns_the_subclass() -> None:
+    a = _Sub(ref_rooms(), ref_sections(), kp=1.0, ki=0.0)
+    assert type(a.with_layout()) is _Sub
+
+
+def test_with_layout_does_not_mutate_the_callers_arguments() -> None:
+    rooms, sections = edited_rooms(), edited_sections()
+    rooms_copy, sections_copy = copy.deepcopy(rooms), copy.deepcopy(sections)
+    warm().with_layout(rooms, sections, history_length=2)
+    assert rooms == rooms_copy
+    assert sections == sections_copy
+
+
+def test_with_layout_docs_no_longer_claim_a_fixed_layout() -> None:
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(
+        encoding="utf-8"
+    )
+    assert "with_layout" in readme
+    assert "nothing is reset" not in readme
+    assert "same order" in readme
+    assert "fixed layout" not in (SectionAllocator.__doc__ or "")
+    assert "fixed physical layout" not in (allocator_module.__doc__ or "")
