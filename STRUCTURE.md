@@ -34,17 +34,19 @@ one line per subpackage in this file, and move per-subpackage detail into
 when Claude works in that subpackage. Split rather than delete — there is no length limit
 here, but everything in this file is in context every session.
 
-The package now has two subpackages (`modulator/`, `pi_controller/`) plus the private
+The package now has three subpackages (`allocator/`, `modulator/`, `pi_controller/`) plus the private
 `_validation.py` module at its root, but the per-subpackage split described above has
 deliberately not been applied yet — doing it inside an unattended build changes what the
 stop gate and the session brief see, which is not a change to make mid-round. It is
-deferred until a third subpackage arrives (see `DEVELOPMENT.md`).
+deferred; the third subpackage (`allocator/`) has now arrived and the split is still open
+(see `DEVELOPMENT.md`).
 
 ## Tree
 
 ```
 src/                    everything installable; nothing outside it is packaged
   heatingsystem/        the package: heating-system models
+    allocator/         subpackage: multi-room control of on/off sections (PI per room, bounded least-squares allocation)
     modulator/         subpackage: the actuator mapping (mode, window, duty cycle, hold)
     pi_controller/     subpackage: the discrete-time PI controller
 tests/                  pytest suite, one test_<module>.py per module
@@ -71,6 +73,8 @@ Every new model subpackage is re-exported from here.
 | Export | From |
 |---|---|
 | `HeatingMode` | `heatingsystem.modulator` |
+| `Room` | `heatingsystem.allocator` |
+| `SectionAllocator` | `heatingsystem.allocator` |
 | `Modulator` | `heatingsystem.modulator` |
 | `PIController` | `heatingsystem.pi_controller` |
 | `OUTPUT_MIN` | `heatingsystem.modulator` |
@@ -82,10 +86,10 @@ it will not install.
 
 ### `src/heatingsystem/_validation.py`
 
-Private module: the numeric contract behind every validating setting on `Modulator` and
-`PIController`, stated once so it does not drift between the two classes' docstrings. Not a
-subpackage — a single module at the package root, imported by both `modulator.py` and
-`pi_controller.py` as `from heatingsystem import _validation`, so a helper name can never be
+Private module: the numeric contract behind every validating setting on `Modulator`,
+`PIController`, `Room` and `SectionAllocator`, stated once so it does not drift between the classes' docstrings. Not a
+subpackage — a single module at the package root, imported by `modulator.py`,
+`pi_controller.py` and `allocator.py` as `from heatingsystem import _validation`, so a helper name can never be
 shadowed by a local or a parameter (`finite`/`level` are called as `_validation.finite`/
 `_validation.level`, never imported by name).
 
@@ -98,6 +102,52 @@ shadowed by a local or a parameter (`finite`/`level` are called as `_validation.
 | `main() -> None` | Showcase: `finite` normalising `-0.0`, a `level` range refusal and a `snapshot_mapping` missing-key refusal. |
 
 Runnable standalone: `python -m heatingsystem._validation`.
+
+### `src/heatingsystem/allocator/__init__.py`
+
+Subpackage entry point. Re-exports `SectionAllocator` and `Room` from `allocator.py`.
+
+### `src/heatingsystem/allocator/allocator.py`
+
+Multi-room control of on/off heating sections that may each serve several rooms. Built
+once from a fixed layout (rooms with a priority and an evenness weight; sections with a
+share per covered room). Every `update` runs, per room, a composed radiator-mode
+`PIController` (`history_length=1`) for the demand; allocates section duty cycles by
+bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`) minimising exactly
+`J(u) = sum_r p_r (d_r - h_r)^2 + sum_r p_r e_r spread_r` (`p` priority in `(0, 1]`, `e` evenness
+in `[0, 1]`, `h_r` the heat room r receives, `spread_r = sum((u_s - mean)**2)` over its sections),
+split by connected component of the room-section graph with a closed form `min(1, demand / share)`
+for a one-room, one-section component (every weight is divided by the component's largest priority and
+floored at 1e-12 of it as a safety net for priorities more than 1e12 apart, so a very low-priority room's feasible demand is never lost to round-off,
+and the solver's status is checked); and turns each duty into 0.0/1.0 through one
+floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
+`scipy`). The component split, matrix assembly, the solve step and the layout validation are
+private helpers and are omitted per this file's convention.
+
+| Signature | Description |
+|---|---|
+| `Room(name: str, *, priority: float, evenness: float, kp: float, ki: float, setpoint: float)` | One room, built by `SectionAllocator` (construction is internal). Validates `name` (non-empty `str`), `priority` (finite, in `(0, 1]`), `evenness` (finite, in `[0, 1]`); a value outside raises `ValueError` naming the attribute and repeating the caller's value; composes the radiator-mode `PIController`. |
+| `Room.name -> str` | Read-only. |
+| `Room.priority -> float` | Read-only. |
+| `Room.evenness -> float` | Read-only. |
+| `Room.setpoint -> float` (settable) | Delegates to the composed `PIController`; same contract and message. |
+| `Room.kp -> float` (settable) | Delegates to the composed `PIController`. |
+| `Room.ki -> float` (settable) | Delegates to the composed `PIController`. |
+| `Room.integral -> float` | Read-only; the PI integral. |
+| `Room.demand -> float \| None` | Read-only; the clamped PI demand of the last `update`, `None` before the first and after `from_dict`. |
+| `SectionAllocator(rooms: Mapping[str, Mapping[str, float]], sections: Mapping[str, Mapping[str, float]], *, kp: float = 0.3, ki: float = 0.015, setpoint: float = 21.0, history_length: int = 24)` | The controller. `rooms` maps name to `{"priority" in (0, 1], "evenness" in [0, 1]}`; `sections` maps name to `{room: share}`. Shared `kp`/`ki`/`setpoint` are validated first and named as the argument passed; every layout error names its path (`sections['HS1']['R1']`); nothing is built on failure. |
+| `SectionAllocator.update(measured: Mapping[str, float]) -> dict[str, float]` | One step: a temperature per room in, a `0.0`/`1.0` command per section out, in section order. Validates everything before any state changes: `TypeError` for a non-mapping `measured` or a non-numeric/`bool` temperature, `ValueError` for a missing or unknown room (missing named first) or a non-finite temperature, `OverflowError` for one too large for a `float`; a bad temperature names `measured['<room>']`, a missing or unknown room is reported as the list of names (`measured is missing rooms [...]` / `measured has unknown rooms [...]`), and a non-mapping names `measured`. If the allocation fails (`ArithmeticError` for a non-finite or non-converged solver result), every room's integral and demand are restored and the error propagates; no command is issued and `duty` is unchanged. |
+| `SectionAllocator.rooms -> Mapping[str, Room]` | Read-only `MappingProxyType` of the `Room` handles. |
+| `SectionAllocator.sections -> dict[str, dict[str, float]]` | Read-only; a fresh deep copy of the shares. |
+| `SectionAllocator.history_length -> int` | Read-only. |
+| `SectionAllocator.duty -> dict[str, float] \| None` | Last allocated duty per section; `None` before the first `update` and after `from_dict`. |
+| `SectionAllocator.history -> dict[str, tuple[float, ...]]` | Each section's command window, oldest first. |
+| `SectionAllocator.to_dict() -> dict[str, object]` | JSON-friendly snapshot: `history_length`, `rooms` (`priority`, `evenness`, `setpoint`, `kp`, `ki`, `integral`) and `sections` (`shares`, `history`), fresh containers. |
+| `SectionAllocator.from_dict(data: Mapping[str, object]) -> Self` (classmethod) | Rebuild from a snapshot: key sets checked at every level (missing before unknown), the layout through the constructor (so a layout error is the constructor's, naming the constructor's path, e.g. `sections['HS1']['R1']` for a bad share), settings through the setters, each section's window restored into a fresh floor-heating `Modulator`; setting and window errors keep their class with the snapshot path prefixed (`rooms['R1'].integral`, `sections['HS1'].history[0]`). `duty` and every room's `demand` are `None` afterwards. |
+| `main() -> None` | Showcase: the reference layout with evenness 0, worked example B (R1 evenness 0.1) and C (both rooms 1), a priority conflict on a shared section, a setpoint change, a JSON snapshot round trip and an invalid layout. |
+
+Runnable standalone: `python -m heatingsystem.allocator.allocator`, once the package is
+installed.
 
 ### `src/heatingsystem/modulator/__init__.py`
 
@@ -186,7 +236,9 @@ being in `sys.modules` is the expected consequence of the subpackage re-exportin
 
 ## Script: `test.py`
 
-Closed-loop simulation of `PIController` against a first-order thermal model of a room,
+Closed-loop simulation of `PIController` against a first-order thermal model of a room
+(with a configurable delay, `HEAT_DELAY_STEPS`, before a command's heat reaches the room,
+and a thermal mass, `ROOM_CAPACITY`, that slows its response),
 once per `HeatingMode`, with a fixed-output hold once the room has settled (hatched on the
 plot, so the sag during it and the burst at release are visible) and a setpoint step
 halfway through, drawn as two stacked matplotlib subplots and saved as `simulation.png`
@@ -353,6 +405,29 @@ All tests live here and nowhere else — `testpaths = ["tests"]` in `pyproject.t
 `pytest` collects nothing outside this directory, and the stop gate blocks on a test file
 found anywhere else.
 
+### `tests/test_allocator.py`
+
+Covers `SectionAllocator` and `Room`. Construction: every A1 refusal with its class and path (share
+at, either side of and far from `(0, 1]`, share sums either side of the 1e-9 tolerance, unknown and
+uncovered rooms, priority and evenness limits, bad types, empty and malformed mappings, non-string
+names), the error order, shared-gain errors identical to `PIController`'s and naming the argument,
+`history_length` parity, no aliasing of the caller's mappings, and a read-only layout. `Room`
+setters identical to `PIController`'s and effective on the next `update`. `update`: output shape and
+binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, numeric
+variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
+evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
+and tiny-share matrices), the weight floor against extreme priority ratios and subnormal
+priorities, the range refusals for priority in `(0, 1]` and evenness in `[0, 1]` (and in `from_dict`),
+A5's absolute-mismatch monotonicity at evenness 0 with its documented exceptions, and its general
+clause (the combined cost `|d - h|^2 + e * spread` never rises with priority) on the halt's
+counterexample layout, a priority sweep and seeded random layouts, with the counterexample also
+pinned as the reason the absolute-mismatch clause needs evenness 0, A6's spread monotonicity (including a three-section room) and the
+hungry-R2 case, A7's bit-exact equivalence to a standalone floor-heating `PIController`, and A10-A12:
+the cost's KKT conditions and an independent solve over random layouts, priority-scaling invariance, and
+the worked examples A-G. Package exports, the declared scipy/numpy dependencies, and
+`to_dict`/`from_dict`: shape and order, identical next 50 commands (direct and through JSON, empty,
+partial and full windows), every malformed snapshot naming its path, subclass round trip.
+
 ### `tests/test_modulator.py`
 
 Covers `Modulator` and, jointly with it, the shared numeric-contract plumbing it and
@@ -399,7 +474,8 @@ mode coercion identically for `PIController.mode`, `Modulator.mode` and
 ### `tests/test_validation.py`
 
 Covers `heatingsystem._validation`, the private module the numeric contract is stated in
-once and that both `PIController` and `Modulator` call through by name (D5). `finite`:
+once and that `PIController`, `Modulator` and the allocator (`Room`, `SectionAllocator`) call
+through by name (D5). `finite`:
 accepts a plain number and returns `float`, normalises `-0.0` to `+0.0`, accepts `int` and
 `Fraction`, rejects every non-finite value and every non-`numbers.Real` type (`bool`
 included) naming the attribute and the offending type, and raises `OverflowError` naming the

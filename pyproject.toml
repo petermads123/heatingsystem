@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "heatingsystem"
-version = "0.1.0"
+version = "1.0.0"
 description = "Heating system models."
 authors = [
   { name = "Peter Mads Pedersen", email = "petermads123@hotmail.com" }
@@ -13,7 +13,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 
 # Runtime dependencies
-dependencies = []
+dependencies = ["numpy>=2", "scipy>=1.14,<2"]
 
 # Optional groups (e.g. dev dependencies)
 [project.optional-dependencies]

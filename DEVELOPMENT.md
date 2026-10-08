@@ -38,9 +38,29 @@ Deferred at step 8; the full rows are in `development/feat/fixed-output/04-modul
 - **R4** — make `update()` transactional for the per-call setpoint too, so a modulator raise
   stores nothing. Take it with R5 if a second model lands.
 - **R5** — give `_validation.window_length` a `name` parameter like the other helpers, and
-  stop `_validation.py`'s module docstring naming its callers. Waits for a second caller.
+  stop `_validation.py`'s module docstring naming its callers. The second caller has now
+  arrived: `SectionAllocator` (`feat/section-allocator` round 1) validates `history_length`
+  through it; the change itself is still to do.
 - **R6** — regroup `tests/test_pi_controller.py` by subject, collapse the duplicated
-  validation matrices, and prune `STRUCTURE.md`'s test narrative; apply the per-subpackage
-  `STRUCTURE.md` split only once a third subpackage arrives.
-- **R7** — promote the modulator's `_to_dict`/`_from_dict` to public, once a caller drives a
-  `Modulator` standalone and needs it to survive a reload.
+  validation matrices, and prune `STRUCTURE.md`'s test narrative. The trigger for the
+  per-subpackage `STRUCTURE.md` split has now arrived: `allocator/` is the third subpackage
+  (`feat/section-allocator` round 1 left `STRUCTURE.md` flat); the split itself is still to do.
+- **R7** — promote the modulator's `_to_dict`/`_from_dict` to public. The trigger has now
+  arrived: `SectionAllocator` (`feat/section-allocator` round 1) is the first caller that
+  drives standalone `Modulator`s and restores them through `Modulator._from_dict`, so it
+  currently calls a private method from another module; the promotion itself is still to do.
+
+## `feat/section-allocator` round 1 — 2026-10-07
+
+Noted at step 8; nothing critical. Details in `development/feat/section-allocator/01-section-allocator.md` §3, §5.
+
+- **Deployment** — scipy and numpy are now runtime dependencies; installing them inside the
+  AppDaemon container (ready-built musllinux wheels exist for 3.13) is untested and belongs
+  with the AppDaemon glue, which this round left out of scope.
+- **A10 tolerance** — A10's absolute 1e-9 cost tolerance is vacuous when every priority is
+  tiny; the tests normalise `J` by the largest priority. Reword A10 "relative to the largest
+  priority" if the criterion is ever revisited.
+- **`Room` internals** — a failed allocation restores each room's integral and demand but
+  not its composed `PIController`'s one-slot radiator history (unobservable today); and
+  `from_dict` accepts a non-binary floor-heating section history (the `Modulator` contract).
+  Revisit both if `Room` ever exposes a history or the snapshot format is tightened.

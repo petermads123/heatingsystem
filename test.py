@@ -7,6 +7,11 @@ duty-cycle modulation).  For each mode it draws a plot showing the measured room
 temperature, the (stepped) setpoint, and the controller's actuator state encoded
 as a blue (off) -> red (on) background hue.
 
+Heat does not reach the room the moment the actuator turns on: the command is
+applied to the room model ``HEAT_DELAY_STEPS`` steps later, as with a floor or a
+radiator that first has to warm up.  Set it to ``0`` for the old, immediate
+response.
+
 Two events are injected: a fixed-output hold (the valve held shut, as during a
 price spike) once the room has settled, so the temperature sag and the demand
 burst at release are visible; and a setpoint change halfway through the run so
@@ -15,6 +20,8 @@ produce the figure::
 
     .venv/Scripts/python.exe test.py
 """
+
+from collections import deque
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -25,7 +32,7 @@ from matplotlib.colors import Colormap, Normalize
 import heatingsystem as hs
 
 # --- Simulation configuration -------------------------------------------------
-N_STEPS: int = 40  # total number of 5-minute control steps to simulate
+N_STEPS: int = 100  # total number of 5-minute control steps to simulate
 HISTORY_LENGTH: int = 6  # controller lookback window (requested)
 CHANGE_STEP: int = N_STEPS // 2  # setpoint changes halfway through the run
 SETPOINT_INITIAL: float = 21.0  # °C target before the change
@@ -33,18 +40,24 @@ SETPOINT_CHANGED: float = 23.0  # °C target after the change
 START_TEMP: float = 19.0  # °C initial room temperature
 
 # --- Fixed-output hold (e.g. a price spike) ----------------------------------
-HOLD_START: int = 8  # first step of the hold, once the room has settled
-HOLD_END: int = 14  # first step after the hold (exclusive)
+HOLD_START: int = 20  # first step of the hold, once the room has settled
+HOLD_END: int = 30  # first step after the hold (exclusive)
 HOLD_LEVEL: float = 0.0  # actuator level held during the hold: 0.0 = shut
 
 # --- Controller gains ---------------------------------------------------------
-KP: float = 0.4  # proportional gain
-KI: float = 0.1  # integral gain (per 5-minute step)
+# Tuned for ROOM_CAPACITY = 3 with a 4-step heat delay; a faster room or a
+# longer delay needs a lower KP to avoid oscillating.
+KP: float = 0.2  # proportional gain
+KI: float = 0.01  # integral gain (per 5-minute step)
 
 # --- First-order thermal-model parameters -------------------------------------
 AMBIENT_TEMP: float = 17.0  # °C the room drifts toward with the heater off
-HEAT_GAIN: float = 2.0  # °C/step added at full actuator output
-LOSS_COEFF: float = 0.2  # fraction of the room-to-ambient gap lost per step
+HEAT_GAIN: float = 2.0  # °C/step added at full output, for a capacity of 1
+LOSS_COEFF: float = 0.2  # fraction of the room-to-ambient gap lost per step, capacity 1
+ROOM_CAPACITY: float = 3.0  # thermal mass; higher = slower room, same final temperature
+HEAT_DELAY_STEPS: int = (
+    4  # steps before a command's heat reaches the room; 0 = immediate
+)
 
 # Diverging colormap: 0.0 (off) -> blue, 1.0 (full on) -> red.
 CONTROL_CMAP: Colormap = matplotlib.colormaps["coolwarm"]
@@ -55,7 +68,9 @@ def step_temperature(temp: float, command: float) -> float:
 
     The model is a simple first-order energy balance: the heater adds energy
     proportional to its actuator command while the room continuously loses
-    energy toward the ambient temperature.
+    energy toward the ambient temperature.  Both are divided by
+    ``ROOM_CAPACITY``, so a larger capacity makes the room respond more slowly
+    without changing the temperature it settles at for a given command.
 
     Args:
         temp: Current room temperature in °C.
@@ -64,8 +79,10 @@ def step_temperature(temp: float, command: float) -> float:
     Returns:
         The room temperature in °C at the next step.
     """
-    # Heat added by the actuator minus passive loss toward ambient.
-    return temp + HEAT_GAIN * command - LOSS_COEFF * (temp - AMBIENT_TEMP)
+    # Heat added by the actuator minus passive loss toward ambient, scaled
+    # down by the room's thermal mass.
+    energy = HEAT_GAIN * command - LOSS_COEFF * (temp - AMBIENT_TEMP)
+    return temp + energy / ROOM_CAPACITY
 
 
 def run_simulation(
@@ -94,6 +111,11 @@ def run_simulation(
     commands: list[float] = []
     setpoints: list[float] = []
 
+    # Commands still on their way to the room: the oldest one is applied each
+    # step, so a command issued now heats the room HEAT_DELAY_STEPS steps later.
+    # Pre-filled with 0.0 (heater off before the simulation starts).
+    in_transit: deque[float] = deque([0.0] * HEAT_DELAY_STEPS)
+
     temp = START_TEMP
     for step in range(N_STEPS):
         # Apply the setpoint change once we pass the halfway point.
@@ -111,8 +133,10 @@ def run_simulation(
         commands.append(command)
         setpoints.append(setpoint)
 
-        # Evolve the room for the next step using the chosen command.
-        temp = step_temperature(temp, command)
+        # Evolve the room using the command issued HEAT_DELAY_STEPS steps ago.
+        in_transit.append(command)
+        applied = in_transit.popleft()
+        temp = step_temperature(temp, applied)
 
     return temps, commands, setpoints
 
@@ -226,8 +250,8 @@ def main() -> None:
     colorbar.set_label("Control state (0 = off / blue, 1 = on / red)")
 
     fig.suptitle(
-        "PIController closed-loop simulation with a fixed-output hold "
-        "and a setpoint change",
+        "PIController closed-loop simulation with a fixed-output hold, "
+        f"a setpoint change and a {HEAT_DELAY_STEPS}-step heat delay",
         fontsize=13,
     )
 
