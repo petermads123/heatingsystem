@@ -2346,6 +2346,904 @@ def test_a_dedicated_share_one_room_matches_the_standalone_controller_in_a_confl
 
 
 # ---------------------------------------------------------------------------
+# Round 1 (feat/allocator-home-assistant), step 5: normalisation (A2), holds
+# (A5-A9) and the hold snapshot (A10), on the plan's E layout. Every expected
+# number is derived by hand from J (see the comments), never read back.
+#
+# E layout: HS1 {R1 0.5}, HS2 {R2 1.0}, HS3 {R3 0.3}, HS4 {R3 0.7, R4 0.4},
+# HS5 {R4 0.6}; priorities 1, evenness 0, kp=1, ki=0.
+# ---------------------------------------------------------------------------
+
+
+def e_rooms(e3: float = 0.0, e4: float = 0.0) -> dict[str, dict[str, float]]:
+    return {
+        "R1": {"priority": 1.0, "evenness": 0.0},
+        "R2": {"priority": 1.0, "evenness": 0.0},
+        "R3": {"priority": 1.0, "evenness": e3},
+        "R4": {"priority": 1.0, "evenness": e4},
+    }
+
+
+def e_sections() -> dict[str, dict[str, float]]:
+    return {
+        "HS1": {"R1": 0.5},
+        "HS2": {"R2": 1.0},
+        "HS3": {"R3": 0.3},
+        "HS4": {"R3": 0.7, "R4": 0.4},
+        "HS5": {"R4": 0.6},
+    }
+
+
+def e_layout(
+    e3: float = 0.0, e4: float = 0.0, history_length: int = 24
+) -> SectionAllocator:
+    return SectionAllocator(
+        e_rooms(e3, e4),
+        e_sections(),
+        history_length=history_length,
+        kp=1.0,
+        ki=0.0,
+    )
+
+
+def e_meas(d3: float, d4: float = 0.0) -> dict[str, float]:
+    """Temperatures giving R1 and R2 no demand, R3 demand d3 and R4 demand d4."""
+    return {"R1": SETPOINT, "R2": SETPOINT, "R3": SETPOINT - d3, "R4": SETPOINT - d4}
+
+
+def pair(coverage: float, evenness: float = 0.0) -> SectionAllocator:
+    """One room R covered by two sections, each by ``coverage``."""
+    return SectionAllocator(
+        {"R": {"priority": 1.0, "evenness": evenness}},
+        {"HS1": {"R": coverage}, "HS2": {"R": coverage}},
+        kp=1.0,
+        ki=0.0,
+    )
+
+
+def duty_of(a: SectionAllocator) -> dict[str, float]:
+    duty = a.duty
+    assert duty is not None
+    return duty
+
+
+def approx_duty(**levels: float) -> object:
+    return pytest.approx(levels, abs=1e-9)
+
+
+# --- A2: normalisation ------------------------------------------------------
+
+
+def test_normalisation_e1_free_allocation_of_the_reference_layout() -> None:
+    # R3 demand 0.5: HS3 full gives 0.3, HS4 supplies the remaining 0.2 at 0.7
+    # normalised weight 0.7 -> 0.2 / 0.7 ... in total 14/65, hand-derived from
+    # minimising (0.5 - 0.3a - 0.7b)^2 + (0 - 0.4b - 0.6c)^2 with a = 1.
+    a = e_layout()
+    a.update(e_meas(0.5))
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=1.0, HS4=14 / 65, HS5=0.0)
+    assert duty_of(a)["HS4"] == pytest.approx(0.2154, abs=1e-3)
+
+
+def test_normalisation_e3_closed_form_is_relative_to_the_covered_part() -> None:
+    a = e_layout()
+    a.update({**e_meas(0.0), "R1": 20.6})
+    demand = a.rooms["R1"].demand
+    assert demand == pytest.approx(0.4, abs=1e-12)
+    assert duty_of(a)["HS1"] == demand  # min(1, demand), not demand / 0.5
+    assert duty_of(a)["HS1"] != pytest.approx(0.8)
+
+
+def test_closed_form_saturates_at_one_not_at_the_coverage() -> None:
+    a = e_layout()
+    a.update({**e_meas(0.0), "R1": 18.0})  # demand clamps to 1.0
+    assert duty_of(a)["HS1"] == 1.0
+
+
+@pytest.mark.parametrize("coverage", [0.2, 0.5, 0.9, 1.0])
+def test_a_room_summing_below_one_equals_the_same_layout_scaled_to_one(
+    coverage: float,
+) -> None:
+    # coverage c per section, room total 2c; scaled layout is 0.5 each.
+    scaled = pair(0.5, evenness=1.0)
+    a = pair(coverage / 2, evenness=1.0)
+    scaled.update({"R": 20.7})
+    a.update({"R": 20.7})
+    assert duty_of(a) == approx_duty(**duty_of(scaled))
+    # Demand 0.3 split evenly: both sections at 0.3 (hand: minimise
+    # (0.3 - 0.5(u1+u2))^2 + (u1-u2)^2/2 -> u1 = u2 = 0.3).
+    assert duty_of(a) == approx_duty(HS1=0.3, HS2=0.3)
+
+
+def test_unequal_totals_with_evenness_are_normalised_not_raw() -> None:
+    # A 0.2, B 0.3 (total 0.5) must match A 0.4, B 0.6 bit for bit
+    # (0.2/0.5 == 0.4 and 0.3/0.5 == 0.6 in floats).
+    def build_pair(a_cov: float, b_cov: float) -> SectionAllocator:
+        return SectionAllocator(
+            {"R": {"priority": 1.0, "evenness": 1.0}},
+            {"A": {"R": a_cov}, "B": {"R": b_cov}},
+            kp=1.0,
+            ki=0.0,
+        )
+
+    low = build_pair(0.2, 0.3)
+    high = build_pair(0.4, 0.6)
+    low.update({"R": 20.7})
+    high.update({"R": 20.7})
+    assert duty_of(low) == duty_of(high)
+    # Hand: normalised 0.4/0.6, demand 0.3, evenness 1:
+    # minimise (0.3 - 0.4a - 0.6b)^2 + (a - b)^2/2 -> a = b = 0.3.
+    assert duty_of(low) == approx_duty(A=0.3, B=0.3)
+
+
+def test_construction_normalises_subnormal_coverages_without_blow_up() -> None:
+    a = SectionAllocator(
+        {"R": {"priority": 1.0, "evenness": 0.0}},
+        {"HS1": {"R": 5e-324}, "HS2": {"R": 1e-323}},
+        kp=1.0,
+        ki=0.0,
+    )
+    assert a.sections == {"HS1": {"R": 5e-324}, "HS2": {"R": 1e-323}}
+    a.update({"R": 20.0})  # demand 1.0; normalised 1/3 and 2/3
+    duty = duty_of(a)
+    assert math.isfinite(duty["HS1"]) and math.isfinite(duty["HS2"])
+    assert (1 / 3) * duty["HS1"] + (2 / 3) * duty["HS2"] == pytest.approx(1.0)
+    assert duty == approx_duty(HS1=1.0, HS2=1.0)
+
+
+def test_sections_returns_the_coverages_as_given_not_normalised() -> None:
+    sections = e_sections()
+    sections["HS2"] = {"R2": 1}
+    a = SectionAllocator(e_rooms(), sections, kp=1.0, ki=0.0)
+    assert a.sections == {
+        "HS1": {"R1": 0.5},
+        "HS2": {"R2": 1.0},
+        "HS3": {"R3": 0.3},
+        "HS4": {"R3": 0.7, "R4": 0.4},
+        "HS5": {"R4": 0.6},
+    }
+    assert type(a.sections["HS2"]["R2"]) is float
+    assert a.to_dict()["sections"]["HS1"]["coverage"] == {"R1": 0.5}  # type: ignore[index]  # object-typed snapshot
+
+
+def test_sections_pair_reports_the_given_coverage() -> None:
+    a = pair(0.2)
+    assert a.sections["HS1"] == {"R": 0.2}
+    assert a.to_dict()["sections"]["HS1"]["coverage"] == {"R": 0.2}  # type: ignore[index]  # object-typed snapshot
+
+
+def test_e4_evenness_spreads_the_demand_over_the_three_loops() -> None:
+    # R3 = R4 = 0.5, evenness 1: HS3 = HS4 = HS5 = 0.5 (hand: u = 0.5 gives
+    # h_R3 = 0.3*0.5 + 0.7*0.5 = 0.5 normalised and zero spread).
+    a = e_layout(e3=1.0, e4=1.0)
+    a.update(e_meas(0.5, 0.5))
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=0.5, HS4=0.5, HS5=0.5)
+
+
+# --- A5: hold / holds -------------------------------------------------------
+
+
+def test_holds_is_complete_fresh_and_in_constructor_order() -> None:
+    a = e_layout()
+    a.hold("HS5", 1.0)
+    a.hold("HS1", 0.0)
+    handed_out = a.holds
+    handed_out["HS2"] = 0.7
+    assert list(a.holds) == ["HS1", "HS2", "HS3", "HS4", "HS5"]
+    assert a.holds == {"HS1": 0.0, "HS2": None, "HS3": None, "HS4": None, "HS5": 1.0}
+    assert a.holds is not a.holds
+    assert a.holds["HS2"] is None
+
+
+def test_a_fresh_allocator_holds_nothing() -> None:
+    assert e_layout().holds == dict.fromkeys(["HS1", "HS2", "HS3", "HS4", "HS5"])
+
+
+@pytest.mark.parametrize(
+    ("value", "stored"),
+    [
+        (0, 0.0),
+        (1, 1.0),
+        (0.5, 0.5),
+        (Fraction(1, 4), 0.25),
+        (np.float64(0.5), 0.5),
+        (np.int64(1), 1.0),
+        (-0.0, 0.0),
+        (1.0, 1.0),
+    ],
+    ids=repr,
+)
+def test_hold_accepts_numeric_variants_and_stores_plain_floats(
+    value: object, stored: float
+) -> None:
+    a = e_layout()
+    a.hold("HS3", value)  # type: ignore[arg-type]  # numeric variants beyond float
+    held = a.holds["HS3"]
+    assert held == stored
+    assert type(held) is float
+    assert math.copysign(1.0, held) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("bad", "error"),
+    [
+        (True, TypeError),
+        (False, TypeError),
+        (np.bool_(True), TypeError),
+        ("0.5", TypeError),
+        ([0.5], TypeError),
+        (1j, TypeError),
+        (Decimal("0.5"), TypeError),
+        (float("nan"), ValueError),
+        (float("inf"), ValueError),
+        (float("-inf"), ValueError),
+        (1.5, ValueError),
+        (-0.5, ValueError),
+        (math.nextafter(1.0, 2.0), ValueError),
+        (-5e-324, ValueError),
+        (Fraction(3, 2), ValueError),
+        (10**400, OverflowError),
+        (-(10**400), OverflowError),
+    ],
+    ids=repr,
+)
+@pytest.mark.parametrize("previous", [None, 0.25])
+def test_hold_refuses_a_bad_level_naming_the_section_and_changes_nothing(
+    bad: object, error: type[Exception], previous: float | None
+) -> None:
+    a = e_layout(history_length=4)
+    a.update(e_meas(0.5))
+    a.hold("HS3", previous)
+    before = (a.to_dict(), a.duty, a.holds, a.history)
+    with pytest.raises(error, match=re.escape("holds['HS3']")):
+        a.hold("HS3", bad)  # type: ignore[arg-type]  # deliberate misuse
+    assert (a.to_dict(), a.duty, a.holds, a.history) == before
+    assert a.holds["HS3"] == previous
+
+
+def test_hold_range_error_repeats_the_callers_own_value() -> None:
+    a = e_layout()
+    with pytest.raises(ValueError, match=re.escape("Fraction(3, 2)")) as caught:
+        a.hold("HS3", Fraction(3, 2))  # type: ignore[arg-type]  # numeric variant
+    assert "holds['HS3']" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("section", "level", "error", "pattern"),
+    [
+        (1, "x", TypeError, "section must be a str"),
+        (None, 0.5, TypeError, "section must be a str"),
+        (["HS1"], 0.5, TypeError, "section must be a str"),
+        ("HS9", float("nan"), ValueError, r"unknown section 'HS9'"),
+        ("", 0.5, ValueError, r"unknown section ''"),
+        ("hs1", 0.5, ValueError, r"unknown section 'hs1'"),
+        ("HS1 ", 0.5, ValueError, r"unknown section 'HS1 '"),
+        ("R1", 0.5, ValueError, r"unknown section 'R1'"),  # a room is not a section
+        ("HS9", None, ValueError, r"unknown section 'HS9'"),
+    ],
+    ids=repr,
+)
+def test_hold_checks_the_section_before_the_level(
+    section: object, level: object, error: type[Exception], pattern: str
+) -> None:
+    a = e_layout()
+    before = a.to_dict()
+    with pytest.raises(error, match=pattern) as caught:
+        a.hold(section, level)  # type: ignore[arg-type]  # deliberate misuse
+    assert "holds[" not in str(caught.value)
+    assert a.to_dict() == before
+
+
+def test_an_unknown_section_error_lists_the_known_sections() -> None:
+    a = e_layout()
+    with pytest.raises(
+        ValueError, match=re.escape("['HS1', 'HS2', 'HS3', 'HS4', 'HS5']")
+    ):
+        a.hold("HS9", 0.5)
+
+
+def test_hold_release_and_repeat_are_no_ops() -> None:
+    a = e_layout()
+    a.hold("HS1", None)  # releasing what was never held is not an error
+    assert a.holds["HS1"] is None
+    a.hold("HS1", 0.5)
+    first = a.to_dict()
+    a.hold("HS1", 0.5)
+    assert a.to_dict() == first
+    a.hold("HS1", None)
+    assert a.holds["HS1"] is None
+    a.hold("HS1", None)
+    assert a.holds["HS1"] is None
+
+
+def test_hold_zero_is_a_hold_and_not_a_release() -> None:
+    a = e_layout()
+    a.hold("HS1", 0)
+    a.hold("HS3", 0)
+    assert a.holds["HS1"] == 0.0
+    assert a.holds["HS1"] is not None
+    assert a.holds["HS3"] is not None
+
+
+def test_hold_takes_effect_only_on_the_next_update() -> None:
+    a = e_layout(history_length=4)
+    a.update(e_meas(0.5))
+    duty_before, history_before = a.duty, a.history
+    assert duty_of(a)["HS3"] == 1.0
+    a.hold("HS3", 0.0)
+    assert a.duty == duty_before
+    assert a.history == history_before
+    a.update(e_meas(0.5))
+    # E2: HS3 shut, HS4 compensates: minimise (0.5 - 0.7b)^2 + (0.4b)^2 -> 7/13.
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=0.0, HS4=7 / 13, HS5=0.0)
+
+
+# --- A6: a held section ------------------------------------------------------
+
+
+def test_e2_free_sections_compensate_for_a_shut_section() -> None:
+    a = e_layout()
+    a.hold("HS3", 0.0)
+    a.update(e_meas(0.5))
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=0.0, HS4=7 / 13, HS5=0.0)
+    assert duty_of(a)["HS4"] == pytest.approx(0.538, abs=1e-3)
+
+
+def test_release_reallocates_exactly_like_a_fresh_allocator_e1() -> None:
+    a = e_layout()
+    a.hold("HS3", 0.0)
+    a.update(e_meas(0.5))
+    a.hold("HS3", None)
+    a.update(e_meas(0.5))
+    # Fresh twin with a PI integral of 0 (ki=0): same demand, same matrix.
+    fresh = e_layout()
+    fresh.update(e_meas(0.5))
+    assert duty_of(a) == duty_of(fresh)
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=1.0, HS4=14 / 65, HS5=0.0)
+
+
+@pytest.mark.parametrize(
+    ("section", "level", "temperatures"),
+    [
+        ("HS3", 1.0, e_meas(-1.0)),  # R3 too hot, still on
+        ("HS3", 0.0, e_meas(1.0)),  # R3 full demand, still off
+        ("HS1", 1.0, {**e_meas(0.0), "R1": 22.0}),  # closed form, hot
+        ("HS1", 0.0, {**e_meas(0.0), "R1": 20.0}),  # closed form, cold
+        ("HS4", 0.0, e_meas(1.0, 1.0)),  # multi-room section
+        ("HS4", 1.0, e_meas(0.0, 0.0)),
+    ],
+    ids=[
+        "hs3-on-hot",
+        "hs3-off-cold",
+        "hs1-on-hot",
+        "hs1-off-cold",
+        "hs4-off",
+        "hs4-on",
+    ],
+)
+def test_a_section_held_at_a_bound_commands_exactly_its_level(
+    section: str, level: float, temperatures: dict[str, float]
+) -> None:
+    a = e_layout(history_length=4)
+    a.hold(section, level)
+    for _ in range(10):
+        commands = a.update(temperatures)
+        assert commands[section] == level
+        assert duty_of(a)[section] == level
+    assert a.history[section] == (level,) * 4
+
+
+def test_a_held_level_ignores_the_demand_at_every_step() -> None:
+    a = e_layout(history_length=6)
+    a.hold("HS3", 1.0)
+    for i in range(30):
+        a.update(e_meas(-1.0 + 2.0 * (i % 7) / 6))
+        assert duty_of(a)["HS3"] == 1.0
+    assert a.history["HS3"] == (1.0,) * 6
+
+
+def test_a_held_quarter_level_fills_the_first_window_with_the_level_as_its_mean() -> (
+    None
+):
+    # T6: from an empty 24-slot window, the modulation of 0.25 puts exactly 6
+    # slots on (the quarter-level pattern pinned in test_modulator), so the
+    # window mean is 0.25 and duty reports 0.25 at every step.
+    a = e_layout()
+    a.hold("HS1", 0.25)
+    commands: list[float] = []
+    for _ in range(24):
+        commands.append(a.update(e_meas(0.5))["HS1"])
+        assert duty_of(a)["HS1"] == 0.25
+    assert set(commands) <= {0.0, 1.0}
+    assert sum(commands) / 24 == 0.25
+    assert a.history["HS1"] == tuple(commands)
+
+
+def test_a_held_fractional_level_is_modulated_like_a_standalone_modulator() -> None:
+    # A6 main clause: the commands are the floor-heating modulation of the
+    # level. The 0/1 pattern tracks the level only to within about a slot (a
+    # window of 4 at 0.25 cycles 1,0,0,0,0 with period 5, realised 0.2), so
+    # the commands are compared to a modulator twin, not to a window mean.
+    a = e_layout(history_length=4)
+    a.hold("HS1", 0.25)
+    twin = hs.Modulator("floor_heating", history_length=4, fixed_output=0.25)
+    got = [a.update(e_meas(0.5))["HS1"] for _ in range(12)]
+    want = [twin.command(0.0) for _ in range(12)]
+    assert got == want
+    assert got == [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    assert a.history["HS1"] == twin.history
+    assert duty_of(a)["HS1"] == 0.25
+
+
+def test_a_held_level_on_a_two_slot_window_pins_the_modulators_one_slot_error() -> None:
+    # history_length 2, hold 0.5: commands 1,0,0,1,0,0,... (window mean 1/3)
+    # while duty reports the level 0.5.
+    a = SectionAllocator(
+        {"R": {"priority": 1.0, "evenness": 0.0}},
+        {"HS1": {"R": 1.0}},
+        history_length=2,
+        kp=1.0,
+        ki=0.0,
+    )
+    a.hold("HS1", 0.5)
+    got = []
+    for _ in range(9):
+        got.append(a.update({"R": 20.0})["HS1"])
+        assert duty_of(a)["HS1"] == 0.5
+    assert got == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+
+
+def test_a_held_duty_is_a_plain_float_and_positive_zero() -> None:
+    a = e_layout()
+    a.hold("HS1", Fraction(1, 4))  # type: ignore[arg-type]  # numeric variant
+    a.hold("HS2", -0.0)
+    a.hold("HS3", 1)
+    a.update(e_meas(0.5))
+    duty = duty_of(a)
+    assert duty["HS1"] == 0.25
+    assert duty["HS3"] == 1.0
+    for name in ("HS1", "HS2", "HS3"):
+        assert type(duty[name]) is float
+    assert math.copysign(1.0, duty["HS2"]) == 1.0
+
+
+def test_a_zero_hold_is_a_hold_in_both_the_closed_form_and_a_matrix_component() -> None:
+    a = e_layout(history_length=4)
+    a.hold("HS1", 0)  # closed form (one room, one section)
+    a.hold("HS3", 0)  # matrix component
+    for _ in range(30):
+        commands = a.update({**e_meas(1.0, 1.0), "R1": 15.0})
+        assert commands["HS1"] == 0.0
+        assert commands["HS3"] == 0.0
+        assert duty_of(a)["HS1"] == 0.0
+        assert duty_of(a)["HS3"] == 0.0
+    assert a.history["HS1"] == (0.0,) * 4
+
+
+def test_a_held_closed_form_section_is_independent_of_its_room_demand() -> None:
+    a = e_layout()
+    a.hold("HS2", 0.75)
+    a.update({**e_meas(0.0), "R2": 10.0})
+    assert duty_of(a)["HS2"] == 0.75
+
+
+def test_a_hold_changed_mid_run_takes_effect_on_the_next_update() -> None:
+    a = e_layout(history_length=4)
+    levels = [0.0, 0.0, 1.0, 1.0, None, None]
+    seen = []
+    for level in levels:
+        a.hold("HS3", level)
+        a.update(e_meas(0.5))
+        seen.append(duty_of(a)["HS3"])
+    assert seen[:4] == [0.0, 0.0, 1.0, 1.0]
+    assert seen[4:] == [1.0, 1.0]  # free again: E1 gives HS3 1.0
+    assert a.holds["HS3"] is None
+
+
+def test_the_held_contribution_is_subtracted_from_every_room_a_section_covers() -> None:
+    # HS4 held at 0.5 covers R3 (0.7) and R4 (0.4). Demands R3 0.65, R4 0.38.
+    # Hand: HS3 = (0.65 - 0.35) / 0.3 = 1.0 (R3's remainder), HS5 =
+    # (0.38 - 0.2) / 0.6 = 0.3; HS1, HS2 idle.
+    a = e_layout()
+    a.hold("HS4", 0.5)
+    a.update(e_meas(0.65, 0.38))
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=1.0, HS4=0.5, HS5=0.3)
+
+
+def test_free_sections_do_not_chase_a_demand_the_hold_already_oversupplies() -> None:
+    # HS3 held at 1.0 gives R3 0.3 against demand 0.15: R3's residual is
+    # negative, so HS4 stays at its lower bound and HS5 serves R4's 0.4
+    # alone, which takes HS5 to two thirds.
+    a = e_layout()
+    a.hold("HS3", 1.0)
+    a.update(e_meas(0.15, 0.4))
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=1.0, HS4=0.0, HS5=2 / 3)
+
+
+@pytest.mark.parametrize("coverage", [0.2, 0.5])
+def test_a_held_contribution_uses_the_normalised_coverage_not_the_raw_one(
+    coverage: float,
+) -> None:
+    # Two sections of equal coverage: each normalised to 0.5. HS1 held at 1.0
+    # supplies 0.5, so demand 0.5 needs no HS2 and demand 0.75 needs HS2 at 0.5.
+    a = pair(coverage)
+    a.hold("HS1", 1.0)
+    a.update({"R": 20.5})
+    assert duty_of(a)["HS2"] == pytest.approx(0.0, abs=1e-12)
+    b = pair(coverage)
+    b.hold("HS1", 1.0)
+    b.update({"R": 20.25})
+    assert duty_of(b)["HS2"] == pytest.approx(0.5, abs=1e-9)
+
+
+@pytest.mark.parametrize("coverage", [0.2, 0.5])
+def test_hold_with_a_fraction_is_invariant_to_the_room_total(coverage: float) -> None:
+    # HS1 held at 0.25 supplies 0.125; demand 0.6 -> HS2 = (0.6 - 0.125) / 0.5.
+    a = pair(coverage)
+    a.hold("HS1", 0.25)
+    a.update({"R": 20.4})
+    assert duty_of(a)["HS2"] == pytest.approx(0.95, abs=1e-9)
+
+
+@pytest.mark.parametrize("held_level", [0.0, 0.5, 1.0])
+def test_evenness_rows_use_the_held_level(held_level: float) -> None:
+    # One room, evenness 1, two sections of coverage 0.5 (normalised 0.5).
+    # J = (d - 0.5L - 0.5u)^2 + 1 * [(L - m)^2 + (u - m)^2], m = (L+u)/2,
+    #   = (d - 0.5L - 0.5u)^2 + (L - u)^2 / 2.
+    # d = 0.5: dJ/du = -(d - 0.5L - 0.5u) - (L - u) = 0
+    #   -> u = (2L - 0.5 + 0.5 L ... ) solved below by hand for each L:
+    #   L=1.0: 0.5(0.5-0.5-0.5u)... = 0.25u - 0 ... gives u = 2/3
+    #   L=0.0: gives u = 1/3
+    #   L=0.5: both sit at the demand: u = 0.5
+    want = {1.0: 2 / 3, 0.0: 1 / 3, 0.5: 0.5}[held_level]
+    a = pair(0.5, evenness=1.0)
+    a.hold("HS1", held_level)
+    a.update({"R": 20.5})
+    assert duty_of(a)["HS1"] == held_level
+    assert duty_of(a)["HS2"] == pytest.approx(want, abs=1e-9)
+
+
+def test_evenness_rows_use_the_held_level_on_the_reference_layout() -> None:
+    # R3, R4 evenness 1, HS4 held at 0, demands 0.5 each:
+    # R3 minimises (0.5 - 0.3u)^2 + (u^2)/2 -> u = 0.3 / 1.18 = 15/59 (HS3);
+    # R4 minimises (0.5 - 0.6u)^2 + u^2/2 -> u = 0.6 / 1.72 = 15/43 (HS5).
+    a = e_layout(e3=1.0, e4=1.0)
+    a.hold("HS4", 0.0)
+    a.update(e_meas(0.5, 0.5))
+    assert duty_of(a) == approx_duty(
+        HS1=0.0, HS2=0.0, HS3=15 / 59, HS4=0.0, HS5=15 / 43
+    )
+
+
+@pytest.mark.parametrize("level", [0.0, 1.0])
+def test_a_single_free_column_with_a_zero_residual_converges(level: float) -> None:
+    # One free column whose right-hand side is exactly zero (or whose optimum
+    # sits on its bound) must not trip the solver's status check.
+    a = pair(0.5)
+    a.hold("HS1", level)
+    a.update({"R": 21.0 if level == 0.0 else 20.5})
+    assert duty_of(a)["HS2"] == pytest.approx(0.0, abs=1e-12)
+
+
+# --- A7: no solver for an all-held component ---------------------------------
+
+
+def test_an_all_held_component_calls_no_solver_e5(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("solver called")
+
+    monkeypatch.setattr(allocator_module, "lsq_linear", refuse)
+    a = e_layout()
+    a.hold("HS3", 1.0)
+    a.hold("HS4", 0.0)
+    a.hold("HS5", 0.5)
+    a.update(e_meas(0.5))
+    assert duty_of(a) == {"HS1": 0.0, "HS2": 0.0, "HS3": 1.0, "HS4": 0.0, "HS5": 0.5}
+    # E5: the heat the rooms get is 0.3 (R3) and 0.3 (R4) -- normalised
+    # coverage times level, from the public coverages only.
+    assert delivered(a, "R3") == pytest.approx(0.3)
+    assert delivered(a, "R4") == pytest.approx(0.3)
+    # Converse: with one free section the solver is reached.
+    a.hold("HS5", None)
+    with pytest.raises(AssertionError, match="solver called"):
+        a.update(e_meas(0.5))
+
+
+def test_only_components_with_a_free_section_call_the_solver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real = allocator_module.lsq_linear
+    calls: list[int] = []
+
+    def spy(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        return real(*args, **kwargs)  # type: ignore[operator]  # mypy resolves scipy.optimize.lsq_linear to the submodule, not the function
+
+    monkeypatch.setattr(allocator_module, "lsq_linear", spy)
+    a = e_layout()
+    a.hold("HS3", 1.0)
+    a.hold("HS4", 0.0)
+    a.hold("HS5", 0.5)
+    commands = a.update({**e_meas(0.5, 0.5), "R1": 20.0, "R2": 20.0})
+    assert calls == []
+    assert commands["HS3"] == 1.0
+    assert commands["HS1"] == 1.0  # the unrelated closed-form components still run
+    assert commands["HS2"] == 1.0
+    a.hold("HS5", None)
+    a.update(e_meas(0.5, 0.5))
+    assert calls == [1]
+
+
+# --- A8: room PI keeps running during a hold ----------------------------------
+
+
+def test_every_rooms_pi_equals_an_unheld_twins_step_for_step() -> None:
+    held = SectionAllocator(
+        e_rooms(), e_sections()
+    )  # default gains: the integral moves
+    twin = SectionAllocator(e_rooms(), e_sections())
+    temperatures = varied_temperatures(43)
+    for step in range(40):
+        if step == 5:
+            held.hold("HS3", 0.0)
+        if step == 15:
+            held.hold("HS3", 1.0)
+        if step == 25:
+            held.hold("HS3", None)
+        sample = {
+            "R1": temperatures[step],
+            "R2": temperatures[step + 1],
+            "R3": temperatures[step + 2],
+            "R4": temperatures[step + 3] - 1.0,
+        }
+        held.update(sample)
+        twin.update(sample)
+        for name in held.rooms:
+            assert held.rooms[name].integral == twin.rooms[name].integral
+            assert held.rooms[name].demand == twin.rooms[name].demand
+
+
+# --- A9: a raising update changes nothing --------------------------------------
+
+
+def _fail_solver(*_args: object, **_kwargs: object) -> object:
+    raise ValueError("boom")
+
+
+@pytest.mark.parametrize("failure", ["solver", "nan", "text", "missing"])
+def test_a_raising_update_leaves_holds_windows_rooms_and_duty_unchanged(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = e_layout(history_length=4)
+    a.hold("HS3", 0.25)
+    a.hold("HS4", 0.0)  # HS5 stays free, so the solver runs
+    a.update(e_meas(0.5, 0.5))
+    before = (a.to_dict(), a.duty, a.holds, a.history)
+    temperatures = e_meas(0.6, 0.4)
+    error: type[Exception]
+    if failure == "solver":
+        monkeypatch.setattr(allocator_module, "lsq_linear", _fail_solver)
+        error = ValueError
+    elif failure == "nan":
+        temperatures["R4"] = float("nan")
+        error = ValueError
+    elif failure == "text":
+        temperatures["R4"] = "warm"  # type: ignore[assignment]  # deliberate misuse
+        error = TypeError
+    else:
+        del temperatures["R2"]
+        error = ValueError
+    with pytest.raises(error):
+        a.update(temperatures)
+    assert (a.to_dict(), a.duty, a.holds, a.history) == before
+
+
+# --- A10: hold in the snapshot ------------------------------------------------
+
+
+def test_to_dict_reflects_a_hold_set_without_an_update() -> None:
+    a = e_layout()
+    a.hold("HS2", 0.5)
+    d = a.to_dict()
+    sections = d["sections"]
+    assert isinstance(sections, dict)
+    assert sections["HS2"] == {"coverage": {"R2": 1.0}, "history": [], "hold": 0.5}
+    assert [sections[n]["hold"] for n in ("HS1", "HS3", "HS4", "HS5")] == [None] * 4
+    assert json.loads(json.dumps(d)) == d
+
+
+def test_to_dict_writes_a_zero_hold_as_zero_and_plain_floats() -> None:
+    sections = e_sections()
+    sections["HS5"] = {"R4": np.float64(0.6)}
+    a = SectionAllocator(e_rooms(), sections, kp=1.0, ki=0.0)
+    a.hold("HS1", 0)
+    a.hold("HS2", Fraction(1, 3))  # type: ignore[arg-type]  # numeric variant
+    d = a.to_dict()
+    out = d["sections"]
+    assert isinstance(out, dict)
+    assert out["HS1"]["hold"] == 0.0
+    assert out["HS1"]["hold"] is not None
+    assert type(out["HS1"]["hold"]) is float
+    assert out["HS2"]["hold"] == 1 / 3
+    assert type(out["HS5"]["coverage"]["R4"]) is float
+    assert json.loads(json.dumps(d)) == d
+
+
+@pytest.mark.parametrize("through_json", [False, True])
+def test_a_restored_allocator_with_holds_produces_the_same_next_fifty(
+    through_json: bool,
+) -> None:
+    source = SectionAllocator(e_rooms(0.1), e_sections(), history_length=6)
+    source.hold("HS1", 0.25)
+    source.hold("HS2", 1.0)
+    source.hold("HS4", 0.0)
+    temperatures = varied_temperatures(60)
+
+    def sample(i: int) -> dict[str, float]:
+        return {
+            "R1": temperatures[i],
+            "R2": temperatures[i + 1],
+            "R3": temperatures[i + 2],
+            "R4": temperatures[i + 3],
+        }
+
+    for i in range(7):  # a partly filled fractional window
+        source.update(sample(i))
+    snapshot = source.to_dict()
+    if through_json:
+        snapshot = json.loads(json.dumps(snapshot))
+    restored = SectionAllocator.from_dict(snapshot)
+    assert restored.holds == source.holds
+    assert restored.duty is None
+    assert restored.to_dict() == source.to_dict()
+    for i in range(7, 57):
+        if i == 27:
+            source.hold("HS4", None)
+            restored.hold("HS4", None)
+        assert restored.update(sample(i)) == source.update(sample(i))
+        assert restored.duty == source.duty
+
+
+def test_from_dict_reads_an_int_zero_hold_as_a_hold_not_none() -> None:
+    data = e_layout(history_length=4).to_dict()
+    data["sections"]["HS3"]["hold"] = 0  # type: ignore[index]  # object-typed snapshot
+    restored = SectionAllocator.from_dict(data)
+    assert restored.holds["HS3"] == 0.0
+    assert restored.holds["HS3"] is not None
+    assert type(restored.holds["HS3"]) is float
+    restored.update(e_meas(0.5))
+    assert duty_of(restored)["HS3"] == 0.0
+
+
+def test_from_dict_reads_a_negative_zero_hold_as_positive_zero() -> None:
+    text = json.dumps(e_layout(history_length=4).to_dict()).replace(
+        '"hold": null', '"hold": -0.0', 1
+    )
+    assert '"hold": -0.0' in text
+    restored = SectionAllocator.from_dict(json.loads(text))
+    assert restored.holds["HS1"] == 0.0
+    assert math.copysign(1.0, restored.holds["HS1"]) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("bad", "error"),
+    [
+        (True, TypeError),
+        ("0.5", TypeError),
+        ([0.5], TypeError),
+        (float("nan"), ValueError),
+        (1.5, ValueError),
+        (-1e-300, ValueError),
+        (10**400, OverflowError),
+    ],
+    ids=repr,
+)
+def test_from_dict_refuses_a_bad_hold_with_its_snapshot_path(
+    bad: object, error: type[Exception]
+) -> None:
+    data = e_layout(history_length=4).to_dict()
+    data["sections"]["HS1"]["hold"] = bad  # type: ignore[index]  # object-typed snapshot
+    with pytest.raises(error) as caught:
+        SectionAllocator.from_dict(data)
+    assert str(caught.value).startswith("sections['HS1'].hold")
+
+
+def test_from_dict_range_error_for_a_hold_has_the_exact_message() -> None:
+    data = e_layout(history_length=4).to_dict()
+    data["sections"]["HS1"]["hold"] = 1.5  # type: ignore[index]  # object-typed snapshot
+    with pytest.raises(
+        ValueError,
+        match=re.escape("sections['HS1'].hold must be in [0.0, 1.0], got 1.5."),
+    ):
+        SectionAllocator.from_dict(data)
+
+
+def test_from_dict_does_not_renormalise_a_partial_coverage_layout() -> None:
+    a = e_layout()
+    restored = SectionAllocator.from_dict(a.to_dict())
+    assert restored.sections == a.sections
+    assert restored.sections["HS1"] == {"R1": 0.5}
+    temperatures = {**e_meas(0.5), "R1": 20.6}
+    assert restored.update(temperatures) == a.update(temperatures)
+    assert restored.duty == a.duty
+
+
+@pytest.mark.parametrize(
+    ("faults", "error", "needle"),
+    [
+        (
+            [
+                (["sections", "HS1", "hold"], float("nan")),
+                (["sections", "HS2", "coverage"], {"R2": 1.5}),
+            ],
+            ValueError,
+            "sections['HS2']['R2']",
+        ),
+        (
+            [
+                (["sections", "HS1", "hold"], float("nan")),
+                (["rooms", "R1", "integral"], "x"),
+            ],
+            TypeError,
+            "rooms['R1'].integral",
+        ),
+        (
+            [
+                (["sections", "HS1", "hold"], 2.0),
+                (["sections", "HS1", "history"], [2.0]),
+            ],
+            ValueError,
+            "sections['HS1'].hold",
+        ),
+    ],
+    ids=["layout-before-hold", "room-before-hold", "hold-before-history"],
+)
+def test_from_dict_reports_a_layout_then_room_then_hold_then_history_error(
+    faults: list[tuple[list[str], object]], error: type[Exception], needle: str
+) -> None:
+    data = e_layout(history_length=4).to_dict()
+    for path, value in faults:
+        node: dict[str, object] = data
+        for key in path[:-1]:
+            node = node[key]  # type: ignore[assignment]  # object-typed snapshot
+        node[path[-1]] = value
+    with pytest.raises(error) as caught:
+        SectionAllocator.from_dict(data)
+    assert needle in str(caught.value)
+    if "hold" not in needle:
+        assert ".hold" not in str(caught.value)
+
+
+def test_from_dict_reports_a_layout_error_before_a_hold_error() -> None:
+    data = e_layout(history_length=4).to_dict()
+    data["sections"]["HS1"]["coverage"] = {"R1": 0}  # type: ignore[index]  # object-typed snapshot
+    data["sections"]["HS1"]["hold"] = float("nan")  # type: ignore[index]  # object-typed snapshot
+    with pytest.raises(ValueError, match=re.escape("sections['HS1']['R1']")) as caught:
+        SectionAllocator.from_dict(data)
+    assert ".hold" not in str(caught.value)
+
+
+def test_a_1_0_0_snapshot_is_refused_for_coverage_and_hold_only() -> None:
+    data = e_layout(history_length=4).to_dict()
+    entry = data["sections"]["HS1"]  # type: ignore[index]  # object-typed snapshot
+    data["sections"]["HS1"] = {"shares": entry["coverage"], "history": entry["history"]}  # type: ignore[index]  # object-typed snapshot
+    with pytest.raises(ValueError, match=re.escape("sections['HS1']: ")) as caught:
+        SectionAllocator.from_dict(data)
+    assert "['coverage', 'hold']" in str(caught.value)
+    assert "shares" not in str(caught.value)
+
+
+# --- A11: version --------------------------------------------------------------
+
+
+def test_the_package_version_is_1_1_0() -> None:
+    root = Path(__file__).resolve().parent.parent
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["project"]["version"] == "1.1.0"
+
+
+# ---------------------------------------------------------------------------
 # main(): the showcase runs
 # ---------------------------------------------------------------------------
 

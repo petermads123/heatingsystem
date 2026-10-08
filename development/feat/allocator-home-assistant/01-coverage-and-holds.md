@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — coverage and holds
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -17,7 +17,7 @@
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -373,12 +373,68 @@ No code changed in this step.
 
 ## 5. Test log
 
+Both `test-designer` reports (input-space, contract) were merged: duplicates dropped (both found the
+evenness-uses-held-level, E2, E5/no-solver, A8 twin, hold-validation, zero-hold, int-zero snapshot and
+round-trip-with-holds cases; the sharper variant of each kept), every contradiction answered below. All new
+tests are in `tests/test_allocator.py` (section "Round 1 ... step 5"). Static gates and `pytest` green:
+1517 passed (787 in the allocator file, 126 new), `ruff check`, `ruff format --check`, `mypy` clean. No
+production code changed: the tests found no defect. Teeth checked by two temporary mutants of
+`_allocate` (held contribution subtracted from the demand rows only; `holds` read through `v or None`), each
+failing the suite; the source was restored.
+
 | Intent | Test names | Result |
 |---|---|---|
+| T2 / A2 normalisation | `test_normalisation_e1_free_allocation_of_the_reference_layout`, `test_normalisation_e3_closed_form_is_relative_to_the_covered_part`, `test_closed_form_saturates_at_one_not_at_the_coverage`, `test_a_room_summing_below_one_equals_the_same_layout_scaled_to_one`, `test_unequal_totals_with_evenness_are_normalised_not_raw`, `test_construction_normalises_subnormal_coverages_without_blow_up`, `test_sections_returns_the_coverages_as_given_not_normalised`, `test_sections_pair_reports_the_given_coverage` | pass |
+| T4 / A4 E4 (E1-E3, E5 below) | `test_e4_evenness_spreads_the_demand_over_the_three_loops` | pass |
+| T5 / A5 `hold`, `holds` | `test_holds_is_complete_fresh_and_in_constructor_order`, `test_a_fresh_allocator_holds_nothing`, `test_hold_accepts_numeric_variants_and_stores_plain_floats`, `test_hold_refuses_a_bad_level_naming_the_section_and_changes_nothing` (17 bad values x previous `None`/`0.25`), `test_hold_range_error_repeats_the_callers_own_value`, `test_hold_checks_the_section_before_the_level` (9), `test_an_unknown_section_error_lists_the_known_sections`, `test_hold_release_and_repeat_are_no_ops`, `test_hold_zero_is_a_hold_and_not_a_release`, `test_hold_takes_effect_only_on_the_next_update` | pass |
+| T6 / A6 held duty, E2, release (E1) | `test_e2_free_sections_compensate_for_a_shut_section`, `test_release_reallocates_exactly_like_a_fresh_allocator_e1`, `test_a_section_held_at_a_bound_commands_exactly_its_level` (6: matrix, closed form, multi-room), `test_a_held_level_ignores_the_demand_at_every_step`, `test_a_held_quarter_level_fills_the_first_window_with_the_level_as_its_mean`, `test_a_held_fractional_level_is_modulated_like_a_standalone_modulator`, `test_a_held_level_on_a_two_slot_window_pins_the_modulators_one_slot_error`, `test_a_held_duty_is_a_plain_float_and_positive_zero`, `test_a_zero_hold_is_a_hold_in_both_the_closed_form_and_a_matrix_component`, `test_a_held_closed_form_section_is_independent_of_its_room_demand`, `test_a_hold_changed_mid_run_takes_effect_on_the_next_update`, `test_the_held_contribution_is_subtracted_from_every_room_a_section_covers`, `test_free_sections_do_not_chase_a_demand_the_hold_already_oversupplies`, `test_a_held_contribution_uses_the_normalised_coverage_not_the_raw_one`, `test_hold_with_a_fraction_is_invariant_to_the_room_total`, `test_evenness_rows_use_the_held_level` (3 levels), `test_evenness_rows_use_the_held_level_on_the_reference_layout`, `test_a_single_free_column_with_a_zero_residual_converges` | pass |
+| T7 / A7 no solver | `test_an_all_held_component_calls_no_solver_e5` (also its converse and E5's delivered heat), `test_only_components_with_a_free_section_call_the_solver` | pass |
+| T8 / A8 PI keeps running | `test_every_rooms_pi_equals_an_unheld_twins_step_for_step` (40 steps, hold set, changed, released) | pass |
+| T9 / A9 raising update | `test_a_raising_update_leaves_holds_windows_rooms_and_duty_unchanged` (solver failure, NaN, text, missing room, with holds set) | pass |
+| T10 / A10 snapshot | `test_to_dict_reflects_a_hold_set_without_an_update`, `test_to_dict_writes_a_zero_hold_as_zero_and_plain_floats`, `test_a_restored_allocator_with_holds_produces_the_same_next_fifty` (direct and JSON, fractional window part filled, release mid-run), `test_from_dict_reads_an_int_zero_hold_as_a_hold_not_none`, `test_from_dict_reads_a_negative_zero_hold_as_positive_zero`, `test_from_dict_refuses_a_bad_hold_with_its_snapshot_path` (7), `test_from_dict_range_error_for_a_hold_has_the_exact_message`, `test_from_dict_does_not_renormalise_a_partial_coverage_layout`, `test_from_dict_reports_a_layout_then_room_then_hold_then_history_error` (3), `test_from_dict_reports_a_layout_error_before_a_hold_error`, `test_a_1_0_0_snapshot_is_refused_for_coverage_and_hold_only` | pass |
+| T11 / A11 | `test_the_package_version_is_1_1_0` (the showcase run already covered by `test_main_runs_and_reports_each_section`) | pass |
+| T1, T3 and the carried-over A4 tests (KKT, independent solve, priority scaling, A5/A6, worked examples) | already written in step 3's migration (per-room sum tests, dedicated-coverage equivalence, `test_worked_examples_hold_within_a_thousandth` etc.) | pass |
+
+### Designer contradictions, applied or rebutted
+
+1. **A6 parenthetical ("a 0/1 pattern averaging the level over a window otherwise") and T6's "window
+   mean is 0.25" versus `Modulator` (both designers).** Verified by the new tests: `Modulator` ties rest
+   the slot and reads the window before appending, so a fractional level is realised only to within about
+   one slot (window 4 at 0.25 cycles `1,0,0,0,0`, realised 0.2; window 2 at 0.5 gives `1,0,0,...`, mean
+   1/3), while 24 slots at 0.25 from an empty window do give exactly 6 on (mean 0.25). **Not a halt.**
+   The criterion's operative clause is "its commands are the floor-heating modulation of that level",
+   and that holds exactly: the allocator hands its held modulator the level and the commands equal a
+   standalone `Modulator(floor_heating, fixed_output=level)` twin's, command for command. The
+   parenthetical is a gloss on that clause, not a second promise; the concept never decided an exact
+   window mean (and could not, since `Modulator` is out of scope and shared with `PIController`, whose own
+   fixed-output hold behaves identically). No acceptance criterion is broken and no behaviour is
+   undecided, so section 1 is not amended. The tests pin the main clause (twin equality, the first
+   24-slot window, the two-slot case) and deliberately do not assert a window mean in general. Step 6
+   should judge A6 against the main clause and note the parenthetical's looseness; the wording could be
+   tightened at the next section 1 revision.
+2. **`update` atomicity: a later section's `modulator.command` raising after earlier ones appended
+   (contract 2).** Reachable only by monkeypatching, since `_allocate` clamps and holds are validated
+   before storage; A9 names bad measurements and solver failure only. Not tested (see skipped); recorded
+   for step 8.
+3. **`from_dict` docstring "same setters" for holds, and `hold`'s `Raises` wording (both designers).**
+   Wording only: holds restore through `_validation.level("hold", ...)`, so the same bad value names
+   `sections['HS1'].hold` on restore and `holds['HS1']` through `hold()`. Both messages are pinned by
+   their tests; docstring wording left for step 8 / a small change, not a defect.
+4. **Constructor docstring "every error names the offending path" versus the uncovered-room message
+   (contract 4).** Pre-existing 1.0.0 wording, unchanged this round; out of scope.
+5. **Internal `PIController` window not restored on a failed update (contract 5).** Not publicly visible
+   (radiator mode never reads it); not tested.
 
 Edge cases considered and deliberately skipped, with reasons:
 
----
+- Failure of a later `modulator.command` after earlier ones appended (contradiction 2): needs a
+  monkeypatched private; unreachable in production; would assert a behaviour A9 does not promise.
+- The internal `PIController` window after a failed update (contradiction 5): no public attribute exposes it.
+- Non-ASCII, whitespace and very long section names in `hold`: `hold` only looks the name up; near-miss
+  names (case, trailing space, empty, a room name) are covered, and non-ASCII layout names are covered by
+  1.0.0's constructor tests.
+- Purity of the constructor's mappings: already covered by 1.0.0's no-aliasing tests.
+- Per-measurement validation of `update`: unchanged this round, covered by 1.0.0's tests.
 
 ## 6. Concept check
 
