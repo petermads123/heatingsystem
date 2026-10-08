@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — P and I terms per room
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,7 +19,7 @@
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -222,14 +222,6 @@ Implemented as planned, guide entries 1-6; no deviation, Public API table unchan
 | `python -m heatingsystem.pi_controller.pi_controller` | Runs; prints `last step: error=0.7000  p_term=0.2100  i_term=0.1365` after the setpoint override (RuntimeWarning expected). |
 | `python -m heatingsystem.allocator.allocator` | Runs; R3 no-reading block prints `demand = 0.5`, `error = 0.5, p_term = 0.5, i_term = 0.0` (RuntimeWarning expected). |
 
----|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
-
 ---
 
 ## 5. Test log
@@ -319,8 +311,10 @@ Re-read against the code as it stands, not only the green tests.
 
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits | `3d1c9d7` Recommend round 3; concept and plan: round 4 — P and I terms per room; `3f9b69d` Plan accepted: round 4 — critique applied, start build; `a709972` Implement: round 4 — P and I terms per room; `49a6b44` Verify: P and I terms per room; `ea4fbf4` Test: PI terms (round 4); `37058cf` Concept check: P and I terms per room; plus the `Ship: SectionAllocator ready for Home Assistant — P and I terms per room` commit that records this section |
+| Pushed to | `origin/feat/allocator-home-assistant` |
+| Whole-tree gates | `ruff check .` clean; `ruff format --check .` 57 files formatted; `mypy` no issues in 21 source files; `pytest` 1673 passed |
+| Diff review | No stray, scratch or sample files in the round's diff; working tree clean before this step. Every step 1 to 6 left a commit naming the round file. |
 
 ---
 
