@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — a room without a temperature
 
-<!-- claude-plan step=7 status=active -->
+<!-- claude-plan step=8 status=active -->
 
 | Field | Value |
 |---|---|
@@ -19,7 +19,7 @@
 | 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | done |
-| 7 | Ship | `/ship` | in `/build` | pending |
+| 7 | Ship | `/ship` | in `/build` | done |
 | 8 | Recommend | `/recommend` | with the user | pending |
 | 9 | Pull request | `/create-pr` | with the user | pending |
 | 10 | Review | `/watch-pr` | on the pull request | pending |
@@ -227,14 +227,6 @@ structure-auditor: allocator.py entries matched the code; one finding, applied: 
 (no raise, that room's `integral` and `demand` unchanged). Step 5 should extend that
 sentence if it adds T1-T5.
 
----|---|
-| `ruff check .` | |
-| `ruff format --check .` | |
-| `mypy` | |
-| Plan completeness | every signature in the Public API table exists as written |
-| `STRUCTURE.md` | in sync |
-| `python -m <package>.<module>` | |
-
 ---
 
 ## 5. Test log
@@ -267,7 +259,7 @@ Designer findings, applied or rebutted:
   Pre-existing, unreachable through valid input, not this round's scope (B5 is about
   temperature and solver failures); rebutted as out of scope, left for `DEVELOPMENT.md`
   at step 8.
-- Plan typo (stray table fragment in section 4): harmless, left.
+- Plan typo (stray table fragment in section 4): removed at step 7.
 
 Edge cases considered and deliberately skipped:
 
@@ -306,7 +298,7 @@ Drift found, and what was done about it: none. One observation, not drift: the s
 `update` read each temperature twice from a live mapping; fixed in step 5 and pinned by
 `test_update_reads_each_temperature_once`. Step 5 also rebutted as out of scope a modulator that rejects a
 duty after the restore block (pre-existing, unreachable through valid input); it belongs in
-`DEVELOPMENT.md` at step 8, not here. Plan section 4 still has a stray table fragment (harmless, left).
+`DEVELOPMENT.md` at step 8, not here. The stray table fragment in section 4 was removed at step 7.
 
 ### Earlier rounds still hold
 
@@ -330,8 +322,10 @@ duty after the restore block (pre-existing, unreachable through valid input); it
 
 | Field | Value |
 |---|---|
-| Commits | |
-| Pushed to | |
+| Commits | `a9c3f64` Concept and plan: round 2 — a room without a temperature; `e5033c3` Plan accepted: round 2 — critique applied, start build; `a0489cf` Implement: round 2 — a room without a temperature; `dba2f5f` Verify: missing temperature; `e05ab78` Test: a room without a temperature (round 2); `9fc6c68` Concept check: a room without a temperature |
+| Pushed to | `origin/feat/allocator-home-assistant` |
+| Whole-tree gates | `ruff check .` clean, `ruff format --check .` 55 files formatted, `mypy` no issues in 21 source files, `pytest` 1557 passed |
+| Diff review | round 2 touched only `allocator.py`, `tests/test_allocator.py`, `README.md`, `STRUCTURE.md` and this file; no stray or scratch files; every step 1-6 left a commit naming the round |
 
 ---
 
