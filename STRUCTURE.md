@@ -120,15 +120,18 @@ bounded weighted least squares (`scipy.optimize.lsq_linear`, `method="bvls"`) mi
 `J(u) = sum_r p_r (d_r - h_r)^2 + sum_r p_r e_r spread_r` (`p` priority in `(0, 1]`, `e` evenness
 in `[0, 1]`, `h_r = sum_s (normalised coverage) u_s` the heat room r receives,
 `spread_r = sum((u_s - mean)**2)` over its sections, a held section entering with its level),
-split by connected component of the room-section graph with a closed form `min(1, demand)`
-for a one-room, one-section component (its held columns are split off at solve time: their
-contribution is subtracted from the right-hand side, and a component with no free section
-calls no solver) (every weight is divided by the component's largest priority and
-floored at 1e-12 of it as a safety net for priorities more than 1e12 apart, so a very low-priority room's feasible demand is never lost to round-off,
-and the solver's status is checked); and turns each duty into 0.0/1.0 through one
-floor-heating `Modulator` per section. First module with runtime dependencies (`numpy`,
-`scipy`). The component split, matrix assembly, the solve step and the layout validation are
-private helpers and are omitted per this file's convention.
+split by connected component of the room-section graph. A one-room, one-section component
+has a closed form, `min(1, demand)`, or the held level when its section is held. Every
+other component is solved by least squares over its free sections only: each held
+section's column is split off at solve time and its contribution (column times level) is
+subtracted from the right-hand side, demand and evenness rows alike, and a component with
+no free section calls no solver. Every row weight (a priority, or priority times evenness)
+is divided by the component's largest priority and floored at 1e-12 of it, as a safety net
+so a very low-priority room's feasible demand is never lost to round-off, and the solver's
+status is checked. Finally each duty becomes 0.0/1.0 through one floor-heating `Modulator`
+per section. First module with runtime dependencies (`numpy`, `scipy`). The component
+split, matrix assembly, coverage normalisation, the solve step and the layout validation
+are private helpers and are omitted per this file's convention.
 
 | Signature | Description |
 |---|---|
@@ -429,17 +432,19 @@ setters identical to `PIController`'s and effective on the next `update`. `updat
 binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, numeric
 variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
 evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
-and tiny-share matrices), the weight floor against extreme priority ratios and subnormal
+and tiny-coverage matrices), the weight floor against extreme priority ratios and subnormal
 priorities, the range refusals for priority in `(0, 1]` and evenness in `[0, 1]` (and in `from_dict`),
 A5's absolute-mismatch monotonicity at evenness 0 with its documented exceptions, and its general
 clause (the combined cost `|d - h|^2 + e * spread` never rises with priority) on the halt's
 counterexample layout, a priority sweep and seeded random layouts, with the counterexample also
 pinned as the reason the absolute-mismatch clause needs evenness 0, A6's spread monotonicity (including a three-section room) and the
-hungry-R2 case, A7's bit-exact equivalence to a standalone floor-heating `PIController`, and A10-A12:
+hungry-R2 case, 1.0.0's A7 (now A3) bit-exact equivalence to a standalone floor-heating `PIController` for a dedicated coverage of any size, and 1.0.0's A10-A12 (now A4):
 the cost's KKT conditions and an independent solve over random layouts, priority-scaling invariance, and
 the worked examples A-G. Package exports, the declared scipy/numpy dependencies, and
-`to_dict`/`from_dict`: shape and order, identical next 50 commands (direct and through JSON, empty,
-partial and full windows), every malformed snapshot naming its path, subclass round trip.
+`to_dict`/`from_dict`: shape and order (per section `coverage`, `history`, `hold`), identical next 50
+commands (direct and through JSON, empty, partial and full windows), every malformed snapshot naming
+its path (a bad or missing `hold` naming `sections['HS1'].hold`), a 1.0.0 snapshot refused naming
+its missing keys, subclass round trip; and the module showcase runs.
 
 ### `tests/test_modulator.py`
 

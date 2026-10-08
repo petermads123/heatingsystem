@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — coverage and holds
 
-<!-- claude-plan step=4 status=active -->
+<!-- claude-plan step=5 status=active -->
 
 | Field | Value |
 |---|---|
@@ -16,7 +16,7 @@
 | 1 | Conceptualize | `/conceptualize` | with the user | done |
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
-| 4 | Verify | `/verify` | in `/build` | pending |
+| 4 | Verify | `/verify` | in `/build` | done |
 | 5 | Test | `/test` | in `/build` | pending |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
@@ -340,6 +340,28 @@ No deviation from the Public API table; every signature is as planned.
 
 | Check | Result |
 |---|---|
+| `ruff check .` | All checks passed! |
+| `ruff format --check .` | 54 files already formatted |
+| `mypy` | Success: no issues found in 21 source files |
+| `pytest` | 1391 passed |
+| Plan completeness | every Public API row exists as written (constructor, `update`, `hold`, `from_dict`, `to_dict` signatures checked with `inspect`; `holds`, `sections`, `duty`, `history`, `history_length`, `rooms` are properties; `main`; `version = "1.1.0"`). No Missing, Deviation or Unplanned. |
+| `STRUCTURE.md` | in sync after the auditor's three findings were applied |
+| `python -m heatingsystem.allocator.allocator` | exit 0, only the expected RuntimeWarning; reproduces E1 (HS4 0.2154), E2 (HS4 0.5385), release back to E1, E3 (HS1 0.4), E4 (0.5 each), JSON round trip carrying a hold (original = restored), and the room-sum refusal. Showcase form: arguments bound to named variables, call, result printed, option comments present. |
+
+Auditor findings (all three applied; each checked against the code as it stands):
+
+1. Allocator description paragraph: held-columns parenthetical wrongly attached to the closed form;
+   weight floor stated for priorities only; normalisation missing from the private helpers. Rewritten
+   (closed form `min(1, demand)` or the held level; held columns split off for matrix components only;
+   floor on priority times evenness; coverage normalisation listed as private).
+2. `tests/test_allocator.py` entry: "tiny-share" became "tiny-coverage"; 1.0.0's A7 and A10-A12 labelled
+   as now A3 and A4.
+3. `tests/test_allocator.py` entry: snapshot sentence extended with `coverage`/`history`/`hold`, hold
+   errors naming `sections['HS1'].hold`, the refused 1.0.0 snapshot and the showcase run.
+
+No code changed in this step.
+
+---|---|
 | `ruff check .` | |
 | `ruff format --check .` | |
 | `mypy` | |
