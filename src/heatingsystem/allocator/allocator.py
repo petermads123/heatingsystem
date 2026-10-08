@@ -262,7 +262,11 @@ class Room:
         """The clamped PI demand of the last PI step, or ``None`` before one.
 
         A ``None`` reading in :meth:`SectionAllocator.update` is not a PI
-        step, so it leaves this value unchanged.
+        step, so it leaves this value unchanged, and a change to the room's
+        ``setpoint``, ``kp`` or ``ki`` shows here only after the next real
+        reading. ``None`` also after ``from_dict``, whatever happened before
+        the snapshot; the allocation then uses 0.0 for a room without a
+        reading.
         """
         return self._pi.pi_output
 
@@ -635,14 +639,14 @@ class SectionAllocator:
         unknown = sorted((k for k in values if k not in self._rooms), key=repr)
         if unknown:
             raise ValueError(f"measured has unknown rooms {unknown}.")
-        temperatures: dict[str, float | None] = {
-            name: (
+        temperatures: dict[str, float | None] = {}
+        for name in self._rooms:
+            value = values[name]  # read once: a live mapping may change between reads
+            temperatures[name] = (
                 None
-                if values[name] is None
-                else _validation.finite(f"measured[{name!r}]", values[name])
+                if value is None
+                else _validation.finite(f"measured[{name!r}]", value)
             )
-            for name in self._rooms
-        }
 
         saved = {
             name: (room._pi._integral, room._pi._pi_output)

@@ -7,7 +7,7 @@ import re
 import sys
 import tomllib
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -3282,3 +3282,424 @@ def test_row_weight_never_vanishes_or_overflows(
     value = allocator_module._row_weight(weight, scale)
     assert 0.0 < value <= 1.0
     assert value == pytest.approx(want, rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Round 2 (feat/allocator-home-assistant), step 5: a room without a temperature
+# (B1-B5). ``None`` means no reading: that room's PI takes no step and the
+# allocation uses its last demand, or 0.0 before its first. Expected numbers
+# are derived by hand or from a standalone PIController, never read back.
+# ---------------------------------------------------------------------------
+
+E_ROOMS = ("R1", "R2", "R3", "R4")
+
+
+def e_none(**overrides: float | None) -> dict[str, float | None]:
+    """E-layout temperatures at the setpoint, R3 ``None``, with overrides."""
+    base: dict[str, float | None] = {
+        "R1": SETPOINT,
+        "R2": SETPOINT,
+        "R3": None,
+        "R4": SETPOINT,
+    }
+    base.update(overrides)
+    return base
+
+
+def _drive(
+    a: SectionAllocator, room: str, readings: list[float | None]
+) -> list[tuple[float, float | None]]:
+    """Feed one room the readings (others at the setpoint); return its state."""
+    states = []
+    for reading in readings:
+        step: dict[str, float | None] = {r: SETPOINT for r in a.rooms}
+        step[room] = reading
+        a.update(step)
+        states.append((a.rooms[room].integral, a.rooms[room].demand))
+    return states
+
+
+# --- B1: twin comparison ----------------------------------------------------
+
+
+@pytest.mark.parametrize("prior", [True, False], ids=["prior-reading", "fresh"])
+def test_update_none_room_is_untouched_while_other_rooms_step_like_a_twin(
+    prior: bool,
+) -> None:
+    a = ref(history_length=4)
+    twin = ref(history_length=4)
+    a.rooms["R3"].ki = twin.rooms["R3"].ki = 0.1
+    if prior:
+        a.update(meas(0.1, 0.6, 0.3))
+        twin.update(meas(0.1, 0.6, 0.3))
+    before = {n: (r.integral, r.demand) for n, r in a.rooms.items()}
+    a.update({"R1": 17.0, "R2": 19.0, "R3": None})
+    twin.update({"R1": 17.0, "R2": 19.0, "R3": 17.0})
+    for name in ("R1", "R2"):
+        assert a.rooms[name].integral == twin.rooms[name].integral
+        assert a.rooms[name].demand == twin.rooms[name].demand
+    assert (a.rooms["R3"].integral, a.rooms["R3"].demand) == before["R3"]
+    if not prior:
+        assert a.rooms["R3"].demand is None
+
+
+# --- B2: the allocation uses the last demand --------------------------------
+
+
+def test_update_none_reallocates_the_last_demand_on_the_e_layout() -> None:
+    a = e_layout()
+    a.update(e_meas(0.5))
+    first = duty_of(a)
+    assert first == approx_duty(HS1=0.0, HS2=0.0, HS3=1.0, HS4=14 / 65, HS5=0.0)
+    a.update(e_none())
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=1.0, HS4=14 / 65, HS5=0.0)
+    assert a.rooms["R3"].demand == pytest.approx(0.5)
+
+
+def test_update_none_on_a_fresh_room_allocates_zero_and_reports_no_demand() -> None:
+    a = e_layout()
+    a.update({**e_none(), "R4": SETPOINT - 0.5})
+    # R3 allocated as demand 0: HS3 = HS4 = 0 forces HS5 = 0.5 / 0.6.
+    assert duty_of(a) == approx_duty(HS1=0.0, HS2=0.0, HS3=0.0, HS4=0.0, HS5=5 / 6)
+    assert a.rooms["R3"].demand is None
+
+
+def test_update_none_after_from_dict_allocates_zero_not_the_pre_snapshot_demand() -> (
+    None
+):
+    a = e_layout()
+    a.update(e_meas(0.5))
+    restored = SectionAllocator.from_dict(a.to_dict())
+    step = {**e_none(), "R4": SETPOINT - 0.5}
+    restored.update(step)
+    assert duty_of(restored) == approx_duty(
+        HS1=0.0, HS2=0.0, HS3=0.0, HS4=0.0, HS5=5 / 6
+    )
+    assert restored.rooms["R3"].demand is None
+    a.update(step)  # the live allocator still heats R3 with its last demand
+    live = duty_of(a)
+    assert 0.3 * live["HS3"] + 0.7 * live["HS4"] == pytest.approx(0.5)
+
+
+def test_update_none_reuses_a_saturated_last_demand_of_one() -> None:
+    a = e_layout()
+    a.update(e_meas(2.0))
+    first = duty_of(a)
+    # Minimise (1 - 0.3 u3 - 0.7 u4)^2 + (0.4 u4 + 0.6 u5)^2: u3 = 1, u5 = 0,
+    # 0.98 (1 - u4) = 0.32 u4.
+    assert first["HS3"] == 1.0
+    assert first["HS4"] == pytest.approx(0.98 / 1.30, abs=1e-9)
+    assert first["HS5"] == 0.0
+    a.update(e_none())
+    assert a.rooms["R3"].demand == 1.0
+    assert duty_of(a) == first
+
+
+@pytest.mark.parametrize("prior", [True, False], ids=["after-reading", "fresh"])
+def test_update_none_on_the_closed_form_path_uses_last_demand_or_zero(
+    prior: bool,
+) -> None:
+    a = ref()
+    if prior:
+        a.update(meas(0.0, 0.0, 0.3))
+    a.update({"R1": SETPOINT, "R2": SETPOINT, "R3": None})
+    expected = 0.3 if prior else 0.0
+    assert duty_of(a)["HS4"] == pytest.approx(expected)
+    assert a.rooms["R3"].demand == (pytest.approx(0.3) if prior else None)
+    assert a.history["HS4"][-1] in (0.0, 1.0)
+
+
+def test_update_none_on_the_e3_closed_form_keeps_the_last_demand() -> None:
+    a = e_layout()
+    a.update({**e_meas(0.0), "R1": 20.6})
+    a.update({**e_meas(0.0), "R1": None})
+    assert duty_of(a)["HS1"] == pytest.approx(0.4)
+    assert a.rooms["R1"].demand == pytest.approx(0.4)
+
+
+@pytest.mark.parametrize(("attr", "value"), [("setpoint", 25.0), ("kp", 5.0)])
+def test_update_none_defers_a_setting_change_to_the_next_real_reading(
+    attr: str, value: float
+) -> None:
+    a = ref()
+    a.update(meas(0.0, 0.0, 0.3))
+    demand = a.rooms["R3"].demand
+    setattr(a.rooms["R3"], attr, value)
+    a.update({"R1": SETPOINT, "R2": SETPOINT, "R3": None})
+    assert a.rooms["R3"].demand == demand
+    assert duty_of(a)["HS4"] == pytest.approx(0.3)
+    a.update(meas(0.0, 0.0, 0.3))
+    assert a.rooms["R3"].demand == 1.0  # 4.3 or 5 * 0.3 + integral: clamped
+
+
+def test_update_none_after_from_dict_keeps_the_integral_and_allocates_zero() -> None:
+    a = ref()
+    a.rooms["R3"].ki = 0.5
+    a.update(meas(0.0, 0.0, 0.3))
+    b = SectionAllocator.from_dict(a.to_dict())
+    integral = b.rooms["R3"].integral
+    assert integral != 0.0
+    b.update({"R1": SETPOINT, "R2": SETPOINT, "R3": None})
+    assert b.rooms["R3"].integral == integral
+    assert b.rooms["R3"].demand is None
+    assert duty_of(b)["HS4"] == 0.0
+
+
+def test_update_consecutive_none_steps_repeat_the_same_duty() -> None:
+    a = e_layout(history_length=4)
+    a.rooms["R3"].ki = 0.1
+    a.update(e_meas(0.5))
+    integral = a.rooms["R3"].integral
+    first = None
+    for _ in range(5):
+        a.update(e_none())
+        first = first or duty_of(a)
+        assert duty_of(a) == first
+        assert a.rooms["R3"].integral == integral
+    assert all(len(w) == 4 for w in a.history.values())
+    assert all(c in (0.0, 1.0) for w in a.history.values() for c in w)
+
+
+# --- B3: equals a standalone PI fed only the real readings ------------------
+
+
+@pytest.mark.parametrize(
+    "readings",
+    [
+        [None, 20.0, None, None, 19.5, 22.0, None],
+        [None, None],
+        [20.0, None],
+        [19.0, 19.0, 19.0, None, None, None, None, None, 19.0],
+        [None, None, 20.0, None, 19.5, None, None],
+    ],
+    ids=["interleaved", "never-read", "trailing", "outage", "edges"],
+)
+def test_update_none_room_matches_a_standalone_pi_fed_only_real_readings(
+    readings: list[float | None],
+) -> None:
+    a = SectionAllocator(
+        ref_rooms(),
+        ref_sections(),
+        kp=0.3,
+        ki=0.015,
+        history_length=4,
+    )
+    pi = PIController(0.3, 0.015, "radiator", 21.0, history_length=1)
+    for reading in readings:
+        _drive(a, "R3", [reading])
+        if reading is not None:
+            pi.update(reading)
+        assert a.rooms["R3"].integral == pi.integral
+        assert a.rooms["R3"].demand == pi.pi_output
+
+
+def test_update_single_room_none_at_start_and_end_matches_a_standalone_pi() -> None:
+    a = SectionAllocator(
+        {"R": {"priority": 1.0, "evenness": 0.0}},
+        {"HS": {"R": 1.0}},
+        kp=0.3,
+        ki=0.015,
+    )
+    pi = PIController(0.3, 0.015, "radiator", 21.0, history_length=1)
+    for reading in [None, None, 20.0, None, 19.5, None, None]:
+        a.update({"R": reading})
+        if reading is not None:
+            pi.update(reading)
+        assert a.rooms["R"].integral == pi.integral
+        assert a.rooms["R"].demand == pi.pi_output
+
+
+# --- B4: every room None, holds, refusals unchanged -------------------------
+
+
+def test_update_none_for_every_room_on_a_fresh_allocator_issues_closed_commands() -> (
+    None
+):
+    a = e_layout(history_length=4)
+    commands = a.update(dict.fromkeys(E_ROOMS))
+    zeros = dict.fromkeys(["HS1", "HS2", "HS3", "HS4", "HS5"], 0.0)
+    assert commands == zeros
+    assert list(commands) == list(zeros)
+    assert a.duty == zeros
+    assert all(r.demand is None and r.integral == 0.0 for r in a.rooms.values())
+    assert all(w == (0.0,) for w in a.history.values())
+
+
+def test_update_all_none_still_applies_holds_and_reuses_last_demands() -> None:
+    a = e_layout()
+    a.update(e_meas(0.5))
+    a.hold("HS1", 1.0)
+    before = {n: (r.integral, r.demand) for n, r in a.rooms.items()}
+    commands = a.update(dict.fromkeys(E_ROOMS))
+    assert duty_of(a) == approx_duty(HS1=1.0, HS2=0.0, HS3=1.0, HS4=14 / 65, HS5=0.0)
+    assert commands["HS1"] == 1.0
+    assert a.holds["HS1"] == 1.0
+    assert {n: (r.integral, r.demand) for n, r in a.rooms.items()} == before
+
+
+@pytest.mark.parametrize(
+    ("measured", "error", "match"),
+    [
+        ({"R1": None, "R2": None}, ValueError, re.escape("missing rooms ['R3']")),
+        ({"R2": None, "R3": None}, ValueError, re.escape("missing rooms ['R1']")),
+        (
+            {"R1": None, "R2": None, "R3": None, "R9": None},
+            ValueError,
+            re.escape("unknown rooms ['R9']"),
+        ),
+        (
+            {"R1": None, "R2": "20", "R3": None},
+            TypeError,
+            re.escape("measured['R2']"),
+        ),
+        (
+            {"R1": None, "R2": "None", "R3": None},
+            TypeError,
+            re.escape("measured['R2']"),
+        ),
+        (
+            {"R1": None, "R2": True, "R3": None},
+            TypeError,
+            re.escape("measured['R2']"),
+        ),
+        (
+            {"R1": None, "R2": float("nan"), "R3": None},
+            ValueError,
+            re.escape("measured['R2']"),
+        ),
+        (
+            {"R1": float("nan"), "R2": 20.0, "R3": None},
+            ValueError,
+            re.escape("measured['R1']"),
+        ),
+        (
+            {"R1": None, "R2": 10**400, "R3": None},
+            OverflowError,
+            re.escape("measured['R2']"),
+        ),
+        ({"R1": 20.0, "R2": 20.0, "R3": ""}, TypeError, re.escape("measured['R3']")),
+        (
+            {"R1": 20.0, "R2": 20.0, "R3": "unavailable"},
+            TypeError,
+            re.escape("measured['R3']"),
+        ),
+        (
+            {"R1": 20.0, "R2": 20.0, "R3": "unknown"},
+            TypeError,
+            re.escape("measured['R3']"),
+        ),
+    ],
+)
+def test_update_refusals_with_none_rooms_present_are_unchanged_and_leave_no_trace(
+    measured: dict[str, object], error: type[Exception], match: str
+) -> None:
+    a = ref(history_length=4)
+    a.update(meas(0.1, 0.6, 0.3))
+    before = snapshot(a)
+    history = a.history
+    with pytest.raises(error, match=match):
+        a.update(measured)  # type: ignore[arg-type]  # deliberate misuse
+    assert snapshot(a) == before
+    assert a.history == history
+
+
+def test_update_missing_key_is_not_no_reading_for_a_defaulting_mapping() -> None:
+    from collections import defaultdict
+
+    a = ref()
+    dd: defaultdict[str, float | None] = defaultdict(
+        lambda: None, {"R1": 20.0, "R2": 20.0}
+    )
+    with pytest.raises(ValueError, match=re.escape("measured is missing rooms ['R3']")):
+        a.update(dd)
+    assert "R3" not in dd
+
+
+def test_update_refuses_an_unknown_room_even_when_its_value_is_none() -> None:
+    a = ref()
+    a.update(meas(0.1, 0.2, 0.3))
+    before = a.to_dict()
+    with pytest.raises(ValueError, match=re.escape("unknown rooms ['R9']")):
+        a.update({**meas(0.1, 0.2, 0.3), "R9": None})
+    assert a.to_dict() == before
+
+
+# --- B5: a raising update changes nothing -----------------------------------
+
+
+def test_update_none_before_a_first_reading_leaks_nothing_on_solver_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a = e_layout()
+    _patch_solver(monkeypatch, ValueError("boom"))
+    with pytest.raises(ValueError, match="boom"):
+        a.update({**e_none(), "R4": SETPOINT - 0.5})
+    assert a.rooms["R3"].demand is None
+    assert a.duty is None
+    assert a.to_dict() == e_layout().to_dict()
+
+
+def test_update_solver_failure_with_a_none_room_restores_every_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    a = ref(history_length=4)
+    a.update(meas(0.1, 0.6, 0.3))
+    before = snapshot(a)
+    history, holds = a.history, a.holds
+    _patch_solver(monkeypatch, SimpleNamespace(x=np.array([0.1, 0.1, 0.1]), status=0))
+    with pytest.raises(ArithmeticError):
+        a.update({"R1": 18.0, "R2": 18.0, "R3": None})
+    assert snapshot(a) == before
+    assert a.history == history
+    assert a.holds == holds
+
+
+# --- Reads, snapshot and ordering -------------------------------------------
+
+
+class _FlippingMapping(Mapping[str, float | None]):
+    """Returns a number for R3 on the first read and ``None`` on the second."""
+
+    def __init__(self, data: dict[str, float | None]) -> None:
+        self._data = data
+        self.reads = 0
+
+    def __getitem__(self, key: str) -> float | None:
+        if key == "R3":
+            self.reads += 1
+            return self._data["R3"] if self.reads == 1 else None
+        return self._data[key]
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._data  # a membership test is not a value read
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+def test_update_reads_each_temperature_once() -> None:
+    a = ref()
+    mapping = _FlippingMapping(dict(meas(0.0, 0.0, 0.3)))
+    a.update(mapping)
+    assert mapping.reads == 1
+    assert a.rooms["R3"].demand == pytest.approx(0.3)
+
+
+def test_to_dict_after_none_steps_round_trips_with_unchanged_integral() -> None:
+    a = ref()
+    a.rooms["R1"].ki = 0.2
+    a.update(meas(0.4, 0.2, 0.3))
+    integral = a.rooms["R1"].integral
+    a.update({"R1": None, "R2": 20.0, "R3": None})
+    assert a.rooms["R1"].integral == integral
+    restored = SectionAllocator.from_dict(json.loads(json.dumps(a.to_dict())))
+    assert restored.to_dict() == a.to_dict()
+
+
+def test_update_error_names_the_bad_room_not_the_none_room() -> None:
+    a = ref()
+    with pytest.raises(ValueError, match=re.escape("measured['R2']")):
+        a.update({"R1": None, "R2": float("nan"), "R3": 20.0})

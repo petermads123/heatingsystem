@@ -1,6 +1,6 @@
 # SectionAllocator ready for Home Assistant — a room without a temperature
 
-<!-- claude-plan step=5 status=active -->
+<!-- claude-plan step=6 status=active -->
 
 | Field | Value |
 |---|---|
@@ -17,7 +17,7 @@
 | 2 | Plan | `/plan` | with the user | done |
 | 3 | Implement | `/implement` | in `/build` | done |
 | 4 | Verify | `/verify` | in `/build` | done |
-| 5 | Test | `/test` | in `/build` | pending |
+| 5 | Test | `/test` | in `/build` | done |
 | 6 | Concept check | `/concept-check` | in `/build` | pending |
 | 7 | Ship | `/ship` | in `/build` | pending |
 | 8 | Recommend | `/recommend` | with the user | pending |
@@ -241,8 +241,41 @@ sentence if it adds T1-T5.
 
 | Intent | Test names | Result |
 |---|---|---|
+| T1 (B1) | `test_update_none_room_is_untouched_while_other_rooms_step_like_a_twin` (prior reading / fresh), `test_update_accepts_none_as_no_reading_and_leaves_that_room_untouched` (step 3) | pass |
+| T2 (B2) | `test_update_none_reallocates_the_last_demand_on_the_e_layout`, `test_update_none_on_a_fresh_room_allocates_zero_and_reports_no_demand`, `test_update_none_after_from_dict_allocates_zero_not_the_pre_snapshot_demand`, `test_update_none_after_from_dict_keeps_the_integral_and_allocates_zero`, `test_update_none_reuses_a_saturated_last_demand_of_one`, `test_update_none_on_the_closed_form_path_uses_last_demand_or_zero` (2), `test_update_none_on_the_e3_closed_form_keeps_the_last_demand`, `test_update_none_defers_a_setting_change_to_the_next_real_reading` (2), `test_update_consecutive_none_steps_repeat_the_same_duty` | pass |
+| T3 (B3) | `test_update_none_room_matches_a_standalone_pi_fed_only_real_readings` (5 sequences), `test_update_single_room_none_at_start_and_end_matches_a_standalone_pi` | pass |
+| T4 (B4) | `test_update_none_for_every_room_on_a_fresh_allocator_issues_closed_commands`, `test_update_all_none_still_applies_holds_and_reuses_last_demands`, `test_update_refusals_with_none_rooms_present_are_unchanged_and_leave_no_trace` (12 rows incl. HA sentinel strings), `test_update_missing_key_is_not_no_reading_for_a_defaulting_mapping`, `test_update_refuses_an_unknown_room_even_when_its_value_is_none`, `test_update_error_names_the_bad_room_not_the_none_room` | pass |
+| T5 (B5) | `test_update_none_before_a_first_reading_leaks_nothing_on_solver_failure`, `test_update_solver_failure_with_a_none_room_restores_every_room`, and the refusal table above (snapshot and history unchanged) | pass |
+| T6 (B6) | `test_main_runs_and_reports_each_section`, whole round-1 suite, `test_to_dict_after_none_steps_round_trips_with_unchanged_integral` | pass |
+| Designer extra | `test_update_reads_each_temperature_once` | pass (red before the fix) |
 
-Edge cases considered and deliberately skipped, with reasons:
+Run: ruff, ruff format, mypy clean; pytest 1557 passed (40 new).
+
+Designer findings, applied or rebutted:
+
+- Input-space 1-10, contract 1-12: applied as above (merged duplicates: both designers'
+  all-`None`, from_dict, closed-form, setting-change and idempotency cases became one test
+  each; contract 7's `"R2": True`/`"None"`/nan/overflow rows and input-space 11's sentinel
+  strings joined one refusal table; contract 11 is the T1 twin).
+- Contradiction (input-space): `update` read `values[name]` twice. **Real bug**, fixed in
+  `allocator.py` (one read per room, then validate); test 12 was red first and is green.
+- Contradiction (contract 1): setting changes on a `None` room take effect at the next real
+  reading. Documented in the `Room.demand` docstring; pinned by the deferral test.
+- Contradiction (contract 3 / input-space note): `Room.demand` is also `None` after
+  `from_dict`. Added to the docstring; pinned by the two from_dict tests.
+- Contradiction (contract 2): a modulator rejecting a duty runs outside the restore block.
+  Pre-existing, unreachable through valid input, not this round's scope (B5 is about
+  temperature and solver failures); rebutted as out of scope, left for `DEVELOPMENT.md`
+  at step 8.
+- Plan typo (stray table fragment in section 4): harmless, left.
+
+Edge cases considered and deliberately skipped:
+
+- Numeric variants of non-`None` values (`Fraction`, `int`, `-0.0`): unchanged
+  `_validation.finite` path, covered by round 1.
+- Room-name text: unchanged this round.
+- Purity of the caller's mapping: covered by the existing no-mutation test plus the
+  `defaultdict` case.
 
 ---
 

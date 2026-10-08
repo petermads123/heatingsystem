@@ -430,7 +430,7 @@ names), the error order, shared-gain errors identical to `PIController`'s and na
 `history_length` parity, no aliasing of the caller's mappings, and a read-only layout. `Room`
 setters identical to `PIController`'s and effective on the next `update`. `update`: output shape and
 binary values, every bad-measurement branch leaving the whole `to_dict()` unchanged, a `None`
-temperature accepted as no reading (no raise, that room's `integral` and `demand` unchanged),
+temperature accepted as no reading (round 2, B1-B5: that room's `integral` and `demand` untouched while other rooms step like a twin; the allocation reuses its last demand, 0.0 and `demand` `None` before a first reading and after `from_dict`, also on the closed-form path and at the clamp; equals a standalone `PIController` fed only the real readings; every room `None`, with holds; a missing key, an unknown room, `"None"`/`"unavailable"` strings and every other refusal unchanged; a solver failure restores all rooms; each temperature read once from the mapping; a setting change deferred to the next real reading),
 numeric variants, and a failing or non-converged solver restoring every room. Allocation: exact fits with
 evenness 0 (reference layout, a three-room chain, a 60-room chain, the closed form, rank-deficient
 and tiny-coverage matrices), the weight floor against extreme priority ratios and subnormal
