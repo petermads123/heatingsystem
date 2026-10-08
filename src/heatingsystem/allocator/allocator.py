@@ -2,8 +2,13 @@
 
 This module provides :class:`SectionAllocator`, built once from a fixed
 physical layout: named rooms (each with a priority and an evenness weight)
-and named sections (each with the share of its heat that reaches each room
-it covers). Every :meth:`SectionAllocator.update` works in three stages:
+and named sections (each with the *coverage* it gives each room it serves:
+the fraction of that room's floor heating the section provides). A room's
+coverages sum to at most 1; the uncovered remainder is an outside
+disturbance, like the weather. Internally every room's coverages are
+normalised by its controlled total, so a demand of 1.0 means "every loop of
+this room fully on". Every :meth:`SectionAllocator.update` works in three
+stages:
 
 1. **Room demand.** Each :class:`Room` runs the existing PI control law (a
    composed radiator-mode
@@ -13,13 +18,17 @@ it covers). Every :meth:`SectionAllocator.update` works in three stages:
    weighted least squares, minimising exactly
    ``J(u) = sum_r p_r * (d_r - h_r)**2 + sum_r p_r * e_r * spread_r``: the
    priority-weighted squared mismatch between each room's demand ``d_r`` and
-   the heat ``h_r`` it receives (the sum of share times duty over its
-   sections), plus, per room, priority times evenness times the *spread* of
+   the heat ``h_r`` it receives (the sum of normalised coverage times duty
+   over its sections), plus, per room, priority times evenness times the *spread* of
    duty among the sections serving it, ``sum((u_s - mean)**2)``. Priorities
    lie in ``(0, 1]`` (only their ratios matter) and evenness weights in
    ``[0, 1]``.
    Rooms and sections that share no variable are solved separately; a
-   component of one room and one section has a closed form.
+   component of one room and one section has a closed form. A section that
+   is *held* (:meth:`SectionAllocator.hold`) is a constant in the problem:
+   its contribution is subtracted from each room's demand, its column
+   leaves the matrix, and a component whose sections are all held calls no
+   solver.
 3. **Actuation.** Each section owns a floor-heating
    :class:`~heatingsystem.modulator.modulator.Modulator` that turns its
    allocated duty into 0.0 / 1.0 commands over a rolling window.
@@ -41,9 +50,9 @@ from heatingsystem import _validation
 from heatingsystem.modulator.modulator import OUTPUT_MAX, OUTPUT_MIN, Modulator
 from heatingsystem.pi_controller.pi_controller import PIController
 
-# Tolerance on a section's share sum, so 0.1-style float sums that should be
+# Tolerance on a room's coverage sum, so 0.1-style float sums that should be
 # exactly 1.0 are accepted.
-_SHARE_SUM_TOLERANCE: float = 1e-9
+_COVERAGE_SUM_TOLERANCE: float = 1e-9
 
 # Smallest weight, relative to the largest priority in a component, that still
 # reaches the solver. A safety net: it applies to any row weight (a priority,
@@ -66,7 +75,7 @@ _SNAPSHOT_KEYS: frozenset[str] = frozenset({"history_length", "rooms", "sections
 _ROOM_SNAPSHOT_KEYS: frozenset[str] = frozenset(
     {"priority", "evenness", "setpoint", "kp", "ki", "integral"}
 )
-_SECTION_SNAPSHOT_KEYS: frozenset[str] = frozenset({"shares", "history"})
+_SECTION_SNAPSHOT_KEYS: frozenset[str] = frozenset({"coverage", "history", "hold"})
 
 
 def _reraise(prefix: str, exc: Exception) -> Exception:
@@ -274,7 +283,6 @@ class _Component:
         matrix: The stacked least-squares matrix for a multi-variable
             component, or ``None`` for the closed-form one-room,
             one-section case.
-        share: The single share of the closed-form case (``0.0`` otherwise).
         scale: The largest priority in the component (a spread weight,
             priority times evenness, never exceeds it), which the matrix
             rows and the demand vector are divided by.
@@ -285,14 +293,12 @@ class _Component:
         rooms: list[str],
         sections: list[str],
         matrix: np.ndarray | None,
-        share: float,
         scale: float,
     ) -> None:
         """Store the precomputed component."""
         self.rooms = rooms
         self.sections = sections
         self.matrix = matrix
-        self.share = share
         self.scale = scale
 
 
@@ -300,7 +306,7 @@ class SectionAllocator:
     """Controller for on/off heating sections that may each serve several rooms.
 
     Built once from a fixed layout; the layout (rooms, priorities, evenness
-    weights, shares) is read-only. Each room's ``setpoint``, ``kp`` and
+    weights, coverages) is read-only. Each room's ``setpoint``, ``kp`` and
     ``ki`` can be changed at any time through :attr:`rooms` and take effect
     on the next :meth:`update`.
 
@@ -308,10 +314,12 @@ class SectionAllocator:
         rooms: Maps each room name to a mapping with exactly the keys
             ``"priority"`` (in ``(0, 1]``) and ``"evenness"`` (in
             ``[0, 1]``).
-        sections: Maps each section name to ``{room name: share}``; every
-            share in ``(0, 1]``, each section's shares summing to at most 1
-            (the rest heats something unmeasured), every room covered by at
-            least one section.
+        sections: Maps each section name to ``{room name: coverage}``: the
+            fraction of that room's floor heating the section provides.
+            Every coverage is in ``(0, 1]``, each room's coverages sum to at
+            most 1 (the rest is an outside disturbance), every room is
+            covered by at least one section, and a section may cover
+            several rooms with any sum.
         kp: Initial proportional gain of every room.
         ki: Initial integral gain of every room.
         setpoint: Initial setpoint of every room in degrees C.
@@ -322,9 +330,9 @@ class SectionAllocator:
         TypeError: If a mapping is not a ``Mapping``, a name is not a
             ``str``, or a number is not a real number or is a ``bool``.
         ValueError: If a mapping is empty or has the wrong keys, a name is
-            empty, a section names an unknown room, a share is outside
-            ``(0, 1]``, a section's shares sum above 1 by more than 1e-9, a
-            room is covered by no section, a priority is outside ``(0, 1]``,
+            empty, a section names an unknown room, a coverage is
+            outside ``(0, 1]``, a room's coverages sum above 1 by more than
+            1e-9, a room is covered by no section, a priority is outside ``(0, 1]``,
             an evenness is outside ``[0, 1]``, or a number is not finite or out of range.
         OverflowError: If a number is too large to represent as a float.
             Every error names the offending path, such as
@@ -346,23 +354,25 @@ class SectionAllocator:
         # as the argument the caller passed rather than as one room's attribute.
         PIController(kp, ki, "radiator", setpoint, history_length=1)
         built_rooms = self._build_rooms(rooms, kp, ki, setpoint)
-        shares = self._build_shares(sections, built_rooms)
+        coverage = self._build_coverage(sections, built_rooms)
 
         uncovered = sorted(
             name
             for name in built_rooms
-            if not any(name in section for section in shares.values())
+            if not any(name in section for section in coverage.values())
         )
         if uncovered:
             raise ValueError(f"rooms {uncovered} are covered by no section.")
+        normalised = self._normalise(coverage, built_rooms)
 
         length = _validation.window_length(history_length)
 
         self._rooms: dict[str, Room] = built_rooms
-        self._shares: dict[str, dict[str, float]] = shares
+        self._coverage: dict[str, dict[str, float]] = coverage
+        self._normalised: dict[str, dict[str, float]] = normalised
         self._history_length: int = length
         self._modulators: dict[str, Modulator] = {
-            name: Modulator("floor_heating", history_length=length) for name in shares
+            name: Modulator("floor_heating", history_length=length) for name in coverage
         }
         self._components: list[_Component] = self._split_components()
         self._duty: dict[str, float] | None = None
@@ -419,25 +429,25 @@ class SectionAllocator:
         return built
 
     @staticmethod
-    def _build_shares(
+    def _build_coverage(
         sections: object, rooms: Mapping[str, Room]
     ) -> dict[str, dict[str, float]]:
-        """Validate the ``sections`` argument.
+        """Validate the ``sections`` argument, entry by entry.
 
         Args:
             sections: The candidate ``sections`` mapping.
             rooms: The already-built rooms, to check names against.
 
         Returns:
-            The shares by section and room name, as floats, in order.
+            The coverages by section and room name, as floats, in order.
 
         Raises:
             TypeError: If ``sections`` or a section is not a ``Mapping``, a
-                name is not a ``str``, or a share is not a real number.
+                name is not a ``str``, or a coverage is not a real number.
             ValueError: If ``sections`` or a section is empty, a name is
-                empty, a section names an unknown room, a share is outside
-                ``(0, 1]``, or a section's shares sum above 1.
-            OverflowError: If a share is too large to represent as a float.
+                empty, a section names an unknown room, or a coverage is
+                outside ``(0, 1]``.
+            OverflowError: If a coverage is too large to represent as a float.
         """
         specs = _mapping("sections", sections)
         if not specs:
@@ -456,16 +466,43 @@ class SectionAllocator:
                         f"{path} names unknown room {room_name!r}; "
                         f"known rooms are {list(rooms)}."
                     )
-                share_path = f"{path}[{room_name!r}]"
-                share = _validation.finite(share_path, raw)
-                if not 0.0 < share <= 1.0:
-                    raise ValueError(f"{share_path} must be in (0, 1], got {raw!r}.")
-                section[room_name] = share
-            total = math.fsum(section.values())
-            if total > 1.0 + _SHARE_SUM_TOLERANCE:
-                raise ValueError(f"{path} shares must sum to at most 1, got {total}.")
+                cover_path = f"{path}[{room_name!r}]"
+                cover = _validation.finite(cover_path, raw)
+                if not 0.0 < cover <= 1.0:
+                    raise ValueError(f"{cover_path} must be in (0, 1], got {raw!r}.")
+                section[room_name] = cover
             result[name] = section
         return result
+
+    @staticmethod
+    def _normalise(
+        coverage: Mapping[str, Mapping[str, float]], rooms: Mapping[str, Room]
+    ) -> dict[str, dict[str, float]]:
+        """Check each room's coverage sum and normalise by it.
+
+        Args:
+            coverage: The validated coverages by section and room name.
+            rooms: The rooms, in the order the sums are checked.
+
+        Returns:
+            The coverages divided by each room's total, by section and room.
+
+        Raises:
+            ValueError: If a room's coverages sum above 1 by more than 1e-9,
+                naming the room and the sum.
+        """
+        totals: dict[str, float] = {}
+        for room in rooms:
+            total = math.fsum(c[room] for c in coverage.values() if room in c)
+            if total > 1.0 + _COVERAGE_SUM_TOLERANCE:
+                raise ValueError(
+                    f"rooms[{room!r}] coverages sum to {total}, more than 1."
+                )
+            totals[room] = total
+        return {
+            name: {room: c / totals[room] for room, c in covered.items()}
+            for name, covered in coverage.items()
+        }
 
     def _split_components(self) -> list[_Component]:
         """Split the room-section graph into connected components.
@@ -483,10 +520,10 @@ class SectionAllocator:
             return node
 
         room_nodes = {name: f"room:{name}" for name in self._rooms}
-        section_nodes = {name: f"section:{name}" for name in self._shares}
+        section_nodes = {name: f"section:{name}" for name in self._coverage}
         for node in [*room_nodes.values(), *section_nodes.values()]:
             parent[node] = node
-        for section_name, covered in self._shares.items():
+        for section_name, covered in self._coverage.items():
             for room_name in covered:
                 parent[find(room_nodes[room_name])] = find(section_nodes[section_name])
 
@@ -501,6 +538,9 @@ class SectionAllocator:
     def _component(self, rooms: list[str], sections: list[str]) -> _Component:
         """Precompute one component's closed form or stacked matrix.
 
+        The matrix covers every section of the component, held or not; the
+        held columns are split off at solve time.
+
         Args:
             rooms: The component's room names.
             sections: The component's section names.
@@ -512,13 +552,11 @@ class SectionAllocator:
             overflow.
         """
         if len(rooms) == 1 and len(sections) == 1:
-            return _Component(
-                rooms, sections, None, self._shares[sections[0]][rooms[0]], 1.0
-            )
+            return _Component(rooms, sections, None, 1.0)
 
         column = {name: i for i, name in enumerate(sections)}
         serving = {
-            room: [s for s in sections if room in self._shares[s]] for room in rooms
+            room: [s for s in sections if room in self._coverage[s]] for room in rooms
         }
         scale = max(self._rooms[r].priority for r in rooms)
 
@@ -527,7 +565,7 @@ class SectionAllocator:
             row = np.zeros(len(sections))
             weight = _row_weight(self._rooms[room].priority, scale)
             for s in serving[room]:
-                row[column[s]] = weight * self._shares[s][room]
+                row[column[s]] = weight * self._normalised[s][room]
             rows.append(row)
         for room in rooms:
             covering = serving[room]
@@ -542,7 +580,7 @@ class SectionAllocator:
                     row[column[other]] -= weight / len(covering)
                 row[column[s]] += weight
                 rows.append(row)
-        return _Component(rooms, sections, np.vstack(rows), 0.0, scale)
+        return _Component(rooms, sections, np.vstack(rows), scale)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -554,6 +592,12 @@ class SectionAllocator:
         Every temperature is validated before any state changes. If the
         allocation fails, every room's integral and demand are restored and
         the error propagates; no command is issued and no duty is stored.
+        Holds are never written by an update. A held section's duty is its
+        level whatever the demand, its command is the floor-heating
+        modulation of that level (exactly the level for 0.0 and 1.0), and
+        the free sections compensate for its contribution. Every room's PI
+        keeps stepping during a hold, so its integral can wind up while a
+        section is held and cause a demand burst after the release.
 
         Args:
             measured: The temperature in degrees C of every room, keyed by
@@ -616,8 +660,47 @@ class SectionAllocator:
 
     @property
     def sections(self) -> dict[str, dict[str, float]]:
-        """A fresh deep copy of the layout's shares, as floats."""
-        return {name: dict(covered) for name, covered in self._shares.items()}
+        """A fresh deep copy of the coverages as given (not normalised)."""
+        return {name: dict(covered) for name, covered in self._coverage.items()}
+
+    @property
+    def holds(self) -> dict[str, float | None]:
+        """A fresh dict of every section's held level, or ``None`` if free."""
+        return {name: m.fixed_output for name, m in self._modulators.items()}
+
+    def hold(self, section: str, level: float | None) -> None:
+        """Hold a section at a fixed level, or release it with ``None``.
+
+        The hold takes effect on the next :meth:`update`; it leaves ``duty``
+        and ``history`` untouched. Nothing changes if the call raises.
+
+        Args:
+            section: The name of a section of the layout.
+            level: The level in ``[0, 1]`` to hold the section at (validated
+                like ``Modulator.fixed_output``), or ``None`` to release it.
+
+        Raises:
+            TypeError: If ``section`` is not a ``str``, or ``level`` is not a
+                real number or is a ``bool``, naming ``holds['HS3']``.
+            ValueError: If ``section`` is not a section of the layout, or
+                ``level`` is not finite or outside ``[0, 1]``.
+            OverflowError: If ``level`` is too large to represent as a float.
+        """
+        if not isinstance(section, str):
+            raise TypeError(
+                f"section must be a str, got {section!r} ({type(section).__name__})."
+            )
+        if section not in self._modulators:
+            raise ValueError(
+                f"unknown section {section!r}; "
+                f"known sections are {list(self._modulators)}."
+            )
+        checked: float | None = None
+        if level is not None:
+            checked = _validation.level(
+                f"holds[{section!r}]", level, OUTPUT_MIN, OUTPUT_MAX
+            )
+        self._modulators[section].fixed_output = checked
 
     @property
     def history_length(self) -> int:
@@ -641,8 +724,8 @@ class SectionAllocator:
             A fresh dict of ``json.dumps``-ready built-in types with the
             keys ``history_length``, ``rooms`` (per room: ``priority``,
             ``evenness``, ``setpoint``, ``kp``, ``ki``, ``integral``) and
-            ``sections`` (per section: ``shares`` and ``history``), in
-            constructor order.
+            ``sections`` (per section: ``coverage`` as given, ``history`` and
+            ``hold``, a level or ``None``), in constructor order.
         """
         return {
             "history_length": self._history_length,
@@ -659,8 +742,9 @@ class SectionAllocator:
             },
             "sections": {
                 name: {
-                    "shares": dict(self._shares[name]),
+                    "coverage": dict(self._coverage[name]),
                     "history": list(modulator.history),
+                    "hold": modulator.fixed_output,
                 }
                 for name, modulator in self._modulators.items()
             },
@@ -672,10 +756,11 @@ class SectionAllocator:
 
         The layout goes through the constructor, so it raises what the
         constructor raises, naming the constructor's path
-        (``sections['HS1']['R1']`` for a bad share). Settings and section
-        windows go through the same setters a direct assignment uses; their
+        (``sections['HS1']['R1']`` for a bad coverage). Settings, section holds
+        and windows go through the same setters a direct assignment uses; their
         errors keep their class with the snapshot path prefixed, such as
-        ``rooms['R1'].integral``.
+        ``rooms['R1'].integral`` or ``sections['HS1'].hold``. A 1.0.0
+        snapshot (sections with ``shares``) is refused for its missing keys.
 
         Args:
             data: A mapping with exactly the keys ``to_dict`` produces.
@@ -724,7 +809,7 @@ class SectionAllocator:
             for name, spec in room_specs.items()
         }
         layout_sections = {
-            name: _mapping(f"sections[{name!r}]['shares']", spec["shares"])
+            name: _mapping(f"sections[{name!r}]['coverage']", spec["coverage"])
             for name, spec in section_specs.items()
         }
         allocator = cls(
@@ -744,11 +829,14 @@ class SectionAllocator:
                 raise _reraise(f"rooms[{name!r}].", exc) from exc
         for name, spec in section_specs.items():
             try:
+                hold = spec["hold"]
+                if hold is not None:
+                    hold = _validation.level("hold", hold, OUTPUT_MIN, OUTPUT_MAX)
                 allocator._modulators[name] = Modulator._from_dict(
                     {
                         "mode": "floor_heating",
                         "history_length": length,
-                        "fixed_output": None,
+                        "fixed_output": hold,
                         "history": spec["history"],
                     }
                 )
@@ -765,7 +853,9 @@ class SectionAllocator:
 
         Each connected component is solved on its own: a one-room,
         one-section component in closed form, every other one by bounded
-        least squares.
+        least squares. Held sections are constants: their contribution is
+        subtracted from the right-hand side and their columns are left out
+        of the solve, so a fully held component calls no solver.
 
         Args:
             demand: Each room's demand in ``[OUTPUT_MIN, OUTPUT_MAX]``.
@@ -779,137 +869,138 @@ class SectionAllocator:
                 not converge, naming the component's sections.
         """
         found: dict[str, float] = {}
+        holds = self.holds
         for component in self._components:
             if component.matrix is None:
                 section = component.sections[0]
-                target = demand[component.rooms[0]]
-                found[section] = min(OUTPUT_MAX, target / component.share) + 0.0
+                level = holds[section]
+                if level is not None:
+                    found[section] = level
+                else:
+                    found[section] = min(OUTPUT_MAX, demand[component.rooms[0]]) + 0.0
                 continue
+            held = [i for i, s in enumerate(component.sections) if holds[s] is not None]
+            free = [i for i, s in enumerate(component.sections) if holds[s] is None]
             b = np.zeros(component.matrix.shape[0])
             for i, room in enumerate(component.rooms):
                 b[i] = (
                     _row_weight(self._rooms[room].priority, component.scale)
                     * demand[room]
                 )
+            for i in held:
+                level = holds[component.sections[i]]
+                assert level is not None
+                found[component.sections[i]] = level
+                b -= component.matrix[:, i] * level
+            if not free:
+                continue
+            free_sections = [component.sections[i] for i in free]
             result = lsq_linear(  # type: ignore[operator]  # mypy resolves scipy.optimize.lsq_linear to the submodule, not the function
-                component.matrix,
+                component.matrix[:, free],
                 b,
                 bounds=(OUTPUT_MIN, OUTPUT_MAX),
                 method="bvls",
-                max_iter=_SOLVER_ITERATIONS_PER_SECTION * len(component.sections),
+                max_iter=_SOLVER_ITERATIONS_PER_SECTION * len(free),
             )
             solution = result.x
             if int(result.status) < 1 or not bool(np.all(np.isfinite(solution))):
                 raise ArithmeticError(
-                    f"allocation for sections {component.sections} did not "
+                    f"allocation for sections {free_sections} did not "
                     f"converge to a finite solution (solver status {result.status})."
                 )
-            for section, value in zip(component.sections, solution, strict=True):
+            for section, value in zip(free_sections, solution, strict=True):
                 found[section] = float(min(OUTPUT_MAX, max(OUTPUT_MIN, value))) + 0.0
-        return {name: found[name] for name in self._shares}
+        return {name: found[name] for name in self._coverage}
 
 
 def main() -> None:
     """Showcase this module's functionality."""
-    # The reference layout: HS2 is split 50/50 between R1 and R2.
+    # The reference layout: HS4 covers 70 % of R3 and 40 % of R4; R1 is only
+    # half covered (the rest is an outside disturbance).
     rooms = {
         "R1": {"priority": 1.0, "evenness": 0.0},  # priority (0, 1], evenness [0, 1]
         "R2": {"priority": 1.0, "evenness": 0.0},
         "R3": {"priority": 1.0, "evenness": 0.0},
+        "R4": {"priority": 1.0, "evenness": 0.0},
     }
     sections = {
-        "HS1": {"R1": 1.0},
-        "HS2": {"R1": 0.5, "R2": 0.5},
-        "HS3": {"R2": 1.0},
-        "HS4": {"R3": 1.0},
+        "HS1": {"R1": 0.5},
+        "HS2": {"R2": 1.0},
+        "HS3": {"R3": 0.3},
+        "HS4": {"R3": 0.7, "R4": 0.4},
+        "HS5": {"R4": 0.6},
     }
     kp = 1.0
     ki = 0.0
     history_length = 4
-    # R2 is cold (demand 0.6), R1 almost warm (demand 0.1), R3 is warm.
-    measured = {"R1": 20.9, "R2": 20.4, "R3": 21.0}
+    # R3 is half a degree cold (demand 0.5); the others are on target.
+    measured = {"R1": 21.0, "R2": 21.0, "R3": 20.5, "R4": 21.0}
 
     allocator = SectionAllocator(
         rooms, sections, kp=kp, ki=ki, history_length=history_length
     )
     commands = allocator.update(measured)
 
-    print("=== Hungry R2, evenness 0 everywhere ===")
+    print("=== Example E1: R3 demand 0.5, nothing held ===")
     print(f"  duty     = {allocator.duty}")
     print(f"  commands = {commands}")
 
-    # Worked example B: R1 wants an even floor (evenness 0.1, R2 does not
-    # care), so HS1 is pulled up towards HS2 and both demands are still met.
-    rooms = {
-        "R1": {"priority": 1.0, "evenness": 0.1},
-        "R2": {"priority": 1.0, "evenness": 0.0},
-        "R3": {"priority": 1.0, "evenness": 0.0},
-    }
+    # Hold HS3 closed: HS4 and HS5 compensate for R3.
+    held_section = "HS3"
+    level = 0.0  # 0.0 to 1.0, or None to release
+    allocator.hold(held_section, level)
+    commands = allocator.update(measured)
 
-    even = SectionAllocator(
-        rooms, sections, kp=kp, ki=ki, history_length=history_length
-    )
+    print(f"\n=== Example E2: {held_section} held at {level} ===")
+    print(f"  holds    = {allocator.holds}")
+    print(f"  duty     = {allocator.duty}")
+
+    # Releasing the hold lets the next update allocate freely again.
+    release = None  # None releases a hold
+    allocator.hold(held_section, release)
+    commands = allocator.update(measured)
+
+    print(f"\n=== {held_section} released ===")
+    print(f"  duty     = {allocator.duty}")
+
+    # Example E3: demand is relative to the covered half of R1.
+    measured = {"R1": 20.6, "R2": 21.0, "R3": 21.0, "R4": 21.0}
+    fresh = SectionAllocator(rooms, sections, kp=kp, ki=ki)
+    commands = fresh.update(measured)
+
+    print("\n=== Example E3: R1 demand 0.4, HS1 covers only half of R1 ===")
+    print(f"  duty     = {fresh.duty}")
+
+    # Example E4: R3 and R4 want an even floor, so HS3, HS4 and HS5 level out.
+    rooms = {
+        "R1": {"priority": 1.0, "evenness": 0.0},
+        "R2": {"priority": 1.0, "evenness": 0.0},
+        "R3": {"priority": 1.0, "evenness": 1.0},
+        "R4": {"priority": 1.0, "evenness": 1.0},
+    }
+    measured = {"R1": 21.0, "R2": 21.0, "R3": 20.5, "R4": 20.5}
+
+    even = SectionAllocator(rooms, sections, kp=kp, ki=ki)
     commands = even.update(measured)
 
-    print("\n=== Example B: R1 evenness 0.1, R2 evenness 0 ===")
+    print("\n=== Example E4: R3 and R4 demand 0.5, evenness 1 ===")
     print(f"  duty     = {even.duty}")
-    print(f"  commands = {commands}")
 
-    # Worked example C: both floors want to be even and pull HS2 in opposite
-    # directions, so the demands are traded off against the evenness.
-    rooms = {
-        "R1": {"priority": 1.0, "evenness": 1.0},
-        "R2": {"priority": 1.0, "evenness": 1.0},
-        "R3": {"priority": 1.0, "evenness": 0.0},
-    }
-
-    both = SectionAllocator(
-        rooms, sections, kp=kp, ki=ki, history_length=history_length
-    )
-    commands = both.update(measured)
-
-    print("\n=== Example C: R1 and R2 evenness 1 ===")
-    print(f"  duty     = {both.duty}")
-    print(f"  commands = {commands}")
-
-    # A higher priority for R1 only matters when demands cannot all be met;
-    # only the ratio between priorities counts (0.8 vs 0.2 is 4 vs 1).
-    rooms = {
-        "R1": {"priority": 0.8, "evenness": 0.0},
-        "R2": {"priority": 0.2, "evenness": 0.0},
-    }
-    sections = {"HS1": {"R1": 0.5, "R2": 0.5}}
-    measured = {"R1": 20.8, "R2": 20.4}
-
-    shared = SectionAllocator(rooms, sections, kp=kp, ki=ki)
-    commands = shared.update(measured)
-
-    print("\n=== One shared section, R1 priority 0.8 vs R2 priority 0.2 ===")
-    print(f"  duty     = {shared.duty}")
-    print(f"  commands = {commands}")
-
-    # Setpoints and gains change at runtime through the room handles.
-    new_setpoint = 19.0
-    shared.rooms["R1"].setpoint = new_setpoint
-    commands = shared.update(measured)
-
-    print(f"\n=== R1 setpoint now {new_setpoint} ===")
-    print(f"  demand   = {shared.rooms['R1'].demand}")
-    print(f"  commands = {commands}")
-
-    # A snapshot survives a JSON round trip and continues identically.
-    text = json.dumps(shared.to_dict())
+    # A snapshot carries the hold through a JSON round trip.
+    even.hold("HS2", 1.0)
+    text = json.dumps(even.to_dict())
     restored = SectionAllocator.from_dict(json.loads(text))
-    original_next = shared.update(measured)
+    original_next = even.update(measured)
     restored_next = restored.update(measured)
 
-    print("\n=== Snapshot round trip through JSON ===")
+    print("\n=== Snapshot round trip through JSON, HS2 held at 1.0 ===")
+    print(f"  holds    = {restored.holds}")
     print(f"  original = {original_next}")
     print(f"  restored = {restored_next}")
 
-    # An invalid layout raises and produces nothing; a priority above 1 is one.
-    rooms = {"R1": {"priority": 2.0, "evenness": 0.0}}
-    sections = {"HS1": {"R1": 0.8}}
+    # A room's coverages may not sum above 1.
+    sections = {"HS1": {"R1": 0.7}, "HS2": {"R1": 0.5}}
+    rooms = {"R1": {"priority": 1.0, "evenness": 0.0}}
 
     try:
         SectionAllocator(rooms, sections)
