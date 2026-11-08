@@ -34,17 +34,6 @@
           }
         ]
       }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$(for p in python3 python; do \"$p\" -c '' </dev/null >/dev/null 2>&1 && command -v \"$p\" && break; done || echo python3)\" \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_gate.py\"",
-            "timeout": 320
-          }
-        ]
-      }
     ]
   },
   "permissions": {
@@ -53,18 +42,59 @@
       "Bash(mypy:*)",
       "Bash(pytest:*)",
       "Bash(python -m:*)",
+      "Bash(python3 -m:*)",
+      "Bash(python .claude/hooks/check_sync.py:*)",
+      "Bash(python3 .claude/hooks/check_sync.py:*)",
+      "Bash(python .claude/hooks/dev_state.py:*)",
+      "Bash(python3 .claude/hooks/dev_state.py:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
+      "Bash(git show:*)",
       "Bash(git branch:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
+      "Bash(git pull:*)",
       "Bash(git fetch:*)",
       "Bash(git checkout:*)",
       "Bash(git switch:*)",
       "Bash(git merge:*)",
-      "Bash(git mv:*)"
+      "Bash(git merge-base:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git mv:*)",
+      "Bash(git rm:*)",
+      "PowerShell(ruff:*)",
+      "PowerShell(mypy:*)",
+      "PowerShell(pytest:*)",
+      "PowerShell(python -m:*)",
+      "PowerShell(python .claude/hooks/check_sync.py:*)",
+      "PowerShell(python .claude/hooks/dev_state.py:*)",
+      "PowerShell(gh pr create:*)",
+      "PowerShell(gh pr view:*)",
+      "PowerShell(gh pr list:*)",
+      "PowerShell(git status:*)",
+      "PowerShell(git diff:*)",
+      "PowerShell(git log:*)",
+      "PowerShell(git show:*)",
+      "PowerShell(git branch:*)",
+      "PowerShell(git add:*)",
+      "PowerShell(git commit:*)",
+      "PowerShell(git push:*)",
+      "PowerShell(git pull:*)",
+      "PowerShell(git fetch:*)",
+      "PowerShell(git checkout:*)",
+      "PowerShell(git switch:*)",
+      "PowerShell(git merge:*)",
+      "PowerShell(git merge-base:*)",
+      "PowerShell(git rev-parse:*)",
+      "PowerShell(git rev-list:*)",
+      "PowerShell(git mv:*)",
+      "PowerShell(git rm:*)"
     ]
   }
 }

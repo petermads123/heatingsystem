@@ -1,15 +1,17 @@
 # Development notes
 
 Development-side open questions and things to fix later: what the code does not do yet, a
-question nobody can answer yet, an idea that fell short of a recommendation. Not a design
+question nobody can answer yet, an idea that fell short of a critical extra. Not a design
 document and not a changelog.
 
-**Adding an entry:** a heading, the date and the branch/round it came from, the item itself,
-and its next step or where it is configured. **Resolving an entry:** the change that
-resolves it deletes it — this file only ever shows what is still open. Step 8 of every round
-ends by cleaning it: entries the branch resolved are removed, duplicates are merged, and
-only open items are left. Before an entry is deleted or renamed, anything that points at it
-by heading is updated in the same change.
+**Adding an entry:** when `/finish` lists a non-critical extra the user wants kept, or a
+round defers something, add a heading with the date and the branch it came from, the item
+itself and its next step. **Resolving an entry:** the change that resolves it deletes it, so
+this file only ever shows what is still open. A feature's `/feature` concept stage reads it
+for items the feature could take with it.
+
+Entries below dated before November 2026 come from the previous pipeline; "step 8" and the
+`§` references point into the numbered plan files under `development/`.
 
 ## `feat/fixed-output` round 2 — 2026-09-23
 
@@ -76,7 +78,7 @@ Noted at step 8; nothing critical. Details in `development/feat/allocator-home-a
 - **Docstrings** — `from_dict` says holds go through "the same setters" (they are validated
   as `sections['HS1'].hold`, not via `hold`); `hold`'s `Raises` reads as if a non-`str`
   section names `holds[...]`; the constructor's "every error names the path" does not fit
-  the uncovered-rooms message. A `/small-change`.
+  the uncovered-rooms message. A `patch` through `/feature`.
 - **Late command raise** — `update` issues section commands outside the restore block, so a
   `Modulator.command` raising for a later section would leave earlier windows and the room
   integrals advanced; unreachable today (`_allocate` clamps, holds are validated).

@@ -7,7 +7,7 @@ Stdlib only: `jq` may not be available and hook commands default to
 Git Bash on Windows, so the usual shell recipe does not work here.
 
 mypy is deliberately not run here. Single-file mypy re-analyses imports and
-reports misleading errors mid-edit; type checking belongs in stop_gate.py, where
+reports misleading errors mid-edit; type checking belongs in the round's verify step, where
 the tree is whole.
 """
 
