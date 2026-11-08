@@ -123,8 +123,7 @@ print the result. The question the showcase answers is *how would I use this?*, 
 constructor with five inline literals answers it no better than a function call does.
 
 The test: could someone run `python -m package.module` and understand what the module does
-from the output alone? If not, the showcase is not doing its job. `/implement` carries a
-full worked module and `/test` a full worked test file — this rule is the short form.
+from the output alone? If not, the showcase is not doing its job.
 
 Because the package lives under `src/`, `python -m` only resolves once the package is
 installed — `pip install -e ".[dev]"`, which the setup guide does anyway. On a fresh clone

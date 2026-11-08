@@ -216,5 +216,3 @@ __marimo__/
 .claude/.skip-gate
 .claude/settings.local.json
 
-# The /build skill is a directory named build; the Python rule above must not swallow it
-!.claude/skills/build/

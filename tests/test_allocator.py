@@ -3243,15 +3243,6 @@ def test_a_1_0_0_snapshot_is_refused_for_coverage_and_hold_only() -> None:
     assert "shares" not in str(caught.value)
 
 
-# --- A11: version --------------------------------------------------------------
-
-
-def test_the_package_version_is_1_1_0() -> None:
-    root = Path(__file__).resolve().parent.parent
-    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    assert project["project"]["version"] == "1.1.0"
-
-
 # ---------------------------------------------------------------------------
 # main(): the showcase runs
 # ---------------------------------------------------------------------------

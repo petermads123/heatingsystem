@@ -1,129 +1,81 @@
-"""SessionStart hook: tell a fresh session where the pipeline left off.
+"""SessionStart hook: tell a new session which feature is in flight and how to resume it.
 
-The ten-step workflow stops for the user after steps 1 and 2, after step 8
-when it has a critical follow-up, and before step 9 publishes, and the build
-block in between can halt to ask, so a session often starts in the middle of
-something. Rather than relying on the user to remember the state — or on Claude
-to guess it — this hook reads the active plan file and injects a short brief as
-session context.
-
-Silent when nothing is in flight: a repo with no active plan starts clean.
-
-Stdlib only: `jq` may not be available and hook commands default to
-Git Bash on Windows, so the usual shell recipe does not work here.
+Reads the live `brief.json` and its current `round.json` and injects one short
+paragraph into the session's context: the feature, its rounds, the step the
+current round is on, and the skill that picks the work up. Silent when nothing
+is being built, which includes every checkout of `main`. Stdlib only.
 """
 
 from __future__ import annotations
 
 import json
-import sys
+import os
 from pathlib import Path
 
-from plan_state import STEP_NAMES, Plan, all_plans, current_branch, feature_rounds
+from dev_state import Brief, active_brief, diagnosis_state, round_state
 
-# Which skill resumes each step, keyed by the step it produces.
-STEP_SKILLS: dict[int, str] = {
-    1: "/conceptualize",
-    2: "/plan",
-    3: "/build",
-    4: "/build",
-    5: "/build",
-    6: "/build",
-    7: "/build",
-    8: "/recommend",
-    9: "/create-pr",
-    10: "/watch-pr",
+RESUME_SKILL = {
+    "diagnosis": "/fix",
+    "concept": "/feature",
+    "rounds": "/round",
+    "final": "/finish",
 }
 
 
-def brief(project_dir: Path, plan: Plan) -> str:
-    """Describe the state of one active plan.
+def brief(project_dir: Path, feature: Brief) -> str:
+    """Describe one live feature's state.
 
     Args:
         project_dir: Repository root.
-        plan: The plan to describe.
+        feature: The live feature.
 
     Returns:
-        A few lines of context for the start of the session.
+        A short paragraph for the session's context.
     """
+    folder = feature.folder.relative_to(project_dir).as_posix()
     lines = [
-        "## Workflow state",
-        "",
-        f"An implementation pipeline is in flight: `{plan.path}` — {plan.title}",
-        f"It is on **step {plan.step} of {max(STEP_SKILLS)} — {plan.step_name}**, "
-        f"resumed with `{STEP_SKILLS[plan.step]}`.",
+        f"Feature in flight: {feature.title or feature.feature} on {feature.branch}"
+        f" (status {feature.status}, bump {feature.bump}). State: {folder}/.",
     ]
-
-    if plan.step < max(STEP_SKILLS):
-        following = plan.step + 1
+    diagnosis = diagnosis_state(feature)
+    if diagnosis is not None and feature.status == "diagnosis":
         lines.append(
-            f"The step after it is {following} ({STEP_NAMES[following]}), "
-            f"`{STEP_SKILLS[following]}`."
+            f"Diagnosis is at step {diagnosis.step}/{len(diagnosis.steps)}"
+            f" {diagnosis.step_name} ({diagnosis.status})."
         )
-
-    earlier = [
-        other
-        for other in feature_rounds(project_dir, plan.feature)
-        if other.round_number < plan.round_number
-    ]
-    if earlier:
-        shipped = ", ".join(f"`{other.path.name}` ({other.title})" for other in earlier)
+        if diagnosis.question:
+            lines.append(f"Open question: {diagnosis.question}")
+    for entry in feature.rounds:
+        lines.append(f"- round {entry.number} {entry.name}: {entry.status}")
+    state = round_state(feature, feature.current_round)
+    if state is not None and feature.status == "rounds":
         lines.append(
-            f"\nThis is round {plan.round_number} of `{plan.feature}`. Earlier rounds "
-            f"are already on the branch: {shipped}. Read them before changing anything — "
-            "their acceptance criteria still have to hold."
+            f"Round {state.round} is at step {state.step}/{len(state.steps)}"
+            f" {state.step_name} ({state.status})."
         )
-
-    checked_out = current_branch(project_dir)
-    if plan.branch and checked_out and plan.branch != checked_out:
-        lines.append(
-            f"\n**Branch mismatch.** The plan names `{plan.branch}` but "
-            f"`{checked_out}` is checked out. Resolve this before writing code."
-        )
-
-    lines.append(
-        "\nRead the plan file before doing anything to it. Steps 1 and 2 wait "
-        "for the user, step 8 only when it has a critical follow-up, and step 9 "
-        "before it publishes; steps 3 to 7 run as one block under `/build`, which "
-        "resumes from the step above and halts only to ask."
-    )
+        if state.question:
+            lines.append(f"Open question: {state.question}")
+    skill = RESUME_SKILL.get(feature.status, "/feature")
+    lines.append(f"Resume with {skill}; it reads this state and continues.")
     return "\n".join(lines)
 
 
 def main() -> None:
-    """Inject the active plan's state into the new session's context."""
-    # lstrip the BOM: some shells prepend one when piping to a native command.
-    raw = sys.stdin.read().lstrip("﻿").strip()
-    try:
-        payload = json.loads(raw or "{}")
-    except json.JSONDecodeError:
-        sys.exit(0)  # a session should never fail to start over this
-
-    project_dir = Path(payload.get("cwd") or Path.cwd())
-    active = [plan for plan in all_plans(project_dir) if plan.status == "active"]
-    if not active:
-        sys.exit(0)
-
-    context = brief(project_dir, active[0])
-    if len(active) > 1:
-        others = ", ".join(f"`{plan.path}`" for plan in active[1:])
-        context += (
-            f"\n\n**More than one plan is marked active.** The most recently "
-            f"touched one is described above; also active: {others}. "
-            "Park the ones that are not being worked on."
-        )
-
+    """Entry point: emit the brief as session context, or nothing."""
+    project_dir = Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd())
+    feature = active_brief(project_dir)
+    if feature is None:
+        return
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "SessionStart",
-                    "additionalContext": context,
+                    "additionalContext": brief(project_dir, feature),
                 }
             }
         )
     )
-    sys.exit(0)
 
 
 if __name__ == "__main__":
