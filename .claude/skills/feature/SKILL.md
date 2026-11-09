@@ -20,6 +20,29 @@ rounds.
 | D. Narrow down, scouts in the background | you, the user, `repo-scout` × 4 | the user agrees the rounds |
 | E. Write the brief, start round 1 | you, then `/round` | — |
 
+## One question at a time
+
+This governs every turn of B and D. The scouts report while the user is reading and typing,
+so the chat must never fill up with anything but the one open question.
+
+- **A turn that waits for the user ends on exactly one question**: one sentence, one decision.
+  No numbered or bulleted list of questions, no "also, …", no second question tucked into the
+  explanation. With two things open, ask the one that decides more and keep the other for the
+  next turn. The concept summary in B and the rounds proposal in D are each one question
+  ("Go?", "Agree?") under a short summary.
+- **A scout's report is not a turn for the user.** When one arrives, read it, add its findings
+  to `BRIEF.md` under `## Scout findings` (left uncommitted; E commits it), and end the turn
+  with no message at all. Never relay, summarise or quote a report in the chat, and never ask
+  a new question because one arrived: the question already on screen stays the only one.
+- **Use the findings on the user's next answer.** They shape the next single question, and a
+  finding that changes something already said (a building block to reuse, a caller that would
+  break, a bump that should be higher) gets one clause in that reply. If a report showed the
+  pending question was moot or wrongly framed, say so in one line then and ask the corrected
+  question as the turn's one question.
+- **Propose the rounds only once all four reports are in**, so no report can land after them.
+  If the conversation is done first, say in one line that you are waiting for the scouts and
+  end the turn; propose when the last report arrives.
+
 ## A. Orient
 
 - `git fetch origin`, `git status --short --branch`.
@@ -39,8 +62,8 @@ rounds.
 A skill's model holds for the turn that invokes it, and this stage spans several turns:
 invoke `/feature` again at the start of each turn of the conversation until round 1 starts.
 
-Keep every reply short — three to six lines — so the conversation moves. Ask one or two
-questions at a time, not a questionnaire. Settle:
+Keep every reply short — three to six lines — so the conversation moves, and end it on one
+question (see *One question at a time* below). Settle:
 
 - **What** the feature does, as a caller would see it, and what it does not do.
 - **Branch name** — `type/kebab-case` per `CLAUDE.md`: `feat/` for new behaviour, `fix/` for
@@ -71,10 +94,9 @@ Right after the branch exists, start four `repo-scout` agents **in the backgroun
 message, with `model: sonnet` and `effort: medium`, one angle each: `building-blocks`, `fit`,
 `conventions`, `risks`. Brief each with the agreed concept and its angle.
 
-Do not wait for them. Keep the conversation going: the exact behaviour, the inputs and edge
-cases that matter, what is out of scope. Fold each scout's report in as it arrives — a
-building block to reuse, a caller that would break, a bump that should be higher — and tell
-the user in a line when one changes something.
+Do not wait for them. Keep the conversation going, one question per turn: the exact
+behaviour, the inputs and edge cases that matter, what is out of scope. Each scout's report is
+folded in silently as it arrives, by the rules in *One question at a time*.
 
 Then decide the **rounds**. A round is one coherent piece that can be built, tested and
 merged on its own, small enough for one pass of the round workflow (roughly: a module or two
@@ -88,7 +110,7 @@ criteria, and end the turn on the question.
 
 - `BRIEF.md`: Goal; Out of scope; Acceptance criteria (numbered `F1`, `F2`, … observable,
   feature-level); Rounds (per round: name, scope, depends on); Building blocks and risks from
-  the scouts, with `path:line`; Decisions (each question settled in the conversation, one
+  the scouts, with `path:line` (the `## Scout findings` notes, sorted into these); Decisions (each question settled in the conversation, one
   line each). This is what every round reads, so write down everything the conversation
   decided — anything left only in the chat is lost to the rounds.
 - `brief.json`: status `rounds`, `current_round` 1, every round at status `planned` with
