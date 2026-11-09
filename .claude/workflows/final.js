@@ -1,9 +1,9 @@
 export const meta = {
   name: 'final',
-  description: 'Whole-feature check before the pull request: test gate, then three concept checkers and two extras scouts',
+  description: 'Whole-feature check before the pull request: the tests the feature can affect, then three concept checkers and two extras scouts',
   whenToUse: 'Started by the /finish skill once every round has merged, never directly.',
   phases: [
-    { title: 'Test gate', detail: 'full suite, ruff, mypy, check_sync', model: 'sonnet' },
+    { title: 'Test gate', detail: 'the feature\'s selection of tests, ruff, mypy, check_sync', model: 'sonnet' },
     { title: 'Concept check', detail: 'three independent full checks against BRIEF.md', model: 'sonnet' },
     { title: 'Extras', detail: 'critical gaps and highest-value follow-ups', model: 'sonnet' },
   ],
@@ -36,7 +36,7 @@ const TEST_RUN = {
   type: 'object',
   properties: {
     passed: { type: 'boolean' },
-    summary: { type: 'string' },
+    summary: { type: 'string', description: 'The selection line, then counts and the gates that ran' },
     failures: { type: 'array', items: { type: 'string' } },
   },
   required: ['passed', 'summary', 'failures'],
@@ -85,15 +85,22 @@ const CHECKERS = 3
 // The test gate runs first and alone: the checkers and scouts may run code, and a second
 // mypy or pytest in the same tree at the same time can fail for reasons of its own.
 phase('Test gate')
+// The selection runs over the whole feature (against origin/main), not the full suite: the
+// full suite is CI's, on the pull request /finish opens.
 const tests = await agent(
-  `${CONTEXT}\nRun pytest (whole suite), ruff check, ruff format --check, mypy and python .claude/hooks/check_sync.py ` +
-  '(the last one may report STRUCTURE.md, README and DEVLOG drift: that is expected before /finish writes them; ' +
-  'report it separately in the summary and do not count it as a failure). Report exactly what fails.',
-  { agentType: 'test-runner', model: 'sonnet', effort: 'low', schema: TEST_RUN, phase: 'Test gate', label: 'full gate' })
+  `${CONTEXT}\nRun the feature's test gate. First \`python .claude/hooks/select_tests.py --base origin/main\` ` +
+  '(git fetch origin main first): stdout is one test path per line, ALL for the full suite, or nothing; stderr is ' +
+  'the reason. Run pytest on exactly that selection (`pytest <files>`, `pytest` for ALL, none for an empty list; ' +
+  'never widen or narrow it by hand), then ruff check ., ruff format --check ., mypy and ' +
+  'python .claude/hooks/check_sync.py on the whole tree (check_sync may report STRUCTURE.md, README and DEVLOG drift: ' +
+  'that is expected before /finish writes them; report it separately in the summary and do not count it as a ' +
+  'failure). Start the summary with the selection line exactly as select_tests.py printed it, and say that the full ' +
+  'suite runs in CI on the pull request. Report exactly what fails.',
+  { agentType: 'test-runner', model: 'sonnet', effort: 'low', schema: TEST_RUN, phase: 'Test gate', label: 'feature gate' })
 const gate = tests ? `The test gate already ran: ${tests.passed ? 'green' : 'RED'}. ${tests.summary}` : 'The test gate did not report.'
 
 const checksP = parallel(Array.from({ length: CHECKERS }, (_, i) => () =>
-  agent(`${CONTEXT}\n${gate} Do not run mypy or the whole suite again; run the code and single tests as you need.\n` +
+  agent(`${CONTEXT}\n${gate} Do not run mypy or the test selection again; run the code and single tests as you need.\n` +
     `You are feature concept checker ${i + 1} of ${CHECKERS}; the others check the same thing independently. ` +
     'Do a full check of the whole feature against BRIEF.md:\n' +
     '- Concept: does the feature as built match the BRIEF - every round delivered, the rounds fitting together, ' +

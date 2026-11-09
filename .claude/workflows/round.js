@@ -9,7 +9,7 @@ export const meta = {
     { title: 'Verify', detail: 'ruff, mypy, parallel code review', model: 'sonnet' },
     { title: 'Test design', detail: 'parallel edge-case designers', model: 'sonnet' },
     { title: 'Write tests', detail: 'the suite', model: 'sonnet' },
-    { title: 'Run tests', detail: 'full suite, fix loop', model: 'sonnet' },
+    { title: 'Run tests', detail: 'the tests the round can affect, ruff, mypy; fix loop', model: 'sonnet' },
     { title: 'Concept check', detail: 'three independent checkers', model: 'sonnet' },
     { title: 'Close', detail: 'commit and merge into the feature branch', model: 'sonnet' },
   ],
@@ -153,7 +153,7 @@ const TEST_RUN = {
   type: 'object',
   properties: {
     passed: { type: 'boolean' },
-    summary: { type: 'string', description: 'Counts and the gates that ran' },
+    summary: { type: 'string', description: 'The selection line from select_tests.py, then counts and the gates that ran' },
     failures: { type: 'array', items: { type: 'string' }, description: 'One line per failing test or check, with the error' },
   },
   required: ['passed', 'summary', 'failures'],
@@ -354,17 +354,38 @@ if (START <= 6) {
 }
 
 // --- 7 and 8. Run tests, Concept check (with the fix loop) --------------------
+// The round runs only the tests that can see what it changed (select_tests.py, against the
+// feature branch); the full suite is CI's, on the pull request. In the fix loop the re-run adds
+// the files of every test that failed last time and runs failures first (--ff).
+const SELECT = `python .claude/hooks/select_tests.py --base ${a.feature_branch}`
+const REPRO_RULE = FIX
+  ? '\nFIX ROUND: the test file the reproduction lives in (moved from diagnosis/ into tests/) is always in the run; ' +
+    'add it to the selection if the selection left it out.\n'
+  : ''
 async function runTests() {
+  let failed = []
   for (;;) {
+    const fixing = failed.length > 0
     const t = await run(7, 'test-runner',
-      'Run the full gate: pytest (whole suite), ruff check, ruff format --check, mypy. Report exactly what fails. ' +
-      'Do not fix anything. Append the result to log.md under "## 7. Run tests" (one dated line per run). ' +
+      `Run the round's gate. First \`${SELECT}\`: stdout is one test path per line, ALL for the full suite, or ` +
+      'nothing; stderr is the reason in one line. Then:\n' +
+      '- pytest on exactly that selection: `pytest <files>` for a list, `pytest` for ALL, no pytest for an empty list ' +
+      '(never widen or narrow the selection by hand).' +
+      (fixing
+        ? ` This is a re-run after a fix: add --ff, and add the test files of these earlier failures to the selection:\n${failed.join('\n')}\n`
+        : '\n') +
+      '- ruff check ., ruff format --check ., mypy - always, on the whole tree, also when no test applies.\n' +
+      REPRO_RULE +
+      'Report exactly what fails. Do not fix anything. Append the result to log.md under "## 7. Run tests" (one dated ' +
+      'line per run) with the selection exactly: "selected 4 of 61: <files and why>", "full suite: <reason>" or ' +
+      '"no tests apply: <reason>", as select_tests.py printed it. ' +
       'In round.json set "status" to "running", "question" to "", "note" to the result in one line, and "step" to 8 ' +
       `if everything passed, else 7. Commit "round ${a.round} step 7: <result>" and git push -u origin ${a.round_branch} either way.`,
-      { schema: TEST_RUN, model: 'sonnet', effort: 'low', next: null, label: 'run tests' })
+      { schema: TEST_RUN, model: 'sonnet', effort: 'low', next: null, label: fixing ? 'run tests (re-run)' : 'run tests' })
     if (!t) return { status: 'fail', summary: 'the test runner did not return' }
     log(`run tests: ${t.passed ? 'green' : 'red'} - ${t.summary.split('\n')[0]}`)
     if (t.passed) return { status: 'done', summary: t.summary }
+    failed = t.failures
     const f = await fix(7, 'The test gate', t.failures.join('\n'))
     if (!ok(f)) return f
   }

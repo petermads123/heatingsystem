@@ -23,4 +23,5 @@ feature-level check, `BRIEF.md`. Check all three, each in full:
 and what would close it. Doubts that would not change the verdict are `minor`.
 
 Read-only: change no file. Bash is for running the code and single tests; the test gate has
-already run the whole suite and mypy, so do not run those again.
+already run the tests the change can affect and mypy, so do not run those again (the full
+suite is CI's, on the pull request).

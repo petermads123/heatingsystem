@@ -3,6 +3,27 @@
 One entry per version, newest first: what changed, then the files it touched. `/finish`
 writes each entry in the commit that opens the pull request.
 
+## 1.1.2 — 2026-11-09
+
+A round runs only the tests its change can affect; the full suite runs in CI on the pull
+request. Adopted from `petermads123/template` 0.2.0: the new hook `select_tests.py` reads the
+round's diff against the feature branch and picks the changed test files, each changed
+module's `test_<module>.py` and every test file that imports a changed module, directly or
+through other modules (by `ast`, never by importing). It falls back to the full suite when
+`pyproject.toml`, a `conftest.py`, a test helper, a re-exporting `__init__.py` or an
+unparseable file changed, and selects nothing for prose and pipeline files. Step 7 runs
+that selection plus ruff and mypy on the whole tree, records it in `log.md`, and in the fix
+loop re-runs with `--ff` and the earlier failures; `final.js` runs the selection over the
+whole feature against `origin/main`. `/finish` now sees the pull request's CI through to
+green, fixing a red run on the feature branch, and never calls a feature done on a red or
+pending CI.
+
+Files:
+- `.claude/hooks/select_tests.py`, `tests/test_select_tests.py`
+- `.claude/workflows/round.js`, `final.js`; `.claude/agents/test-runner.md`, `concept-checker.md`
+- `.claude/skills/finish/SKILL.md`, `.claude/settings.json`
+- `CLAUDE.md`, `STRUCTURE.md`, `README.md`, `DEVLOG.md`, `pyproject.toml`
+
 ## 1.1.1 — 2026-11-08
 
 Replaces the ten-step plan-file pipeline with the one from `petermads123/template`: features
