@@ -92,9 +92,13 @@ pushes its output with `round.json` advanced.
 | 4 | Verify: ruff and mypy, then parallel review per unit | `verifier`, `code-reviewer` × ≤5 | Sonnet medium |
 | 5 | Test design, four lenses in parallel | `test-designer` × 4 | Sonnet low |
 | 6 | Write tests | `test-writer` | Sonnet medium |
-| 7 | Run tests: the full gate | `test-runner` | Sonnet low |
+| 7 | Run tests: the tests the round can affect, ruff, mypy | `test-runner` | Sonnet low |
 | 8 | Concept check: three independent full checks (concept, purpose, criteria), majority passes | `concept-checker` × 3 | Sonnet low |
 | 9 | Close: merge into the feature branch | `round-closer` | Sonnet medium |
+
+Step 7 runs only the tests `.claude/hooks/select_tests.py` picks from the round's diff against
+the feature branch (`/finish` runs the same selection over the whole feature); the full suite
+runs in CI on the pull request, and `/finish` sees CI through to green.
 
 A failing gate (steps 7 and 8) goes back to the `implementer` in fix mode, twice at most per
 round, counted across resumes; every fix sends the round back through the test gate, and
@@ -175,6 +179,7 @@ pytest
 python .claude/hooks/check_sync.py                     # documents agree with the code
 python .claude/hooks/check_sync.py --base origin/main  # and the version is raised
 python .claude/hooks/dev_state.py                      # the feature in flight
+python .claude/hooks/select_tests.py --base <ref>      # the tests a change can affect
 ```
 
 ## Automation in place
@@ -186,6 +191,7 @@ python .claude/hooks/dev_state.py                      # the feature in flight
   round never stalls on a prompt; the guard is what keeps that safe.
 - **After every `Write`/`Edit` of a `.py` file**, `lint_py.py` runs `ruff format` and
   `ruff check --fix` on it.
-- **On every pull request and push to `main`**, CI runs the gate and `check_sync.py`.
+- **On every pull request and push to `main`**, CI runs the full gate (the whole suite) and
+  `check_sync.py`.
 
 `.claude/rules/python.md` loads whenever a `.py` file is read or edited.

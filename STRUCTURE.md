@@ -24,7 +24,7 @@ development/            the pipeline's state: one folder per feature branch (see
   skills/               /feature, /fix, /round, /finish
   agents/               the pipeline's agents, one file each
   workflows/            diagnose.js (a fix's diagnosis), round.js (one round), final.js (the whole-feature check)
-  hooks/                session brief, git guard, Ruff on edit, state reader, sync checker
+  hooks/                session brief, git guard, Ruff on edit, state reader, sync checker, test selector
   rules/python.md       coding conventions, loaded for **/*.py
 .github/workflows/      CI: the gate and check_sync
 .vscode/                editor config (Ruff as formatter, format on save)
@@ -537,6 +537,7 @@ before unknown, sorts a mixed-type unknown-key set by `repr` rather than raising
 | `tests/test_session_brief.py` | the brief text and `main`'s output |
 | `tests/test_check_sync.py` | every check, including the version raise against a throwaway repo |
 | `tests/test_guard_git.py` | the guard, vendored with it |
+| `tests/test_select_tests.py` | every selection rule on a throwaway repo (transitive and relative imports, re-exporting `__init__`, helpers, deletions, renames, cycles, unparseable files), `changed_files` and the CLI |
 
 ## Plans: `development/`
 
@@ -599,6 +600,27 @@ Checks the documents agree with each other and with the code. Run by `/finish` a
 | `problems(project_dir: Path, base: str = "") -> list[str]` | All of the above. |
 | `main() -> None` | CLI: `[--base REF] [--root DIR]`; prints problems, exits 1 if any. |
 
+### `.claude/hooks/select_tests.py`
+
+Picks the test files a change can affect, so a round runs those and CI runs the whole suite.
+The changes are `git diff <base>...HEAD` plus uncommitted and untracked files. The full suite
+(None) for `pyproject.toml`, a `conftest.py`, a non-test file under the test directory, a
+re-exporting `__init__.py`, an unparseable `.py` file or a file it cannot place; otherwise
+the changed test files, `test_<module>.py` (and `test_<pkg>_<module>.py`) of each changed
+module, and every test file that depends on a changed module transitively, read with `ast`
+(imports, `import_module("...")`, and strings naming a module or its path). Prose,
+`development/` and `.claude/` outside `hooks/` select nothing; other configuration selects
+the tests that name it. Module roots come from `pythonpath` and `testpaths`;
+`[tool.select_tests] ignore` adds path prefixes that select nothing.
+
+| Signature | Returns |
+|---|---|
+| `Selection` | Frozen dataclass: `tests: tuple[str, ...] \| None` (None = full suite), `reason`, `total`; `summary() -> str` (`selected 4 of 61: ...`, `full suite: ...`, `no tests apply: ...`). |
+| `changed_files(project_dir: Path, base: str) -> list[str]` | Changed paths against `base...HEAD`, committed or not, sorted; renames as both paths. Raises `ValueError` when git fails. |
+| `selection(project_dir: Path, changed: Iterable[str]) -> Selection` | The selection with its reason. |
+| `select_tests(project_dir: Path, changed: Iterable[str]) -> list[str] \| None` | The test paths, `[]` when none applies, None for the full suite. |
+| `main() -> None` | CLI: `[--base REF] [--root DIR]`; one test per line, `ALL`, or nothing on stdout, the reason on stderr; `ALL` when the changes cannot be listed. |
+
 ### `.claude/hooks/guard_git.py`
 
 `PreToolUse` hook on `Bash` and `PowerShell`: refuses a `git commit` or `git push` that would
@@ -634,10 +656,10 @@ switches chained with `&&`). Vendored from `template_repo`.
 | `skills/fix/` | `/fix`: intake, runs `workflows/diagnose.js`, agrees cause, scope and bump with the user, then the rounds with `kind: "fix"` |
 | `skills/round/` | `/round`: coordinates one round (Sonnet high), runs `workflows/round.js`, answers or escalates questions |
 | `skills/setup/` | `/setup`: one-time setup of a repo made from the template (purpose, package rename, approver, version 0.1.0, ruleset from its `main_protect.*.json`); deletes itself when done |
-| `skills/finish/` | `/finish`: runs `workflows/final.js`, extras, `docs-writer`, version, pull request |
+| `skills/finish/` | `/finish`: runs `workflows/final.js`, extras, `docs-writer`, version, pull request, then CI through to green |
 | `workflows/diagnose.js` | A fix's four diagnosis steps; args `feature_dir`, `branch`, `symptom`, `start_step`, `answers`; returns `diagnosed` (with `is_bug` and the `defect`), `needs_input` or `failed` |
-| `workflows/round.js` | The nine round steps; args `feature_dir`, `round_dir`, `round`, `feature_branch`, `round_branch`, `start_step`, `attempt`, `kind`, `answers` (`kind` `fix` adds the fix-round rules); returns `merged`, `needs_input` or `failed` |
-| `workflows/final.js` | Read-only whole-feature check: test gate first, then three independent concept checks and two extras scouts; returns `tests`, `checks`, `extras`, `missing` |
+| `workflows/round.js` | The nine round steps (step 7 runs the tests `select_tests.py` picks against the feature branch, `--ff` plus the earlier failures in the fix loop); args `feature_dir`, `round_dir`, `round`, `feature_branch`, `round_branch`, `start_step`, `attempt`, `kind`, `answers` (`kind` `fix` adds the fix-round rules); returns `merged`, `needs_input` or `failed` |
+| `workflows/final.js` | Read-only whole-feature check: test gate first (the selection against `origin/main`, not the full suite), then three independent concept checks and two extras scouts; returns `tests`, `checks`, `extras`, `missing` |
 | `agents/reproducer.md`, `cause-hunter.md`, `root-cause-analyst.md`, `diagnosis-critic.md` | The diagnosis's four steps (`/fix`) |
 | `agents/repo-scout.md` | Read-only investigation for `/feature`, one angle each |
 | `agents/round-conceptualizer.md`, `round-planner.md` | Round steps 1 and 2 (Opus) |

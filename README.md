@@ -4,7 +4,7 @@ This repo is for implementing various heating system models. The first is `PICon
 a discrete-time PI controller for radiator and floor-heating actuators, driven from
 Home Assistant / AppDaemon on a fixed polling interval.
 
-**Version:** 1.1.1
+**Version:** 1.1.2
 
 ## Packages
 

@@ -1,6 +1,6 @@
 ---
 name: finish
-description: Close a feature once every round has merged — run the final workflow (full test gate, three concept checkers, two extras scouts), add a fix round if the check fails, hold for the user on a critical extra, otherwise write the version bump, STRUCTURE.md, README.md and DEVLOG.md, open the pull request to main and list the non-critical extras in chat. Use when /round reports the last round merged, or to resume a feature at status final.
+description: Close a feature once every round has merged — run the final workflow (the feature's test selection, three concept checkers, two extras scouts), add a fix round if the check fails, hold for the user on a critical extra, otherwise write the version bump, STRUCTURE.md, README.md and DEVLOG.md, open the pull request to main, see its CI through to green (fixing it on the feature branch when red), and list the non-critical extras in chat. Use when /round reports the last round merged, or to resume a feature at status final.
 model: sonnet
 effort: high
 ---
@@ -26,7 +26,7 @@ background; when it completes, invoke `/finish` again and continue here.
   under Rounds. If the feature already had a "Final fixes" round, do not add another: tell the
   user what still fails and ask.
 - **Green, with a majority passing** — go on. Blocking findings from a dissenting checker are
-  shown to the user with the extras in step 5.
+  shown to the user with the extras in step 6.
 
 ### Adding a round
 
@@ -54,8 +54,10 @@ Merge the scouts' extras: drop duplicates, keep at most five, best first.
 - Start a `docs-writer` agent (`model: sonnet`, `effort: medium`) with the new version, the
   feature folder and today's date. It writes `pyproject.toml`, `STRUCTURE.md`, `README.md`
   and `DEVLOG.md` and runs `check_sync.py --base origin/main` until clean.
-- Run the full gate yourself: `pytest`, `ruff check .`, `ruff format --check .`, `mypy`,
-  `python .claude/hooks/check_sync.py --base origin/main`.
+- Run the feature's gate yourself: the tests `python .claude/hooks/select_tests.py --base
+  origin/main` selects (`pytest <files>`, `pytest` for `ALL`, none for an empty list),
+  `ruff check .`, `ruff format --check .`, `mypy`,
+  `python .claude/hooks/check_sync.py --base origin/main`. The full suite is CI's (step 5).
 
 ## 4. Pull request
 
@@ -69,8 +71,27 @@ Merge the scouts' extras: drop duplicates, keep at most five, best first.
   root cause and chosen scope, so the reviewer checks the fix against the cause.
 - Write the pull request URL into `brief.json` `pr`, commit `feature: record PR`, push.
 
-## 5. Report
+## 5. CI
 
-In chat: the pull request link, then the non-critical extras — title, why, size — so the user
-can pick any up as a new `/feature`. Nothing merges until the user merges it or tells you to
-in so many words; see `CLAUDE.md`.
+The rounds ran only the tests their changes can affect; the full suite runs in CI on the pull
+request, so CI is part of finishing, not something that happens after it.
+
+- Watch the pull request's checks until each one has concluded: `gh pr checks <number>
+  --watch`, or where `gh` is not available the GitHub tools (the head commit's check runs)
+  and the pull request activity subscription, which wakes the session when CI reports.
+- **Green** — go on to the report.
+- **Red** — this is work, not waiting on review. Read the failing job's log, reproduce the
+  failure locally (the failing test files by name), fix it on the feature branch with a
+  commit `fix: <what CI caught>`, run the gate of step 3 again, and push; the push runs CI
+  again. Repeat until green. A failure that needs new behaviour, or that you cannot explain,
+  goes to the user, with the log.
+- **Pending** — keep waiting. Never call the feature done on a red or pending CI.
+
+The merge rule in `CLAUDE.md` is unchanged: CI green is required before a merge, and green CI
+does not make a merge due.
+
+## 6. Report
+
+In chat: the pull request link and the CI result with the link to the run, then the
+non-critical extras — title, why, size — so the user can pick any up as a new `/feature`.
+Nothing merges until the user merges it or tells you to in so many words; see `CLAUDE.md`.
