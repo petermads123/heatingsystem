@@ -3,6 +3,19 @@
 One entry per version, newest first: what changed, then the files it touched. `/finish`
 writes each entry in the commit that opens the pull request.
 
+## 1.1.3 — 2026-11-09
+
+The concept conversation asks one question at a time, as in template 0.2.1. In `/feature`
+every turn that waits for the user ends on exactly one question, never a list, and the four
+repo scouts no longer write into the chat: a report that arrives while a question is open is
+noted in `BRIEF.md` under `## Scout findings`, the turn ends without a message, and the
+findings shape the next question once the user answers. The rounds are proposed only after
+every report is in. `/fix` asks its intake and its agreement the same way.
+
+Files:
+- `.claude/skills/feature/SKILL.md`, `.claude/skills/fix/SKILL.md`
+- `README.md`, `DEVLOG.md`, `pyproject.toml`
+
 ## 1.1.2 — 2026-11-09
 
 A round runs only the tests its change can affect; the full suite runs in CI on the pull

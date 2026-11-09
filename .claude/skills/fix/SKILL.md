@@ -33,8 +33,10 @@ Defect block from `diagnosis/log.md`; otherwise resume C at its `step`. Read `ST
 ## B. Intake (short exchanges)
 
 Get, in a few lines each: what happened, what should have happened, how to trigger it (the
-call, the input, the command). An error message or traceback, if there is one, verbatim. Do
-not diagnose in the chat; the workflow does that with evidence.
+call, the input, the command). An error message or traceback, if there is one, verbatim. Ask
+for what is missing one question per turn, never a list of questions (`/feature`'s *One
+question at a time*); skip what the user's first message already says. Do not diagnose in the
+chat; the workflow does that with evidence.
 
 Then, without waiting:
 
@@ -85,7 +87,8 @@ One short message, from the Defect block (`defect` in the result, else `## 3. Ro
 - **Bump** — `patch`, unless the fix changes what callers get back (then `minor` or `major` by
   `CLAUDE.md`'s table). The branch name stays `fix/…` either way.
 
-End the turn on the question.
+End the turn on one question: agree the recommended scope and the bump, or say which to
+change. A workflow question (`needs_input` in C) is asked the same way, one at a time.
 
 ## E. Brief and rounds (no gate)
 
