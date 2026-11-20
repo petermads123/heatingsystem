@@ -24,7 +24,7 @@ development/            the pipeline's state: one folder per feature branch (see
   skills/               /feature, /fix, /round, /finish
   agents/               the pipeline's agents, one file each
   workflows/            diagnose.js (a fix's diagnosis), round.js (one round), final.js (the whole-feature check)
-  hooks/                session brief, git guard, Ruff on edit, state reader, sync checker, test selector
+  hooks/                session brief, git guard, Ruff on edit, state reader, sync checker, test selector, pytest progress
   rules/python.md       coding conventions, loaded for **/*.py
 .github/workflows/      CI: the gate and check_sync
 .vscode/                editor config (Ruff as formatter, format on save)
@@ -537,6 +537,7 @@ before unknown, sorts a mixed-type unknown-key set by `repr` rather than raising
 | `tests/test_session_brief.py` | the brief text and `main`'s output |
 | `tests/test_check_sync.py` | every check, including the version raise against a throwaway repo |
 | `tests/test_guard_git.py` | the guard, vendored with it |
+| `tests/test_pytest_progress.py` | the counting, the throttled and failure-proof write, and real runs in a throwaway project: final counts, a live read mid-run, `--collect-only`, deselection |
 | `tests/test_select_tests.py` | every selection rule on a throwaway repo (transitive and relative imports, re-exporting `__init__`, helpers, deletions, renames, cycles, unparseable files), `changed_files` and the CLI |
 
 ## Plans: `development/`
@@ -620,6 +621,24 @@ the tests that name it. Module roots come from `pythonpath` and `testpaths`;
 | `selection(project_dir: Path, changed: Iterable[str]) -> Selection` | The selection with its reason. |
 | `select_tests(project_dir: Path, changed: Iterable[str]) -> list[str] \| None` | The test paths, `[]` when none applies, None for the full suite. |
 | `main() -> None` | CLI: `[--base REF] [--root DIR]`; one test per line, `ALL`, or nothing on stdout, the reason on stderr; `ALL` when the changes cannot be listed. |
+
+### `.claude/hooks/pytest_progress.py`
+
+Pytest plugin, loaded for every run by `-p pytest_progress` in `pyproject.toml`'s `addopts`: keeps
+`.pytest_cache/progress.json` (ignored by git) current while tests run, so the `feature-band`
+mod can draw a live bar with the passed and failed counts. Best-effort: a file that cannot be
+written never fails a run. Nothing is written for `--collect-only`; under xdist only the
+controller writes. Covered by `tests/test_pytest_progress.py`.
+
+| Signature | Returns |
+|---|---|
+| `Progress` | Dataclass, the file's content: `pid`, `started`, `updated` (epoch seconds), `finished`, `total`, `done`, `passed`, `failed`, `skipped`, `current` (a test id), `exitstatus: int \| None`. |
+| `Recorder` | Dataclass: `path`, `progress`; `record(nodeid: str, outcome: str, *, call: bool) -> None` counts a test once by its worst outcome; `write(*, force: bool = False) -> None` writes at most once per `WRITE_INTERVAL`; its `pytest_*` methods are the hooks. |
+| `read_progress(path: Path) -> Progress \| None` | A progress file, or None if missing or unusable. |
+| `pytest_configure(config: pytest.Config) -> None` | Registers a `Recorder` for a real run. |
+| `main() -> None` | Prints the last run's counts in the current directory. |
+
+Constants: `PROGRESS_FILE`, `WRITE_INTERVAL`.
 
 ### `.claude/hooks/guard_git.py`
 
